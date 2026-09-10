@@ -1,86 +1,297 @@
-// Carmen -v33
-// Phone-first AI research workspace. Paste into Cloudflare Workers > Edit code.
+// Carmen V35 — consolidated backend fix
+// ADDITIVE BUILD: use this as a new Worker entry point; it does not require
+// modifying the existing Carmen UI files.
 
-const ASSETS = {
-  `/`: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#090909"><link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icon.svg"><title>Carmen</title><style>
-:root{--bg:#090909;--panel:#111;--panel2:#171717;--text:#f5f5f5;--muted:#9b9b9b;--line:#282828;--accent:#d8b26e}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% -10%,#202020 0,#090909 42%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",Inter,system-ui,sans-serif;min-height:100vh}button,input,textarea{font:inherit;color:inherit}button{border:0;background:none}.app{max-width:760px;margin:auto;min-height:100vh;padding-bottom:92px}.top{display:flex;align-items:center;justify-content:space-between;padding:20px 18px 12px}.brand{font-size:22px;font-weight:700;letter-spacing:-.03em}.status{font-size:12px;color:var(--muted)}.hero{padding:52px 18px 20px}.hero h1{font-size:34px;line-height:1.05;margin:0 0 10px;letter-spacing:-.04em}.hero p{color:var(--muted);margin:0}.search{margin-top:28px;background:#141414;border:1px solid var(--line);border-radius:22px;padding:8px;display:flex;gap:7px;box-shadow:0 16px 50px #0008}.search input{min-width:0;flex:1;background:transparent;border:0;outline:0;padding:13px 12px;font-size:17px}.go{background:#f2f2f2;color:#090909;border-radius:16px;padding:0 17px;font-weight:700}.chips{display:flex;gap:8px;overflow:auto;padding:14px 0 4px}.chip{white-space:nowrap;border:1px solid var(--line);background:#111;border-radius:999px;padding:9px 13px;color:#ccc}.section{padding:10px 18px}.hidden{display:none!important}.results{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.result{background:#111;border:1px solid var(--line);border-radius:18px;overflow:hidden;position:relative}.result img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;background:#1a1a1a}.result .meta{padding:11px}.result b{display:block;font-size:14px;line-height:1.2}.result small{display:block;color:var(--muted);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.actions{display:flex;gap:6px;margin-top:9px}.actions button{flex:1;border:1px solid var(--line);background:#181818;border-radius:11px;padding:8px 5px;font-size:12px}.actions .primary{background:#eee;color:#111}.sheet{position:fixed;inset:auto 0 0;max-width:760px;margin:auto;background:#101010;border:1px solid var(--line);border-radius:26px 26px 0 0;padding:18px;z-index:10;box-shadow:0 -20px 70px #000b}.sheet h2{margin:0 0 6px}.sheet p{color:var(--muted);font-size:14px}.choicegrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.choice{border:1px solid var(--line);background:#171717;border-radius:15px;padding:14px;text-align:left}.chat{padding:18px}.bubble{max-width:90%;padding:13px 15px;border-radius:18px;margin:9px 0;line-height:1.45}.carmen{background:#151515;border:1px solid var(--line)}.user{background:#eee;color:#111;margin-left:auto}.chatbar{position:fixed;left:0;right:0;bottom:74px;max-width:760px;margin:auto;padding:10px 14px;background:linear-gradient(transparent,#090909 22%)}.chatinput{display:flex;background:#151515;border:1px solid var(--line);border-radius:19px;padding:6px}.chatinput textarea{flex:1;resize:none;background:none;border:0;outline:0;padding:10px;height:44px}.send{background:#eee;color:#111;border-radius:14px;padding:0 15px}.bottom{position:fixed;left:0;right:0;bottom:0;height:74px;background:#0d0d0df2;border-top:1px solid var(--line);backdrop-filter:blur(20px);display:flex;justify-content:center;z-index:9}.nav{width:min(760px,100%);display:grid;grid-template-columns:repeat(5,1fr)}.nav button{color:#8f8f8f;font-size:11px;padding:9px 3px}.nav button.active{color:#fff}.nav span{display:block;font-size:20px;margin-bottom:3px}.gallery{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.tile{aspect-ratio:1;border-radius:12px;overflow:hidden;background:#151515;border:1px solid var(--line)}.tile img{width:100%;height:100%;object-fit:cover}.list{display:grid;gap:8px}.item{padding:14px;border:1px solid var(--line);border-radius:15px;background:#111}.item b{display:block}.muted{color:var(--muted)}.back{color:#bbb;margin-bottom:15px}
-</style></head><body><div class="app"><header class="top"><div class="brand">Carmen</div><div class="status" id="status">ready</div></header><main id="main"></main></div><nav class="bottom"><div class="nav"><button data-tab="home" class="active"><span>⌂</span>Home</button><button data-tab="browse"><span>⌕</span>Browse</button><button data-tab="saved"><span>♡</span>Saved</button><button data-tab="investigations"><span>◎</span>Investigate</button><button data-tab="tutorials"><span>✦</span>Tutorials</button></div></nav><div id="overlay"></div><script src="app.js"></script></body></html>`,
-  `/index.html`: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#090909"><link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icon.svg"><title>Carmen</title><style>
-:root{--bg:#090909;--panel:#111;--panel2:#171717;--text:#f5f5f5;--muted:#9b9b9b;--line:#282828;--accent:#d8b26e}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% -10%,#202020 0,#090909 42%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",Inter,system-ui,sans-serif;min-height:100vh}button,input,textarea{font:inherit;color:inherit}button{border:0;background:none}.app{max-width:760px;margin:auto;min-height:100vh;padding-bottom:92px}.top{display:flex;align-items:center;justify-content:space-between;padding:20px 18px 12px}.brand{font-size:22px;font-weight:700;letter-spacing:-.03em}.status{font-size:12px;color:var(--muted)}.hero{padding:52px 18px 20px}.hero h1{font-size:34px;line-height:1.05;margin:0 0 10px;letter-spacing:-.04em}.hero p{color:var(--muted);margin:0}.search{margin-top:28px;background:#141414;border:1px solid var(--line);border-radius:22px;padding:8px;display:flex;gap:7px;box-shadow:0 16px 50px #0008}.search input{min-width:0;flex:1;background:transparent;border:0;outline:0;padding:13px 12px;font-size:17px}.go{background:#f2f2f2;color:#090909;border-radius:16px;padding:0 17px;font-weight:700}.chips{display:flex;gap:8px;overflow:auto;padding:14px 0 4px}.chip{white-space:nowrap;border:1px solid var(--line);background:#111;border-radius:999px;padding:9px 13px;color:#ccc}.section{padding:10px 18px}.hidden{display:none!important}.results{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.result{background:#111;border:1px solid var(--line);border-radius:18px;overflow:hidden;position:relative}.result img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;background:#1a1a1a}.result .meta{padding:11px}.result b{display:block;font-size:14px;line-height:1.2}.result small{display:block;color:var(--muted);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.actions{display:flex;gap:6px;margin-top:9px}.actions button{flex:1;border:1px solid var(--line);background:#181818;border-radius:11px;padding:8px 5px;font-size:12px}.actions .primary{background:#eee;color:#111}.sheet{position:fixed;inset:auto 0 0;max-width:760px;margin:auto;background:#101010;border:1px solid var(--line);border-radius:26px 26px 0 0;padding:18px;z-index:10;box-shadow:0 -20px 70px #000b}.sheet h2{margin:0 0 6px}.sheet p{color:var(--muted);font-size:14px}.choicegrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.choice{border:1px solid var(--line);background:#171717;border-radius:15px;padding:14px;text-align:left}.chat{padding:18px}.bubble{max-width:90%;padding:13px 15px;border-radius:18px;margin:9px 0;line-height:1.45}.carmen{background:#151515;border:1px solid var(--line)}.user{background:#eee;color:#111;margin-left:auto}.chatbar{position:fixed;left:0;right:0;bottom:74px;max-width:760px;margin:auto;padding:10px 14px;background:linear-gradient(transparent,#090909 22%)}.chatinput{display:flex;background:#151515;border:1px solid var(--line);border-radius:19px;padding:6px}.chatinput textarea{flex:1;resize:none;background:none;border:0;outline:0;padding:10px;height:44px}.send{background:#eee;color:#111;border-radius:14px;padding:0 15px}.bottom{position:fixed;left:0;right:0;bottom:0;height:74px;background:#0d0d0df2;border-top:1px solid var(--line);backdrop-filter:blur(20px);display:flex;justify-content:center;z-index:9}.nav{width:min(760px,100%);display:grid;grid-template-columns:repeat(5,1fr)}.nav button{color:#8f8f8f;font-size:11px;padding:9px 3px}.nav button.active{color:#fff}.nav span{display:block;font-size:20px;margin-bottom:3px}.gallery{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.tile{aspect-ratio:1;border-radius:12px;overflow:hidden;background:#151515;border:1px solid var(--line)}.tile img{width:100%;height:100%;object-fit:cover}.list{display:grid;gap:8px}.item{padding:14px;border:1px solid var(--line);border-radius:15px;background:#111}.item b{display:block}.muted{color:var(--muted)}.back{color:#bbb;margin-bottom:15px}
-</style></head><body><div class="app"><header class="top"><div class="brand">Carmen</div><div class="status" id="status">ready</div></header><main id="main"></main></div><nav class="bottom"><div class="nav"><button data-tab="home" class="active"><span>⌂</span>Home</button><button data-tab="browse"><span>⌕</span>Browse</button><button data-tab="saved"><span>♡</span>Saved</button><button data-tab="investigations"><span>◎</span>Investigate</button><button data-tab="tutorials"><span>✦</span>Tutorials</button></div></nav><div id="overlay"></div><script src="app.js"></script></body></html>`,
-  `/app.js`: `const S={tab:'home',results:[],saved:[],messages:[],investigation:null};const dbp=new Promise((res,rej)=>{const r=indexedDB.open('carmen-v33',1);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains('saved'))d.createObjectStore('saved',{keyPath:'id'});if(!d.objectStoreNames.contains('investigations'))d.createObjectStore('investigations',{keyPath:'id'});if(!d.objectStoreNames.contains('tutorials'))d.createObjectStore('tutorials',{keyPath:'id'})};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});const esc=x=>String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));async function all(store){const d=await dbp;return new Promise((res,rej)=>{const q=d.transaction(store).objectStore(store).getAll();q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}async function put(store,v){const d=await dbp;return new Promise((res,rej)=>{const q=d.transaction(store,'readwrite').objectStore(store).put(v);q.onsuccess=()=>res(v);q.onerror=()=>rej(q.error)})}async function del(store,id){const d=await dbp;d.transaction(store,'readwrite').objectStore(store).delete(id)}
-function render(){const m=document.querySelector('#main');document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===S.tab));if(S.tab==='home'||S.tab==='browse')m.innerHTML=\`<section class="hero"><h1>What are we looking for?</h1><p>Search, bring Carmen something, or start an investigation.</p><div class="search"><input id="q" placeholder="Try “Dream Morgan”" value="${esc(S.query||'')}"><button class="go" id="search">Search</button></div><div class="chips"><button class="chip" id="add">＋ Add</button><button class="chip" id="teach">Teach me</button><button class="chip" id="resume">Recent</button></div></section><section class="section">${S.results.length?\`<div class="results">${S.results.map((r,i)=>\`<article class="result"><img src="${esc(r.image||'')}" onerror="this.style.display='none'"><div class="meta"><b>${esc(r.title)}</b><small>${esc(r.source||r.url||'')}</small><div class="actions"><button data-open="${i}">Open</button><button data-save="${i}">Save</button><button class="primary" data-dive="${i}">Deep dive</button></div></div></article>\`).join('')}</div>\`:'<div class="muted" style="padding:30px 4px;text-align:center">Your search results will live here. Carmen only saves what you choose.</div>'}</section>\`;else if(S.tab==='saved')m.innerHTML=\`<section class="section" style="padding-top:28px"><h2>Collection</h2><p class="muted">Your visual library. Nothing is added automatically.</p><div class="gallery">${S.saved.filter(x=>x.image).map(x=>\`<div class="tile"><img src="${esc(x.image)}" title="${esc(x.title)}"></div>\`).join('')||''}</div><div class="list" style="margin-top:14px">${S.saved.filter(x=>!x.image||true).map(x=>\`<div class="item"><b>${esc(x.title)}</b><small class="muted">${esc(x.type||'reference')} · ${esc(x.url||'')}</small></div>\`).join('')||'<div class="muted">Nothing saved yet.</div>'}</div></section>\`;else if(S.tab==='investigations')m.innerHTML=\`<section class="section" style="padding-top:28px"><h2>Investigations</h2><p class="muted">Open-ended research. Pick any result and decide what Carmen should examine.</p><div class="list">${(awaitable(S.invs||[])).map(x=>\`<div class="item"><b>${esc(x.title)}</b><small class="muted">${new Date(x.createdAt).toLocaleString()}</small></div>\`).join('')||'<div class="muted">No investigations yet.</div>'}</div></section>\`;else m.innerHTML=\`<section class="section" style="padding-top:28px"><h2>Tutorials</h2><p class="muted">Lessons Carmen creates only when you ask her to teach you.</p><div class="list">${(S.tutorials||[]).map(x=>\`<div class="item"><b>${esc(x.title)}</b><p>${esc(x.body)}</p></div>\`).join('')||'<div class="muted">Say “teach me this” during a conversation to create a lesson.</div>'}</div></section>\`;bind();}
-function awaitable(x){return x||[]}async function load(){S.saved=await all('saved');S.invs=await all('investigations');S.tutorials=await all('tutorials');render()}async function search(){const q=document.querySelector('#q').value.trim();if(!q)return;S.query=q;S.tab='browse';document.querySelector('#status').textContent='searching…';try{const r=await fetch('/search?q='+encodeURIComponent(q));const j=await r.json();S.results=j.results||[];document.querySelector('#status').textContent=\`${S.results.length} results\`;}catch(e){S.results=[];document.querySelector('#status').textContent='search unavailable'}render()}
-function addSheet(){document.querySelector('#overlay').innerHTML=\`<div class="sheet"><h2>Bring something to Carmen</h2><p>Paste a source, upload an image, or give Carmen a lead.</p><div class="choicegrid"><button class="choice" id="urladd">🔗 Paste URL</button><button class="choice" id="imgadd">▧ Add image</button></div><button class="chip" style="margin-top:12px" id="close">Cancel</button></div>\`;document.querySelector('#urladd').onclick=()=>{const u=prompt('Paste a URL');if(u){put('saved',{id:crypto.randomUUID(),title:u,url:u,type:'url',createdAt:new Date().toISOString()}).then(load)}document.querySelector('#overlay').innerHTML=''};document.querySelector('#imgadd').onclick=()=>{const i=document.createElement('input');i.type='file';i.accept='image/*';i.onchange=()=>{const f=i.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>put('saved',{id:crypto.randomUUID(),title:f.name,image:rd.result,type:'image',createdAt:new Date().toISOString()}).then(load);rd.readAsDataURL(f);document.querySelector('#overlay').innerHTML=''};i.click()};document.querySelector('#close').onclick=()=>document.querySelector('#overlay').innerHTML=''}
-async function dive(r){document.querySelector('#overlay').innerHTML=\`<div class="sheet"><h2>What do you want from this?</h2><p>Carmen can investigate multiple aspects at once.</p><div class="choicegrid"><button class="choice" data-topic="person">Person</button><button class="choice" data-topic="clothing">Clothing</button><button class="choice" data-topic="position">Position</button><button class="choice" data-topic="source">Source / origin</button><button class="choice" data-topic="everything">Everything visible</button><button class="choice" data-topic="custom">Something else</button></div><button class="chip" style="margin-top:12px" id="close">Cancel</button></div>\`;document.querySelectorAll('[data-topic]').forEach(b=>b.onclick=async()=>{const t=b.dataset.topic;const inv={id:crypto.randomUUID(),title:\`Investigation: ${r.title}\`,createdAt:new Date().toISOString(),reference:r,topics:[t],messages:[]};await put('investigations',inv);S.investigation=inv;document.querySelector('#overlay').innerHTML='';chat(inv)});document.querySelector('#close').onclick=()=>document.querySelector('#overlay').innerHTML=''}
-async function chat(inv){S.tab='home';S.messages=[{role:'carmen',text:\`I'm on it. We're investigating <b>${esc(inv.reference.title)}</b>. What would you like me to focus on next? You can add or remove aspects at any time. Nothing is saved unless you tell me to save it.\`}];renderChat(inv)}function renderChat(inv){document.querySelector('#main').innerHTML=\`<section class="chat"><button class="back" id="back">‹ Back</button><h2>${esc(inv.title)}</h2>${S.messages.map(x=>\`<div class="bubble ${x.role==='user'?'user':'carmen'}">${x.text}</div>\`).join('')}</section><div class="chatbar"><div class="chatinput"><textarea id="msg" placeholder="Talk to Carmen…"></textarea><button class="send" id="send">↑</button></div></div>\`;document.querySelector('#back').onclick=load;document.querySelector('#send').onclick=sendChat;document.querySelector('#msg').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}}}
-async function sendChat(){const el=document.querySelector('#msg'),text=el.value.trim();if(!text)return;S.messages.push({role:'user',text:esc(text)});renderChat(S.investigation);document.querySelector('#status').textContent='thinking…';try{const r=await fetch('/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:S.messages.map(x=>({role:x.role==='carmen'?'assistant':'user',content:x.text})),context:S.investigation})});const j=await r.json();const reply=j.text||'I could not complete that response.';S.messages.push({role:'carmen',text:esc(reply)});if(S.tutorialMode){await put('tutorials',{id:crypto.randomUUID(),title:(S.query||'Carmen lesson').replace(/^teach mes*/i,'').slice(0,80)||'Carmen lesson',body:reply,createdAt:new Date().toISOString()});S.tutorials=await all('tutorials');S.tutorialMode=false}document.querySelector('#status').textContent='ready';renderChat(S.investigation)}catch(e){S.messages.push({role:'carmen',text:'I could not reach the AI service.'});renderChat(S.investigation)}}
-function bind(){document.querySelector('#search')?.addEventListener('click',search);document.querySelector('#q')?.addEventListener('keydown',e=>e.key==='Enter'&&search());document.querySelector('#add')?.addEventListener('click',addSheet);document.querySelector('#teach')?.addEventListener('click',()=>{S.tutorialMode=true;S.messages=[{role:'carmen',text:'Absolutely. What do you want me to teach you?'}];S.investigation={title:'Tutorial'};renderChat(S.investigation)});document.querySelectorAll('[data-save]').forEach(b=>b.onclick=async()=>{const r=S.results[+b.dataset.save];await put('saved',{...r,id:crypto.randomUUID(),createdAt:new Date().toISOString()});S.saved=await all('saved');document.querySelector('#status').textContent='saved';});document.querySelectorAll('[data-dive]').forEach(b=>b.onclick=()=>dive(S.results[+b.dataset.dive]));document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>window.open(S.results[+b.dataset.open].url,'_blank'))}document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{S.tab=b.dataset.tab;load()});load();
-`,
-  `/manifest.webmanifest`: `{"name":"Carmen","short_name":"Carmen","start_url":"./","display":"standalone","background_color":"#090909","theme_color":"#090909","description":"Carmen AI visual research workspace","icons":[{"src":"icon.svg","sizes":"180x180","type":"image/svg+xml","purpose":"any maskable"}]}`,
-  `/icon.svg`: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180"><rect width="180" height="180" rx="40" fill="#090909"/><circle cx="90" cy="90" r="55" fill="none" stroke="#d8b26e" stroke-width="10"/><circle cx="90" cy="90" r="12" fill="#d8b26e"/></svg>`,
-  `/sw.js`: `const C='carmen-v33';self.addEventListener('install',e=>e.waitUntil(caches.open(C).then(c=>c.addAll(['./','./index.html','./app.js','./manifest.webmanifest','./icon.svg'])).then(()=>self.skipWaiting())));self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)))})`,
-};
+const MAX_RESULTS = 20;
+const SEARCH_TIMEOUT_MS = 8000;
+const AI_TIMEOUT_MS = 30000;
 
+function cors(req) {
+  const origin = req.headers.get('Origin');
+  return {
+    'access-control-allow-origin': origin || '*',
+    'access-control-allow-methods': 'GET,POST,OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    'access-control-max-age': '86400',
+  };
+}
 
-async function searchWeb(req){const u=new URL(req.url);const q=u.searchParams.get('q')||'';if(!q)return json({results:[]},200,req);try{const r=await fetch('https://www.google.com/search?tbm=isch&q='+encodeURIComponent(q),{headers:{'user-agent':'Mozilla/5.0'}});const h=await r.text();const imgs=[];const add=x=>{x=x.replace(/\\\//g,'/').replace(/\\u003d/g,'=').replace(/\\u0026/g,'&');if(!imgs.includes(x))imgs.push(x)};for(const m of h.matchAll(/https?:\\/\\/(?:encrypted-tbn0\.gstatic\.com|[^\"\\ ]+)[^\"\\ ]*/gi)){add(m[0]);if(imgs.length>=10)break}const results=imgs.map((image,i)=>({title:q+' · result '+(i+1),image,url:'https://www.google.com/search?tbm=isch&q='+encodeURIComponent(q),source:'Image search'}));return json({results},200,req)}catch(e){return json({results:[],error:e.message},200,req)}}
-async function chat(req,env){try{if(!env.API_KEY)throw Error('Worker API_KEY secret is not configured');const b=await req.json();const messages=[{role:'system',content:`You are Carmen, an AI research assistant. Be concise, capable, and conversational. Help the user search, inspect, compare, organize, and learn. Distinguish observations, inferences, and unknowns. Never claim you saved something unless the user explicitly requested it. Never autonomously contact people, post, comment, submit forms, purchase, or take external actions. The user may investigate multiple aspects of one reference in parallel. ${JSON.stringify(b.context||{})}`},...(b.messages||[])];const r=await fetch(env.API_URL||'https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${env.API_KEY}`},body:JSON.stringify({model:env.MODEL||'gpt-4.1-mini',temperature:.3,messages})});const j=await r.json();if(!r.ok)throw Error(j?.error?.message||JSON.stringify(j));return json({text:j.choices?.[0]?.message?.content||''},200,req)}catch(e){return json({error:e.message},500,req)}}
+function json(value, status, req, extra = {}) {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      ...cors(req),
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      ...extra,
+    },
+  });
+}
+
+function cleanText(s = '') {
+  return String(s)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#x27;/g, "'")
+    .replace(/\s+/g, ' ').trim();
+}
+
+function unwrap(raw) {
+  let url = String(raw || '').trim();
+  if (url.startsWith('//')) url = 'https:' + url;
+  try {
+    const u = new URL(url);
+    for (const key of ['uddg', 'url', 'u']) {
+      const target = u.searchParams.get(key);
+      if (target && /^https?:\/\//i.test(target)) return decodeURIComponent(target);
+    }
+  } catch {}
+  return url;
+}
+
+function validUrl(url) {
+  try { return /^https?:$/i.test(new URL(url).protocol); } catch { return false; }
+}
+
+function uniqueAdd(results, seen, item) {
+  const url = unwrap(item.url);
+  const title = cleanText(item.title);
+  if (!validUrl(url) || !title || title.length < 2) return false;
+  let key;
+  try { key = new URL(url).href.replace(/#.*$/, ''); } catch { return false; }
+  if (seen.has(key)) return false;
+  seen.add(key);
+  results.push({
+    title: title.slice(0, 240),
+    url: key,
+    source: String(item.source || 'Public web').slice(0, 120),
+    snippet: cleanText(item.snippet || '').slice(0, 600),
+    image: typeof item.image === 'string' ? item.image : '',
+  });
+  return true;
+}
+
+async function fetchText(url, init = {}, timeout = SEARCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally { clearTimeout(timer); }
+}
+
+function parseAnchors(html, source, results, seen, limit) {
+  // Generic parser: search engines change CSS classes frequently, so Carmen
+  // deliberately extracts ordinary result links instead of relying on one class.
+  const re = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html)) && results.length < limit) {
+    const title = cleanText(m[2]);
+    const url = unwrap(m[1]);
+    if (!title || title.length < 3 || title.length > 300 || !validUrl(url)) continue;
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      if (['duckduckgo.com','www.duckduckgo.com','bing.com','www.bing.com','microsoft.com','www.microsoft.com','google.com','www.google.com','search.yahoo.com','yahoo.com','mojeek.com','www.mojeek.com','startpage.com','www.startpage.com'].includes(host)) continue;
+      if (host === 'reddit.com' || host.endsWith('.reddit.com')) continue;
+    } catch { continue; }
+    uniqueAdd(results, seen, { title, url, source });
+  }
+}
+
+async function htmlSearch(url, source, results, seen, diagnostics, limit) {
+  try {
+    const r = await fetchText(url, {
+      headers: {
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile Safari/604.1',
+        accept: 'text/html,application/xhtml+xml',
+        'accept-language': 'en-US,en;q=0.9',
+      },
+    });
+    diagnostics[source] = { status: r.status, ok: r.ok };
+    if (r.ok) parseAnchors(await r.text(), source, results, seen, limit);
+  } catch (e) {
+    diagnostics[source] = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e) };
+  }
+}
+
+async function ddg(q, results, seen, diagnostics) {
+  await htmlSearch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q) + '&kp=-2', 'DuckDuckGo', results, seen, diagnostics, 12);
+  if (results.length < 8) {
+    await htmlSearch('https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(q), 'DuckDuckGo Lite', results, seen, diagnostics, 16);
+  }
+}
+
+async function bing(q, results, seen, diagnostics) {
+  await htmlSearch('https://www.bing.com/search?q=' + encodeURIComponent(q) + '&adlt=off', 'Bing', results, seen, diagnostics, 18);
+}
+
+async function google(q, results, seen, diagnostics) {
+  // Google is an additional public-web source, not a replacement. If it blocks
+  // Cloudflare, the other providers still work.
+  await htmlSearch('https://www.google.com/search?q=' + encodeURIComponent(q) + '&safe=off&num=10', 'Google', results, seen, diagnostics, 16);
+}
+
+async function mojeek(q, results, seen, diagnostics) {
+  await htmlSearch('https://www.mojeek.com/search?q=' + encodeURIComponent(q), 'Mojeek', results, seen, diagnostics, 16);
+}
+
+async function startpage(q, results, seen, diagnostics) {
+  await htmlSearch('https://www.startpage.com/sp/search?query=' + encodeURIComponent(q) + '&cat=web', 'Startpage', results, seen, diagnostics, 16);
+}
+
+async function yahoo(q, results, seen, diagnostics) {
+  await htmlSearch('https://search.yahoo.com/search?p=' + encodeURIComponent(q), 'Yahoo', results, seen, diagnostics, 16);
+}
+
+async function reddit(q, results, seen, diagnostics) {
+  try {
+    const r = await fetchText('https://www.reddit.com/search.json?q=' + encodeURIComponent(q) + '&limit=25&sort=relevance&t=all&include_over_18=on', {
+      headers: { accept: 'application/json', 'user-agent': 'CarmenResearch/3.0' },
+    });
+    diagnostics.Reddit = { status: r.status, ok: r.ok };
+    if (!r.ok) return;
+    const j = await r.json();
+    for (const child of j?.data?.children || []) {
+      const d = child?.data;
+      if (!d?.permalink) continue;
+      uniqueAdd(results, seen, {
+        title: d.title || 'Reddit result',
+        url: 'https://www.reddit.com' + d.permalink,
+        source: d.subreddit ? 'Reddit · r/' + d.subreddit : 'Reddit',
+        snippet: d.selftext || '',
+        image: typeof d.thumbnail === 'string' && d.thumbnail.startsWith('http') ? d.thumbnail : '',
+      });
+      if (results.length >= MAX_RESULTS) break;
+    }
+  } catch (e) { diagnostics.Reddit = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e) }; }
+}
+
+function searchVariants(q) {
+  const clean = q.trim().replace(/\s+/g, ' ');
+  const variants = [clean];
+  // Exact-phrase search helps names and unusual terms; normal search remains first.
+  if (/\s/.test(clean) && !/^".*"$/.test(clean)) variants.push('"' + clean.replace(/"/g, '') + '"');
+  return [...new Set(variants)];
+}
+
+async function searchWeb(req) {
+  const u = new URL(req.url);
+  const q = (u.searchParams.get('q') || '').trim().slice(0, 500);
+  if (!q) return json({ results: [], query: '', count: 0, providers: {} }, 200, req);
+
+  const results = [], seen = new Set(), diagnostics = {};
+  // Broad public-web coverage. No client VPN is required: these requests run
+  // from Cloudflare, so the phone's VPN cannot change their source IP.
+  for (const variant of searchVariants(q)) {
+    await Promise.all([
+      ddg(variant, results, seen, diagnostics),
+      bing(variant, results, seen, diagnostics),
+      google(variant, results, seen, diagnostics),
+      mojeek(variant, results, seen, diagnostics),
+      startpage(variant, results, seen, diagnostics),
+      yahoo(variant, results, seen, diagnostics),
+      reddit(variant, results, seen, diagnostics),
+    ]);
+    if (results.length >= MAX_RESULTS) break;
+  }
+
+  return json({
+    results: results.slice(0, MAX_RESULTS),
+    query: q,
+    count: Math.min(results.length, MAX_RESULTS),
+    providers: diagnostics,
+    adult_research: true,
+    warning: results.length ? undefined : 'No public-web results were returned. Provider diagnostics are included for troubleshooting.',
+  }, 200, req);
+}
+
+async function provider(env, messages, temperature = 0.2) {
+  if (!env.API_KEY) throw Error('AI provider is not configured. Add the API_KEY Worker secret before using Carmen AI.');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  try {
+    const r = await fetch(env.API_URL || 'https://api.openai.com/v1/chat/completions', {
+      method: 'POST', signal: controller.signal,
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${env.API_KEY}` },
+      body: JSON.stringify({ model: env.MODEL || 'gpt-4.1-mini', temperature, messages }),
+    });
+    const text = await r.text();
+    let j; try { j = JSON.parse(text); } catch { throw Error(text || `AI provider returned HTTP ${r.status}`); }
+    if (!r.ok) throw Error(j?.error?.message || `AI provider returned HTTP ${r.status}`);
+    return j;
+  } finally { clearTimeout(timer); }
+}
+
+async function chat(req, env) {
+  try {
+    const b = await req.json();
+    const messages = [{ role: 'system', content: 'You are Carmen, a conservative AI research assistant. Be concise and useful. Distinguish observations, inferences, and unknowns. Never invent facts. Never claim something was saved unless the user explicitly requested it. Never autonomously contact people, send messages, post, comment, submit forms, purchase anything, or take external actions. Investigation context: ' + JSON.stringify(b.context || {}) }];
+    for (const m of Array.isArray(b.messages) ? b.messages : []) {
+      if (m && typeof m.content === 'string') messages.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content.slice(0, 20000) });
+    }
+    const j = await provider(env, messages, 0.3);
+    return json({ text: j?.choices?.[0]?.message?.content || '' }, 200, req);
+  } catch (e) { return json({ error: e?.name === 'AbortError' ? 'AI provider timed out.' : e?.message || String(e) }, 500, req); }
+}
+
+function validateImage(x) {
+  if (typeof x !== 'string' || !x.startsWith('data:image/')) throw Error('imageDataUrl must be an image data URL');
+  if (x.length > 16000000) throw Error('Image is too large. Use a smaller screenshot.');
+}
+
+function parseModelJson(raw) {
+  const clean = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  try { return JSON.parse(clean); } catch {}
+  const a = clean.indexOf('{'), b = clean.lastIndexOf('}');
+  if (a >= 0 && b > a) { try { return JSON.parse(clean.slice(a, b + 1)); } catch {} }
+  throw Error('AI provider returned invalid JSON.');
+}
+
+async function structuredVision(req, env, body, mode) {
+  if (!env.API_KEY) throw Error('AI provider is not configured. Add the API_KEY Worker secret before using Carmen AI.');
+  let content;
+  if (mode === 'analyze') {
+    validateImage(body.imageDataUrl);
+    content = [
+      { type: 'text', text: 'You are Carmen, a conservative visual-evidence analyst. Return ONLY valid JSON with exactly these keys: title, observations, inferences, unknowns, relationships, candidatePatterns, signature, audit. Observations are directly visible only. Inferences are labeled interpretations. Never invent identity, intent, ownership, price, location, safety, authenticity, or obscured details. CandidatePatterns are hypotheses, not facts. Page URL: ' + String(body.pageUrl || '') + '\nSource type: ' + String(body.sourceType || 'web') + '\nSource name: ' + String(body.sourceName || '') + '\nContext: ' + String(body.pageContext || '') },
+      { type: 'image_url', image_url: { url: body.imageDataUrl } },
+    ];
+  } else {
+    const refs = Array.isArray(body.references) ? body.references : [];
+    if (refs.length < 2) throw Error('Select at least 2 saved references to compare.');
+    if (refs.length > 4) throw Error('Compare up to 4 references at once.');
+    content = [{ type: 'text', text: 'You are Carmen performing conservative evidence synthesis. Return ONLY valid JSON with exactly these keys: summary, consistentFindings, differences, candidatePatterns, leads, unknowns, audit. Compare only visible or explicitly supplied evidence. Do not identify people or infer intent, ownership, price, location, authenticity, or hidden facts. User question: ' + String(body.question || 'Compare these references and identify useful similarities, differences, and patterns.') }];
+    refs.forEach((r, i) => {
+      content.push({ type: 'text', text: `REFERENCE ${i + 1}: ${String(r.title || 'Untitled')} | URL: ${String(r.url || '')} | Source type: ${String(r.sourceType || 'web')} | Source name: ${String(r.sourceName || '')} | Context: ${String(r.context || '')}` });
+      if (typeof r.imageDataUrl === 'string' && r.imageDataUrl.startsWith('data:image/')) { validateImage(r.imageDataUrl); content.push({ type: 'image_url', image_url: { url: r.imageDataUrl } }); }
+    });
+  }
+  const j = await provider(env, [{ role: 'user', content }], 0);
+  return parseModelJson(j?.choices?.[0]?.message?.content || '');
+}
+
+async function analyze(req, env) { try { return json(await structuredVision(req, env, await req.json(), 'analyze'), 200, req); } catch (e) { return json({ error: e?.name === 'AbortError' ? 'AI provider timed out.' : e?.message || String(e) }, 500, req); } }
+async function synthesize(req, env) { try { return json(await structuredVision(req, env, await req.json(), 'synthesize'), 200, req); } catch (e) { return json({ error: e?.name === 'AbortError' ? 'AI provider timed out.' : e?.message || String(e) }, 500, req); } }
 
 export default {
   async fetch(req, env) {
     const u = new URL(req.url);
     if (req.method === 'OPTIONS') return new Response('', { headers: cors(req) });
-    if (u.pathname === '/health') return json({ ok:true, provider:'openai-compatible', model:env.MODEL||'gpt-4.1-mini', capabilities:['vision-analysis','evidence-synthesis','source-aware-research'] },200,req);
+    if (u.pathname === '/health' && req.method === 'GET') return json({
+      ok: true,
+      worker: 'carmen-v35-bigfix',
+      provider: env.API_KEY ? 'configured' : 'not-configured',
+      model: env.MODEL || 'gpt-4.1-mini',
+      routes: ['/health', '/search', '/chat', '/analyze', '/synthesize'],
+      search: ['DuckDuckGo', 'Bing', 'Yahoo', 'Reddit'],
+      assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
+    }, 200, req);
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
-    if (u.pathname === '/chat' && req.method === 'POST') return chat(req,env);
-    if (u.pathname === '/analyze' && req.method === 'POST') return analyze(req,env);
-    if (u.pathname === '/synthesize' && req.method === 'POST') return synthesize(req,env);
-    let path=u.pathname;
-    if(path.endsWith('/')) path='/';
-    const body=ASSETS[path] ?? ASSETS['/'];
-    return new Response(body,{headers:{'content-type':TYPES[path]||'text/plain; charset=utf-8','cache-control':path==='/'||path==='/index.html'?'no-store':'public, max-age=3600'}});
-  }
+    if (u.pathname === '/chat' && req.method === 'POST') return chat(req, env);
+    if (u.pathname === '/analyze' && req.method === 'POST') return analyze(req, env);
+    if (u.pathname === '/synthesize' && req.method === 'POST') return synthesize(req, env);
+    if (env.ASSETS && typeof env.ASSETS.fetch === 'function') return env.ASSETS.fetch(req);
+    return new Response('Carmen static assets binding is missing.', { status: 500, headers: { ...cors(req), 'content-type': 'text/plain; charset=utf-8' } });
+  },
 };
-
-async function analyze(req,env){
-  try{
-    const body=await req.json();
-    validateImage(body.imageDataUrl);
-    if(!env.API_KEY) throw Error('Worker API_KEY secret is not configured');
-    const prompt=`You are Carmen, a conservative visual-evidence analyst. Return ONLY valid JSON with exactly these keys: title, observations, inferences, unknowns, relationships, candidatePatterns, signature, audit. Each list contains short strings. Observations describe only what is directly visible. Inferences are interpretations and must be labeled as such. Never invent hidden mechanics, identity, intent, ownership, price, location, safety, or obscured details. CandidatePatterns are hypotheses supported by this image, not facts. Signature is a short stable description useful for comparing this evidence later. Audit briefly states what was and was not observable. Page URL: ${String(body.pageUrl||'')}\nSource type: ${String(body.sourceType||'web')}\nSource name: ${String(body.sourceName||'')}\nContext: ${String(body.pageContext||'')}`;
-    const parsed=await provider(env,[{type:'text',text:prompt},{type:'image_url',image_url:{url:body.imageDataUrl}}]);
-    return json(parsed,200,req);
-  }catch(e){return json({error:e.message},500,req)}
-}
-
-async function synthesize(req,env){
-  try{
-    const body=await req.json();
-    if(!Array.isArray(body.references)||body.references.length<2) throw Error('Select at least 2 saved references to compare.');
-    if(body.references.length>4) throw Error('Compare up to 4 references at once.');
-    if(!env.API_KEY) throw Error('Worker API_KEY secret is not configured');
-    const content=[{type:'text',text:`You are Carmen performing conservative evidence synthesis across ${body.references.length} screenshots. Return ONLY valid JSON with exactly these keys: summary, consistentFindings, differences, candidatePatterns, leads, unknowns, audit. Each value is an array of short strings except summary, which is one short string. Compare only what is visible or explicitly supplied. Do not identify people, infer intent, ownership, price, location, authenticity, or hidden facts. Treat every image as evidence and distinguish direct visual consistency from interpretation. User research question: ${String(body.question||'Compare these references and identify useful visible similarities, differences, and patterns.')}\nReferences are labeled in order. Each reference may include a source type (adult_video, reddit, web, other) and source name. Use those labels as context, but never invent information not visible in the evidence.`}];
-    body.references.forEach((r,i)=>{
-      content.push({type:'text',text:`REFERENCE ${i+1}: ${String(r.title||'Untitled')} | URL: ${String(r.url||'')} | Source type: ${String(r.sourceType||'web')} | Source name: ${String(r.sourceName||'')} | Saved context: ${String(r.context||'')}`});
-      if(typeof r.imageDataUrl==='string' && r.imageDataUrl.startsWith('data:image/')) content.push({type:'image_url',image_url:{url:r.imageDataUrl}});
-    });
-    const parsed=await provider(env,content);
-    return json(parsed,200,req);
-  }catch(e){return json({error:e.message},500,req)}
-}
-
-function validateImage(x){
-  if(typeof x!=='string'||!x.startsWith('data:image/')) throw Error('imageDataUrl must be an image data URL');
-  if(x.length>16_000_000) throw Error('Image is too large. Use a smaller screenshot.');
-}
-
-async function provider(env,content){
-  const r=await fetch(env.API_URL||'https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${env.API_KEY}`},body:JSON.stringify({model:env.MODEL||'gpt-4.1-mini',temperature:0,messages:[{role:'user',content}]})});
-  const text=await r.text();let j;try{j=JSON.parse(text)}catch{throw Error(text||`Provider HTTP ${r.status}`)}
-  if(!r.ok) throw Error(j?.error?.message||JSON.stringify(j));
-  const out=j.choices?.[0]?.message?.content||'';const clean=out.replace(/^```json\s*/,'').replace(/\s*```$/,'').trim();
-  try{return JSON.parse(clean)}catch{throw Error('Vision provider returned invalid JSON. Try again.')} 
-}
-function cors(req){const origin=req.headers.get('Origin');return {'access-control-allow-origin':origin||'*','access-control-allow-methods':'GET,POST,OPTIONS','access-control-allow-headers':'content-type'}}
-function json(x,s,req){return new Response(JSON.stringify(x),{status:s,headers:{...cors(req),'content-type':'application/json'}})}
-
