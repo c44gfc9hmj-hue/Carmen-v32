@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "carmen-iphone-v25",
+  "main": "Carmen-V33-worker.js",
+  "compatibility_date": "2026-09-10",
+  "assets": {
+    "directory": "."
+  },
+  "observability": {
+    "enabled": true
+  }
+}
