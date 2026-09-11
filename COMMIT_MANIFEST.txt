@@ -1,0 +1,37 @@
+Carmen Phase 2 (v37) export package
+====================================
+Equivalent to local commit:
+  d94cc57da98da1a6ad09bf64cee2c2e34cfe6fd0
+
+Branch target: main
+
+Files changed vs origin/main (061f0e4):
+  worker.js
+  public/app.js
+  public/index.html
+  public/sw.js
+  README.md
+  test-retrieval.mjs  (new)
+
+Unchanged (included for a complete drop-in tree):
+  .github/workflows/deploy.yml
+  .gitignore
+  public/icon.svg
+  public/manifest.webmanifest
+  test-server.js
+  wrangler.jsonc
+
+NOT included:
+  .git/ (no credentials)
+  any secrets, API keys, .env files
+  sandbox-only paths
+
+How to apply from iPhone / any machine:
+  1. Unzip this archive
+  2. In a clone of https://github.com/c44gfc9hmj-hue/Carmen-v32
+     copy the six changed files into place (or replace the whole tree)
+  3. git add worker.js public/app.js public/index.html public/sw.js README.md test-retrieval.mjs
+  4. git commit -m "Phase 2 (v37): retrieval, provenance, instructions, timeline"
+  5. git push origin main
+  6. Wait for GitHub Actions → Cloudflare deploy
+  7. Optional: npx wrangler secret put API_KEY
