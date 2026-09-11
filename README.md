@@ -9,6 +9,18 @@ This is the single canonical Carmen application. There are no separate V25/V32/
 V33/V34/V35 builds — those accumulated during earlier development and have been
 consolidated into this one project.
 
+
+## Phase 2 (v37) additions
+
+- `/retrieve` and `/source` — real public source retrieval with metadata, text excerpt, images, fingerprints, and explicit `RETRIEVED` / `RETRIEVAL_FAILED` status.
+- Provenance states on evidence: DISCOVERED, RETRIEVED, RETRIEVAL_FAILED (OBSERVED / INFERRED / UNKNOWN remain in AI analysis).
+- First-class **Instructions** field on every investigation (research direction only; never external actions).
+- Visible save state + last-updated timestamp; multi-discovery history with unique IDs.
+- Chronological investigation timeline driven by durable events.
+- Intentional CORS allowlist; private-network retrieval blocked.
+- Deep Dive prefers retrieved source excerpts over search snippets and includes user instructions when present.
+- Clearer AI-unavailable messaging when `API_KEY` is not configured (search/evidence still work).
+
 ## What it does
 
 - **Discovery hub** — enter a subject (person / topic / website / claim / product /
