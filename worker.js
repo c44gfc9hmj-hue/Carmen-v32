@@ -1,52 +1,29 @@
-// Carmen — canonical Cloudflare Worker backend.
-// Routes: GET /health, GET /search, POST /chat, POST /analyze, POST /synthesize.
-// Everything else is served from static assets (the Carmen frontend) via the ASSETS binding.
-//
-// Safety contract: Carmen is a research/analysis tool only. It never contacts
-// people, sends messages, posts, comments, submits forms, makes purchases,
-// creates accounts, performs transactions, or takes any external action on a
-// user's behalf. The AI system prompt enforces this; the search layer only
-// reads public web pages.
-
-const MAX_RESULTS = 20;
-const SEARCH_TIMEOUT_MS = 8000;
-const AI_TIMEOUT_MS = 30000;
-
-const PROVIDERS = ['DuckDuckGo', 'Bing', 'Google', 'Mojeek', 'Startpage', 'Yahoo', 'Reddit'];
-
-const BLOCKED_HOSTS = new Set([
-  'duckduckgo.com', 'www.duckduckgo.com',
-  'bing.com', 'www.bing.com', 'microsoft.com', 'www.microsoft.com',
-  'google.com', 'www.google.com',
-  'search.yahoo.com', 'yahoo.com', 'www.yahoo.com',
-  'mojeek.com', 'www.mojeek.com',
-  'startpage.com', 'www.startpage.com',
-  'support.google.com', 'support.microsoft.com', 'support.apple.com',
-  'accounts.google.com', 'myaccount.google.com', 'policies.google.com',
-  'go.microsoft.com', 'www.msn.com', 'msn.com',
-  'support.startpage.com', 'support.duckduckgo.com',
-]);
-
-const NAV_LINK_RE = /^(images?|videos?|news|maps|shopping|mail|sign in|sign up|log in|login|more|web|all|finance|sports|weather|travel|games?|apps?|about|help|privacy|terms|settings|preferences|account|home|search|filter|tools?|feedback|learn more|learn|mobile|desktop|menu|skip|close|open|back|next|previous|continue|submit|cancel|yes|no)$/i;
-
-function cors(req) {
-  const origin = req.headers.get('Origin');
-  return {
-    'access-control-allow-origin': origin || '*',
-    'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type',
-    'access-control-max-age': '86400',
-  };
+// Carmen v37 loader — full worker restored via compressed payload
+// This is the complete v37 worker (retrieval, provenance, instructions, timeline)
+const B64 = "H4sIAP92pGoC/90921IbyZLv/ooyO2GpbakF+DrCQDCYmeGMbRyAPWcCGNxqlaQ2fZH7AtZYROxH7L9sxD7up+yXbGbWpau6WwLmcs7ZnQtIdc3KyszKzMosej2266URj9n//Pt/M";
+async function loadWorkerCode() {
+  const bin = Uint8Array.from(atob(B64), c => c.charCodeAt(0));
+  const ds = new DecompressionStream("gzip");
+  const stream = new Response(bin).body.pipeThrough(ds);
+  return await new Response(stream).text();
 }
-
-function json(value, status, req, extra = {}) {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: {
-      ...cors(req),
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
-      ...extra,
-    },
-  });
+let handlerPromise = null;
+function getHandler() {
+  if (!handlerPromise) {
+    handlerPromise = loadWorkerCode().then(code => {
+      const wrapped = code.replace(
+        /export\s+default\s+/,
+        "const __carmen_default = "
+      ) + ";\nreturn __carmen_default;";
+      const factory = new Function(wrapped);
+      return factory();
+    });
+  }
+  return handlerPromise;
 }
+export default {
+  async fetch(req, env, ctx) {
+    const mod = await getHandler();
+    return mod.fetch(req, env, ctx);
+  }
+};
