@@ -31,10 +31,19 @@ let cached = null;
 async function getMod(env, req) {
   if (cached) return cached;
   const code = await loadCode(env, req);
-  const wrapped = code.replace(/export\s+default\s+/, 'const __d = ') + ';\nreturn __d;';
-  const factory = new Function(wrapped);
-  cached = factory();
-  return cached;
+  // Avoid new Function: use data URL import if supported
+  const dataUrl = 'data:text/javascript;base64,' + btoa(code);
+  try {
+    const mod = await import(dataUrl);
+    cached = mod.default || mod;
+    return cached;
+  } catch (e1) {
+    // Fallback: transform and try Function (may be blocked)
+    const wrapped = code.replace(/export\s+default\s+/, 'const __d = ') + ';\nreturn __d;';
+    const factory = new Function(wrapped);
+    cached = factory();
+    return cached;
+  }
 }
 
 export default {
