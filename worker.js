@@ -1,17 +1,26 @@
-// Carmen v37 — full worker restored. Payload lives at public/carmen-v37-payload.b64
-// Complete v37: /retrieve, provenance, instructions, timeline, multi-provider search.
-const PAYLOAD_PATH = '/carmen-v37-payload.b64';
+// Carmen v37 — full worker restored via 4-part compressed payload in ASSETS.
+// Complete v37: /retrieve, provenance, instructions, timeline, multi-provider search, Reddit, Deep Dive.
+const PARTS = [
+  '/carmen-v37-payload-0.b64',
+  '/carmen-v37-payload-1.b64',
+  '/carmen-v37-payload-2.b64',
+  '/carmen-v37-payload-3.b64',
+];
 
 async function loadCode(env, req) {
-  const url = new URL(PAYLOAD_PATH, req.url);
-  let res;
-  if (env.ASSETS && typeof env.ASSETS.fetch === 'function') {
-    res = await env.ASSETS.fetch(new Request(url.toString(), { method: 'GET' }));
-  } else {
-    res = await fetch(url.toString());
+  const texts = [];
+  for (const p of PARTS) {
+    const url = new URL(p, req.url);
+    let res;
+    if (env.ASSETS && typeof env.ASSETS.fetch === 'function') {
+      res = await env.ASSETS.fetch(new Request(url.toString(), { method: 'GET' }));
+    } else {
+      res = await fetch(url.toString());
+    }
+    if (!res.ok) throw new Error('payload part missing: ' + p + ' ' + res.status);
+    texts.push((await res.text()).trim());
   }
-  if (!res.ok) throw new Error('payload missing: ' + res.status);
-  const b64 = (await res.text()).trim();
+  const b64 = texts.join('');
   const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   const ds = new DecompressionStream('gzip');
   const stream = new Response(bin).body.pipeThrough(ds);
