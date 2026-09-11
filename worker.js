@@ -50,24 +50,3 @@ function json(value, status, req, extra = {}) {
     },
   });
 }
-
-// TEMPORARY RESTORE STUB - full baseline will be restored in next commit
-export default {
-  async fetch(req, env) {
-    const u = new URL(req.url);
-    if (req.method === 'OPTIONS') return new Response('', { headers: cors(req) });
-    if (u.pathname === '/health' && req.method === 'GET') return json({
-      ok: true,
-      worker: 'carmen',
-      version: '36-restore',
-      provider: env.API_KEY ? 'configured' : 'not-configured',
-      model: env.MODEL || 'gpt-4.1-mini',
-      routes: ['/health', '/search', '/chat', '/analyze', '/synthesize'],
-      searchProviders: PROVIDERS,
-      assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-      note: 'Temporary restore after placeholder - full worker next',
-    }, 200, req);
-    if (env.ASSETS && typeof env.ASSETS.fetch === 'function') return env.ASSETS.fetch(req);
-    return new Response('Worker temporarily restored. Redeploy pending.', { status: 503 });
-  },
-};
