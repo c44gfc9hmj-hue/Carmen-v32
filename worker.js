@@ -27,23 +27,21 @@ async function loadCode(env, req) {
   return await new Response(stream).text();
 }
 
+function toBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
 let cached = null;
 async function getMod(env, req) {
   if (cached) return cached;
   const code = await loadCode(env, req);
-  // Avoid new Function: use data URL import if supported
-  const dataUrl = 'data:text/javascript;base64,' + btoa(code);
-  try {
-    const mod = await import(dataUrl);
-    cached = mod.default || mod;
-    return cached;
-  } catch (e1) {
-    // Fallback: transform and try Function (may be blocked)
-    const wrapped = code.replace(/export\s+default\s+/, 'const __d = ') + ';\nreturn __d;';
-    const factory = new Function(wrapped);
-    cached = factory();
-    return cached;
-  }
+  const dataUrl = 'data:text/javascript;base64,' + toBase64(code);
+  const mod = await import(dataUrl);
+  cached = mod.default || mod;
+  return cached;
 }
 
 export default {
