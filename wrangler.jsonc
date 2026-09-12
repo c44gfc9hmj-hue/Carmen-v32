@@ -9,8 +9,5 @@
     "binding": "ASSETS",
     "run_worker_first": true
   },
-  "observability": { "enabled": true },
-  "secrets": {
-    "required": ["Api_key"]
-  }
+  "observability": { "enabled": true }
 }
