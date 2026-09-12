@@ -7,12 +7,12 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '40';
+const VERSION = '41';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
 const DB_VERSION = 3;
-const SESSION_KEY = 'carmen_session_v40';
+const SESSION_KEY = 'carmen_session_v41';
 const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).length) ? window.CARMEN_BACKEND : location.origin;
 
 let db = null, stream = null, current = null, historyStack = [], historyIndex = -1, currentProjectId = null;
@@ -34,6 +34,20 @@ let lightboxGallery = [];
 let lightboxIndex = 0;
 let lightboxSourceUrl = '';
 let currentLearnType = '';
+let expandedMode = false;
+
+const ACCESS_LABELS = {
+  DIRECTLY_RETRIEVED: 'DIRECTLY RETRIEVED',
+  PUBLIC_ALTERNATIVE: 'PUBLIC ALTERNATIVE RETRIEVED',
+  PARTIALLY_RETRIEVED: 'PARTIALLY RETRIEVED',
+  REFERENCED: 'REFERENCED BUT INACCESSIBLE',
+  PAYWALLED: 'PAYWALLED — COULD NOT RETRIEVE',
+  AUTHENTICATION_REQUIRED: 'AUTHENTICATION REQUIRED — COULD NOT RETRIEVE',
+  AGE_RESTRICTED: 'AGE/ACCESS RESTRICTION — COULD NOT RETRIEVE',
+  BLOCKED: 'BLOCKED/UNAVAILABLE',
+  UNAVAILABLE: 'BLOCKED/UNAVAILABLE',
+  UNVERIFIED: 'COULD NOT VERIFY',
+};
 
 $('backend').value = localStorage.getItem(BACKEND_KEY) || SAME_ORIGIN;
 
@@ -382,6 +396,15 @@ function provenanceBadge(p) {
   const cls = v === 'RETRIEVED' || v === 'OBSERVED' ? 'observed' : v === 'INFERRED' ? 'inferred' : v === 'UNKNOWN' || v === 'RETRIEVAL_FAILED' ? 'unknown' : '';
   return `<span class="badge ${cls}">${esc(v)}</span>`;
 }
+function accessBadge(state) {
+  if (!state) return '';
+  const k = String(state).toUpperCase().replace(/[\s—–-]+/g, '_').replace(/_+/g, '_');
+  const label = ACCESS_LABELS[k] || String(state).replace(/_/g, ' ');
+  const ok = k === 'DIRECTLY_RETRIEVED' || k === 'PUBLIC_ALTERNATIVE';
+  const warn = k === 'PARTIALLY_RETRIEVED' || k === 'REFERENCED';
+  const cls = ok ? 'access-ok' : warn ? 'access-warn' : 'access-bad';
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
 function persistSession() {
   try {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({
@@ -488,23 +511,28 @@ function restoreSession() {
   } catch {}
 }
 
-async function discover() {
+async function discover(opts = {}) {
   const q = $('searchQuery').value.trim();
   if (!q) return toast('Enter a subject, name, or URL first.');
   const base = backendUrl();
   if (!base) return toast('Set the Carmen Worker URL in Capture → Connection.');
   localStorage.setItem(BACKEND_KEY, base);
+  const expanded = opts.expanded === true;
+  expandedMode = expanded;
   const btn = $('discoverBtn');
   btn.disabled = true;
+  if ($('expandedBtn')) $('expandedBtn').disabled = true;
   selectedCandidate = null;
   $('results').innerHTML = '<div class="skeleton" style="height:120px;margin-bottom:9px"></div>'.repeat(3);
   $('resultsEmpty').classList.add('hidden');
-  $('searchDiagnostics').textContent = 'Searching public sources and ranking candidates…';
+  $('searchDiagnostics').textContent = expanded
+    ? 'Expanded Research — looking across more public sources, image and video indexes, and alternatives…'
+    : 'Searching public sources and ranking candidates…';
   $('classBar').innerHTML = '';
   $('selectedBanner').innerHTML = '';
   updateDeepDiveState();
   try {
-    const r = await fetch(base + '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(currentSubject), { headers: { accept: 'application/json' } });
+    const r = await fetch(base + '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(currentSubject) + (expanded ? '&expanded=1' : ''), { headers: { accept: 'application/json' } });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
     if (!r.ok || data.error) throw Error(data.error || `HTTP ${r.status}`);
@@ -515,9 +543,10 @@ async function discover() {
     renderClassification(data);
     renderPathChips(lastPaths, 'divePaths');
     renderResults(lastResults, data.providers || {});
+    renderExpandedCard(data);
     persistSession();
     updateDeepDiveState();
-    toast(lastResults.length ? `Ranked ${lastResults.length} public candidate${lastResults.length === 1 ? '' : 's'}.` : 'No public results. See diagnostics.');
+    toast(lastResults.length ? (expanded ? `Expanded Research ranked ${lastResults.length} public candidate${lastResults.length === 1 ? '' : 's'}.` : `Ranked ${lastResults.length} public candidate${lastResults.length === 1 ? '' : 's'}.`) : 'No public results. See diagnostics.');
   } catch (e) {
     $('results').innerHTML = '';
     $('resultsEmpty').textContent = 'Discovery failed: ' + e.message;
@@ -526,15 +555,36 @@ async function discover() {
     toast('Discovery failed: ' + e.message);
   } finally {
     btn.disabled = false;
+    if ($('expandedBtn')) $('expandedBtn').disabled = false;
     updateDeepDiveState();
   }
+}
+function renderExpandedCard(data) {
+  const el = $('expandedResearch');
+  if (!el) return;
+  const lead = $('expandedLead');
+  const thin = !data || !Array.isArray(data.results) || data.results.length < 4;
+  const blocked = !!(data && (data.continued || data.warning || (data.results || []).some(r => /PAYWALL|AUTH|BLOCKED|FAILED/i.test(r.accessState || r.retrievalStatus || ''))));
+  if (data && data.expanded) {
+    el.classList.remove('hidden');
+    if (lead) lead.textContent = 'Expanded Research ran for this search. Carmen used broader queries, public indexes, and alternatives when the obvious path failed.';
+    if ($('expandedBtn')) $('expandedBtn').textContent = 'Run Expanded Research again';
+    return;
+  }
+  el.classList.remove('hidden');
+  if (lead) {
+    lead.textContent = thin || blocked
+      ? 'The first pass was thin or a source was inaccessible. Expanded Research will try harder across the public web — it will not log in or bypass paywalls.'
+      : 'Try harder across the public web. One blocked website is not the end of the investigation.';
+  }
+  if ($('expandedBtn')) $('expandedBtn').textContent = 'Expanded Research';
 }
 function renderClassification(data) {
   const c = data && data.classification;
   if (!c) { $('classBar').innerHTML = ''; return; }
   const variants = (data.variants || []).map(v => esc(v.q) + (v.why ? ` <span class="muted">(${esc(v.why)})</span>` : '')).join(' · ');
   const warn = data.warning ? `<p class="warning">${esc(data.warning)}</p>` : '';
-  $('classBar').innerHTML = `<p class="hint" style="margin-top:8px"><span class="badge">${esc(c.type)}</span> <span class="confidence ${esc(c.confidence)}">${esc(c.confidence)}</span> — ${esc(c.reason)}${c.isUrl ? ' · treating this as a page to inspect' : ''}${variants ? '<br>Search variants: ' + variants : ''}</p>${warn}`;
+  $('classBar').innerHTML = `<p class="hint" style="margin-top:8px"><span class="badge">${esc(c.type)}</span> <span class="confidence ${esc(c.confidence)}">${esc(c.confidence)}</span> — ${esc(c.reason)}${c.context ? ' · context: ' + esc(c.context) : ''}${c.isUrl ? ' · treating this as a page to inspect' : ''}${data.expanded ? ' · <span class="badge access-ok">Expanded Research</span>' : ''}${variants ? '<br>Search variants: ' + variants : ''}</p>${warn}`;
 }
 function selectCandidate(r, i, opts = {}) {
   selectedCandidate = r;
@@ -656,10 +706,12 @@ function renderResults(results, providers) {
           ${!hero && r.image ? `<img class="rthumb" data-full="${esc(imgSrc(r.image))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(r.image))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
           <div class="rmeta">
             <div class="rtitle">${esc(r.title)}</div>
-            <div class="rmeta"><span class="badge">${esc(subjectLabel(r.entityType || lastClassification?.type || currentSubject || 'web'))}</span> <span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
+            <div class="rmeta"><span class="badge">${esc(subjectLabel(r.entityType || lastClassification?.type || currentSubject || 'web'))}</span> <span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')}${r.accessState ? ' · ' + accessBadge(r.accessState) : ''} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
           </div>
         </div>
         ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
+        ${r.accessNote ? `<p class="warning">${esc(r.accessNote)}</p>` : ''}
+        ${r.publicEvidence ? `<p class="hint">Public evidence (not protected content): ${esc(r.publicEvidence)}</p>` : ''}
         ${aliases.length ? `<div class="aliases">${aliases.map(a => `<span>${esc(a)}</span>`).join('')}</div>` : ''}
         ${r.snippet ? `<div class="rsnippet">${esc(r.snippet)}</div>` : ''}
         ${rest.length ? `<div class="thumbs">${rest.map(u => `<img data-full="${esc(imgSrc(u))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(u))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>` : ''}
@@ -776,7 +828,8 @@ async function runDeepDive() {
   if (candidate) selectCandidateKeepPlanner(candidate);
   const customQuestion = $('diveCustom')?.value.trim() || '';
   const pathIds = diveAll ? ['all'] : selectedDivePathIds.slice();
-  $('deepDiveProgress').innerHTML = '<p class="dive-step on">Planning investigation…</p><p class="dive-step on">Selected: ' + esc(diveAll ? 'ALL' : selectedDivePathIds.join(', ')) + '</p><p class="dive-step">Retrieving public sources…</p><p class="dive-step">Collecting images and videos…</p><p class="dive-step">Analyzing OBSERVED / INFERRED / UNKNOWN…</p>';
+  const useExpanded = expandedMode || !!$('diveExpanded')?.checked;
+  $('deepDiveProgress').innerHTML = '<p class="dive-step on">Planning investigation…</p><p class="dive-step on">Selected: ' + esc(diveAll ? 'ALL' : selectedDivePathIds.join(', ')) + (useExpanded ? ' · Expanded Research' : '') + '</p><p class="dive-step">Retrieving public sources…</p><p class="dive-step">Collecting images and videos…</p><p class="dive-step">Analyzing OBSERVED / INFERRED / UNKNOWN…</p>';
   $('deepDiveResult').innerHTML = '<p class="muted">Deep Dive is a read-only research workspace. Carmen will not contact anyone or take external actions.</p>';
   let instructions = '';
   try {
@@ -794,6 +847,7 @@ async function runDeepDive() {
         customQuestion,
         all: diveAll,
         paths: pathIds,
+        expanded: useExpanded,
       }),
     });
     const text = await r.text();
@@ -876,11 +930,14 @@ function renderDiveWorkspace(data, subject) {
     ['images', 'Images' + (imgs.length ? ' ' + imgs.length : '')],
     ['videos', 'Videos' + (videos.length ? ' ' + videos.length : '')],
     ['sources', 'Sources'],
+    ['evidence', 'Evidence'],
     ['leads', 'Leads'],
     ['related', 'Related'],
   ];
   const tabHtml = `<div class="ws-tabs">${tabs.map(([id, label]) => `<button class="chip${diveWorkspaceTab === id ? ' active' : ''}" data-wstab="${id}">${esc(label)}</button>`).join('')}</div>`;
   const suggestHtml = suggestions.length ? suggestions.map(s => `<div class="suggest">${esc(s)}</div>`).join('') : '';
+  const access = data.access || {};
+  const accessHtml = access.headline ? `<div class="access-banner"><b>${esc(access.headline)}</b>${access.paywalled ? '<span class="hint">Paywalled material was not converted into retrieved evidence.</span>' : ''}${!data.expanded && (access.paywalled || access.authenticationRequired || (access.inaccessible || []).length) ? '<div class="row" style="margin-top:8px"><button class="btn" data-expand-dive="1">Expanded Research</button></div>' : ''}</div>` : '';
   let body = '';
   if (diveWorkspaceTab === 'images') {
     const gallery = imgs.map(im => ({ src: imgSrc(im.url || im), cap: (im.domain || '') + ' · ' + (im.pageUrl || im.url || ''), pageUrl: im.pageUrl || im.url || '' }));
@@ -895,10 +952,18 @@ function renderDiveWorkspace(data, subject) {
         return `<div class="video-card"><iframe src="${esc(v.embedUrl)}" allow="encrypted-media; picture-in-picture" allowfullscreen title="${esc(v.title || 'Video')}"></iframe><div class="vmeta"><b>${esc(v.title || v.domain)}</b><br><small>${esc(v.domain)} · playable public embed</small><br><a href="${esc(v.pageUrl || v.url)}" target="_blank" rel="noopener noreferrer">Open source</a> · <button class="btn" data-save-video="${esc(v.url)}" data-title="${esc(v.title || '')}" data-thumb="${esc(v.thumbnail || '')}" style="margin-top:6px">Save</button></div></div>`;
       }
       const thumb = v.thumbnail ? `<img src="${esc(imgSrc(v.thumbnail))}" alt="" style="width:100%;aspect-ratio:16/9;object-fit:cover;background:#000" referrerpolicy="no-referrer">` : '';
-      return `<div class="video-card">${thumb}<div class="vmeta"><b>${esc(v.title || v.domain)}</b><br><small>${esc(v.domain)} · embedding is blocked here. Open the source to watch.</small><div class="row" style="margin-top:8px"><a class="btn primary" href="${esc(v.pageUrl || v.url)}" target="_blank" rel="noopener noreferrer" style="text-align:center;display:block">Open source</a><button class="btn" data-save-video="${esc(v.url)}" data-title="${esc(v.title || '')}" data-thumb="${esc(v.thumbnail || '')}">Save</button></div></div></div>`;
+      const note = v.accessNote || 'Embedding is blocked here. Open the source to watch. Carmen does not invent playback.';
+      return `<div class="video-card">${thumb}<div class="vmeta"><b>${esc(v.title || v.domain)}</b><br><small>${esc(v.domain)} · ${v.accessState ? accessBadge(v.accessState) + ' · ' : ''}${esc(note)}</small><div class="row" style="margin-top:8px"><a class="btn primary" href="${esc(v.pageUrl || v.url)}" target="_blank" rel="noopener noreferrer" style="text-align:center;display:block">Open source</a><button class="btn" data-save-video="${esc(v.url)}" data-title="${esc(v.title || '')}" data-thumb="${esc(v.thumbnail || '')}">Save</button></div></div></div>`;
     }).join('') : '<p class="hint">No public videos were retrieved. Carmen does not invent playback.</p>';
   } else if (diveWorkspaceTab === 'sources') {
-    body = retrieved.map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> ${provenanceBadge(x.status)}<br><small>${esc(x.finalUrl || x.url || '')}${x.error ? ' · ' + esc(x.error) : ''}${x.subreddit ? ' · ' + esc(x.subreddit) : ''}${x.author ? ' · ' + esc(x.author) : ''}</small></div>`).join('') || '<p class="muted">No retrieved pages.</p>';
+    body = retrieved.map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> ${accessBadge(x.accessState || (x.status === 'RETRIEVED' ? 'DIRECTLY_RETRIEVED' : 'UNAVAILABLE'))} ${provenanceBadge(x.status)}<br><small>${esc(x.finalUrl || x.url || '')}${x.accessNote ? ' · ' + esc(x.accessNote) : ''}${x.error ? ' · ' + esc(x.error) : ''}${x.subreddit ? ' · ' + esc(x.subreddit) : ''}${x.author ? ' · ' + esc(x.author) : ''}</small>${x.publicEvidence ? '<p class="hint">Public evidence (not protected content): ' + esc(x.publicEvidence) + '</p>' : ''}</div>`).join('') || '<p class="muted">No retrieved pages.</p>';
+  } else if (diveWorkspaceTab === 'evidence') {
+    const inaccessible = access.inaccessible || retrieved.filter(x => x.status !== 'RETRIEVED');
+    const ok = retrieved.filter(x => x.status === 'RETRIEVED');
+    body = `<p class="hint">OBSERVED is only what was actually retrieved. Inferences stay labeled. Inaccessible sources are not discarded and are not treated as retrieved evidence.</p>
+      ${ok.map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> ${accessBadge(x.accessState || 'DIRECTLY_RETRIEVED')}<br><small class="hint">OBSERVED from retrieved public page</small></div>`).join('')}
+      ${inaccessible.map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> ${accessBadge(x.accessState || 'UNAVAILABLE')}<br><small>${esc(x.note || x.accessNote || x.error || '')}</small>${x.publicEvidence ? '<p class="hint">What Carmen can verify from public references: ' + esc(x.publicEvidence) + '</p><p class="warning">What Carmen cannot verify: content that requires access.</p>' : '<p class="warning">No protected content was retrieved.</p>'}</div>`).join('')}
+      ${!ok.length && !inaccessible.length ? '<p class="muted">No evidence records yet.</p>' : ''}`;
   } else if (diveWorkspaceTab === 'leads') {
     body = leads.map(l => `<div class="lead"><b>${esc(l.text || l)}</b></div>`).join('') || '<p class="muted">No leads yet.</p>';
   } else if (diveWorkspaceTab === 'related') {
@@ -910,8 +975,8 @@ function renderDiveWorkspace(data, subject) {
     body = analysisHtml || '<p class="muted">Findings will appear here after Deep Dive finishes.</p>';
   }
   $('deepDiveResult').innerHTML = `
-    <div class="selbar"><b>${esc(plan.subject || subject)}</b> <span class="badge">${esc(subjectLabel(plan.type || currentSubject))}</span> ${plan.all ? '<span class="badge">ALL</span>' : ''}<br><small>${esc(plan.why || '')}</small>${plan.customQuestion ? '<br><small>Question: ' + esc(plan.customQuestion) + '</small>' : ''}<br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
-    ${suggestHtml}${tabHtml}${body}`;
+    <div class="selbar"><b>${esc(plan.subject || subject)}</b> <span class="badge">${esc(subjectLabel(plan.type || currentSubject))}</span> ${plan.all ? '<span class="badge">ALL</span>' : ''}${plan.expanded ? '<span class="badge access-ok">Expanded Research</span>' : ''}${plan.context ? '<span class="badge">context: ' + esc(plan.context) + '</span>' : ''}<br><small>${esc(plan.why || '')}</small>${plan.customQuestion ? '<br><small>Question: ' + esc(plan.customQuestion) + '</small>' : ''}<br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
+    ${accessHtml}${suggestHtml}${tabHtml}${body}`;
 }
 function renderAdaptiveWriteup(text, paths, subject) {
   const labels = (paths || []).map(p => p.label).filter(Boolean);
@@ -1303,6 +1368,7 @@ function wire() {
   $('searchQuery').addEventListener('input', updateDeepDiveState);
   $('searchQuery').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); discover(); } });
   $('discoverBtn').onclick = discover;
+  if ($('expandedBtn')) $('expandedBtn').onclick = () => discover({ expanded: true });
   $('deepDiveBtn').onclick = () => openPlannerFromButton();
   if ($('startDiveBtn')) $('startDiveBtn').onclick = runDeepDive;
   if ($('cancelDiveBtn')) $('cancelDiveBtn').onclick = () => $('divePlanner')?.classList.add('hidden');
@@ -1448,6 +1514,12 @@ function wire() {
     }
   });
   $('deepDiveResult').addEventListener('click', e => {
+    if (e.target.closest('[data-expand-dive]')) {
+      if ($('diveExpanded')) $('diveExpanded').checked = true;
+      expandedMode = true;
+      runDeepDive();
+      return;
+    }
     const tab = e.target.closest('[data-wstab]');
     if (tab && lastDivePayload) {
       diveWorkspaceTab = tab.dataset.wstab;

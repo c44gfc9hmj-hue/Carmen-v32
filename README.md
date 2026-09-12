@@ -10,7 +10,16 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
-## Investigation workspace (v40)
+## Investigation workspace (v41)
+
+v41 hardens the v40 workspace and v38 engine without replacing them:
+
+- **Expanded Research** — an explicit “try harder across the public web” mode. Broader variants, image/video indexes, public alternatives. One blocked website is not the end of the investigation.
+- **Access states** — every source is labeled DIRECTLY RETRIEVED, PUBLIC ALTERNATIVE, PARTIALLY RETRIEVED, REFERENCED BUT INACCESSIBLE, PAYWALLED, AUTHENTICATION REQUIRED, AGE/ACCESS RESTRICTION, BLOCKED/UNAVAILABLE, or COULD NOT VERIFY. Paywalled content is never treated as retrieved evidence.
+- **Honest access boundary** — Carmen does not log in, bypass paywalls, defeat CAPTCHAs, or scrape private APIs. If the only remaining source is protected, it says so.
+- **Aggressive public image pipeline** for people (official pages, features, image indexes, video thumbnails, gallery links) with provenance. Visual likeness is not identity proof.
+- **Contextual visual research** — a person + context query (interview, clothing, event, technique) is planned as a relation, not a concatenated keyword dump.
+- Deep Dive planner, ALL=ALL, workspace, videos, branching, and v38 ranking are preserved.
 
 v40 is a product-architecture correction of the v39 shell around the v38 engine:
 

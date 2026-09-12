@@ -16,12 +16,14 @@ function assert(cond, msg) {
 console.log('--- /health ---');
 { const { status, body } = await call('/health');
   assert(status === 200, 'health 200');
-  assert(body.version === '40', 'version 40');
+  assert(body.version === '41', 'version 41');
   assert(body.routes.includes('/retrieve'), 'routes include /retrieve');
   assert(body.routes.includes('/dive'), 'routes include /dive');
   assert(body.routes.includes('/learn'), 'routes include /learn');
   assert(Array.isArray(body.features) && body.features.includes('dive-select'), 'features include dive-select');
   assert(body.features.includes('videos'), 'features include videos');
+  assert(body.features.includes('expanded-research'), 'features include expanded-research');
+  assert(body.features.includes('access-states'), 'features include access-states');
   assert(body.provider === 'openrouter', 'provider openrouter');
   assert(body.model === 'openrouter/free', 'model openrouter/free');
   assert(body.configured === false, 'configured false without key'); }
@@ -29,6 +31,7 @@ console.log('--- /retrieve success ---');
 { const { status, body } = await call('/retrieve?url=' + encodeURIComponent('https://example.com'));
   assert(status === 200, 'retrieve 200');
   assert(body.status === 'RETRIEVED', 'status RETRIEVED');
+  assert(body.accessState === 'DIRECTLY_RETRIEVED' || body.accessState === 'PARTIALLY_RETRIEVED', 'accessState present');
   assert(body.title && body.title.includes('Example'), 'title present');
   assert(typeof body.textExcerpt === 'string', 'textExcerpt present');
   assert(body.fingerprint, 'fingerprint present'); }

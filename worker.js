@@ -335,6 +335,198 @@ async function yahoo(q, results, seen, diagnostics) {
   await htmlSearch('https://search.yahoo.com/search?p=' + encodeURIComponent(q), 'Yahoo', parseYahoo, results, seen, diagnostics, q);
 }
 
+function unescapeJsonUrl(s) {
+  return decodeEntities(String(s || '').replace(/\\u0026/g, '&').replace(/\\u002f/gi, '/').replace(/\\\//g, '/').replace(/\\"/g, '"'));
+}
+
+function attachImageHit(results, seen, hit, diagnosticsKey) {
+  const image = usableImage(hit.image) || usableImage(hit.thumb);
+  if (!image) return false;
+  const pageUrl = unwrap(hit.pageUrl || '');
+  if (pageUrl && validUrl(pageUrl)) {
+    const existing = results.find(r => r.url === pageUrl || (hostOf(r.url) === hostOf(pageUrl) && hostOf(pageUrl)));
+    if (existing) {
+      existing.images = rankImages([...(existing.images || []), image, hit.thumb], existing.url).slice(0, 8);
+      existing.image = existing.image || existing.images[0] || '';
+      existing.imageOrigin = existing.imageOrigin || 'image-index';
+      return true;
+    }
+  }
+  const title = cleanTitle(hit.title) || 'Public image result';
+  const url = (pageUrl && validUrl(pageUrl)) ? pageUrl : image;
+  return uniqueAdd(results, seen, {
+    title,
+    url,
+    source: diagnosticsKey || 'Image index',
+    snippet: 'Public image-index result. Attribution is the hosting page — visual likeness is not identity proof.',
+    image,
+    images: [image, hit.thumb].filter(Boolean),
+    queryVariant: hit.query || '',
+  });
+}
+
+async function bingImages(q, results, seen, diagnostics) {
+  if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) {
+    diagnostics['Bing Images'] = { error: 'skipped (fetch budget)' };
+    return;
+  }
+  SEARCH_BUDGET.used++;
+  try {
+    const r = await fetchText('https://www.bing.com/images/search?q=' + encodeURIComponent(q) + '&adlt=off', { headers: BROWSER_HEADERS });
+    diagnostics['Bing Images'] = { status: r.status, ok: r.ok };
+    if (!r.ok) return;
+    const html = await r.text();
+    const re = /"murl":"([^"]+)","turl":"([^"]+)"[\s\S]{0,400}?"purl":"([^"]+)"[\s\S]{0,200}?"t":"([^"]*)"/g;
+    let m, added = 0;
+    while ((m = re.exec(html)) && added < 10) {
+      const hit = {
+        image: unescapeJsonUrl(m[1]),
+        thumb: unescapeJsonUrl(m[2]),
+        pageUrl: unescapeJsonUrl(m[3]),
+        title: unescapeJsonUrl(m[4]),
+        query: q,
+      };
+      if (attachImageHit(results, seen, hit, 'Bing Images')) added++;
+    }
+    if (!added) {
+      const loose = /"murl":"([^"]+)"/g;
+      const purl = /"purl":"([^"]+)"/g;
+      const images = [];
+      const pages = [];
+      let x;
+      while ((x = loose.exec(html)) && images.length < 10) images.push(unescapeJsonUrl(x[1]));
+      while ((x = purl.exec(html)) && pages.length < 10) pages.push(unescapeJsonUrl(x[1]));
+      for (let i = 0; i < images.length && added < 8; i++) {
+        if (attachImageHit(results, seen, { image: images[i], pageUrl: pages[i] || '', title: q, query: q }, 'Bing Images')) added++;
+      }
+    }
+    diagnostics['Bing Images'].added = added;
+  } catch (e) {
+    diagnostics['Bing Images'] = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 200) };
+  }
+}
+
+async function bingVideos(q, results, seen, diagnostics) {
+  if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) {
+    diagnostics['Bing Videos'] = { error: 'skipped (fetch budget)' };
+    return;
+  }
+  SEARCH_BUDGET.used++;
+  try {
+    const r = await fetchText('https://www.bing.com/videos/search?q=' + encodeURIComponent(q) + '&adlt=off', { headers: BROWSER_HEADERS });
+    diagnostics['Bing Videos'] = { status: r.status, ok: r.ok };
+    if (!r.ok) return;
+    const html = await r.text();
+    const before = results.length;
+    parseAnchors(html, 'Bing Videos', results, seen, MAX_RESULTS);
+    diagnostics['Bing Videos'].added = Math.max(0, results.length - before);
+  } catch (e) {
+    diagnostics['Bing Videos'] = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 200) };
+  }
+}
+
+function extractImagesFromHtml(html, pageUrl) {
+  const raw = [];
+  const push = (u) => { if (u && typeof u === 'string') raw.push(u); };
+  const tw = String(html || '').match(/<meta[^>]+(?:name|property)=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)/i)
+    || String(html || '').match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']twitter:image/i);
+  if (tw) push(tw[1]);
+  const link = String(html || '').match(/<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)/i);
+  if (link) push(link[1]);
+  const imgRe = /<img\b([^>]*)>/gi;
+  let m;
+  while ((m = imgRe.exec(html || '')) && raw.length < 80) {
+    const tag = m[1];
+    const src = (tag.match(/\ssrc=["']([^"']+)/i) || [])[1];
+    const data = (tag.match(/\s(?:data-src|data-lazy-src|data-original|data-url)=["']([^"']+)/i) || [])[1];
+    const srcset = (tag.match(/\ssrcset=["']([^"']+)/i) || [])[1];
+    if (srcset) {
+      const parts = srcset.split(',').map(s => s.trim().split(/\s+/)[0]).filter(Boolean);
+      if (parts.length) push(parts[parts.length - 1]);
+    }
+    push(data);
+    push(src);
+  }
+  const ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  while ((m = ldRe.exec(html || '')) && raw.length < 100) {
+    try {
+      const j = JSON.parse(m[1]);
+      const walk = (o) => {
+        if (!o || raw.length > 100) return;
+        if (typeof o === 'string' && /^https?:/i.test(o)) push(o);
+        else if (Array.isArray(o)) o.slice(0, 8).forEach(walk);
+        else if (typeof o === 'object') {
+          if (o.image) walk(o.image);
+          if (o.thumbnailUrl) walk(o.thumbnailUrl);
+          if (o.contentUrl) walk(o.contentUrl);
+          if (o.url && typeof o.url === 'string' && /\.(jpe?g|png|webp)/i.test(o.url)) walk(o.url);
+        }
+      };
+      walk(j);
+    } catch {}
+  }
+  return rankImages(raw, pageUrl);
+}
+
+function galleryLinks(html, pageUrl) {
+  const out = [];
+  let pageHost = '';
+  try { pageHost = new URL(pageUrl).hostname; } catch { return out; }
+  const re = /href=["']([^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(html || '')) && out.length < 4) {
+    try {
+      const u = new URL(decodeEntities(m[1]), pageUrl);
+      if (u.hostname !== pageHost) continue;
+      if (/\/(gallery|galleries|photos?|images|pictures|press|media|portfolio)(\/|$)/i.test(u.pathname)) {
+        const href = u.href.split('#')[0];
+        if (!out.includes(href) && href !== pageUrl) out.push(href);
+      }
+    } catch {}
+  }
+  return out.slice(0, 2);
+}
+
+function summarizeAccess(retrieved, results) {
+  const counts = {};
+  const inaccessible = [];
+  for (const page of retrieved || []) {
+    const state = page.accessState || (page.status === 'RETRIEVED' ? 'DIRECTLY_RETRIEVED' : 'UNAVAILABLE');
+    counts[state] = (counts[state] || 0) + 1;
+    if (page.status !== 'RETRIEVED' || state === 'PAYWALLED' || state === 'AUTHENTICATION_REQUIRED' || state === 'AGE_RESTRICTED' || state === 'BLOCKED') {
+      inaccessible.push({
+        url: page.finalUrl || page.url,
+        title: page.title || page.url,
+        accessState: state,
+        label: accessLabel(state),
+        note: page.accessNote || page.error || '',
+        publicEvidence: page.publicEvidence || '',
+      });
+    }
+  }
+  const paywalled = inaccessible.filter(x => x.accessState === 'PAYWALLED');
+  const auth = inaccessible.filter(x => x.accessState === 'AUTHENTICATION_REQUIRED');
+  const retrievedN = (retrieved || []).filter(p => p.status === 'RETRIEVED').length;
+  let headline = '';
+  if (paywalled.length && retrievedN === 0 && (results || []).length) {
+    headline = 'Absolutely cannot retrieve due to paywall.';
+  } else if (auth.length && retrievedN === 0) {
+    headline = 'Authentication required — could not retrieve. Carmen does not log in.';
+  } else if (inaccessible.length && retrievedN === 0) {
+    headline = 'The obvious source was inaccessible. Carmen kept looking across public alternatives.';
+  } else if (inaccessible.length) {
+    headline = 'Some sources are inaccessible. Public alternatives and references are labeled below.';
+  }
+  return {
+    counts,
+    inaccessible,
+    paywalled: paywalled.length,
+    authenticationRequired: auth.length,
+    retrieved: retrievedN,
+    headline,
+  };
+}
+
 async function reddit(q, results, seen, diagnostics) {
   if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) {
     diagnostics.Reddit = { error: 'skipped (fetch budget)' };
@@ -442,10 +634,159 @@ const SKILL_WORD_RE = /\b(weld|welding|welder|woodwork|woodworking|carpentry|fab
 const INSTRUCTIONAL_HOST_RE = /(youtube\.com|youtu\.be|wikihow\.com|instructables\.com|wikipedia\.org|reddit\.com|khronos|familyhandyman|thisoldhouse|finewoodworking|lincolnelectric|millerwelds|hobart)/i;
 const TECHNIQUE_HINTS = new Set(['technique', 'position', 'instruction']);
 const SKILL_HINTS = new Set(['skill', 'project']);
+const STOCK_IMAGE_RE = /(shutterstock|gettyimages|istockphoto|adobestock|unsplash\.com|pexels\.com|pixabay\.com|depositphotos)/i;
+const MEMBER_HOST_RE = /(^|\.)(onlyfans|patreon)\.com$/i;
+const AUTH_HOST_RE = /(^|\.)(onlyfans|patreon|linkedin|facebook|instagram)\.com$/i;
+const ACCESS_LABELS = {
+  DIRECTLY_RETRIEVED: 'DIRECTLY RETRIEVED',
+  PUBLIC_ALTERNATIVE: 'PUBLIC ALTERNATIVE RETRIEVED',
+  PARTIALLY_RETRIEVED: 'PARTIALLY RETRIEVED',
+  REFERENCED: 'REFERENCED BUT INACCESSIBLE',
+  PAYWALLED: 'PAYWALLED — COULD NOT RETRIEVE',
+  AUTHENTICATION_REQUIRED: 'AUTHENTICATION REQUIRED — COULD NOT RETRIEVE',
+  AGE_RESTRICTED: 'AGE/ACCESS RESTRICTION — COULD NOT RETRIEVE',
+  BLOCKED: 'BLOCKED/UNAVAILABLE',
+  UNAVAILABLE: 'BLOCKED/UNAVAILABLE',
+  UNVERIFIED: 'COULD NOT VERIFY',
+};
 
+function accessLabel(state) {
+  const k = String(state || '').toUpperCase().replace(/[\s—–-]+/g, '_').replace(/_+/g, '_');
+  if (ACCESS_LABELS[k]) return ACCESS_LABELS[k];
+  if (/PAYWALL/i.test(state || '')) return ACCESS_LABELS.PAYWALLED;
+  if (/AUTH|LOGIN/i.test(state || '')) return ACCESS_LABELS.AUTHENTICATION_REQUIRED;
+  if (/AGE/i.test(state || '')) return ACCESS_LABELS.AGE_RESTRICTED;
+  if (/PARTIAL/i.test(state || '')) return ACCESS_LABELS.PARTIALLY_RETRIEVED;
+  if (/ALTERNATIVE/i.test(state || '')) return ACCESS_LABELS.PUBLIC_ALTERNATIVE;
+  if (/DIRECT/i.test(state || '')) return ACCESS_LABELS.DIRECTLY_RETRIEVED;
+  if (/REFERENCED/i.test(state || '')) return ACCESS_LABELS.REFERENCED;
+  if (/UNVERIF/i.test(state || '')) return ACCESS_LABELS.UNVERIFIED;
+  return ACCESS_LABELS.UNAVAILABLE;
+}
+
+function classifyAccess({ httpStatus, html, url, host, error } = {}) {
+  const h = String(host || hostOf(url) || '').replace(/^www\./, '').toLowerCase();
+  const sample = String(html || '').slice(0, 14000);
+  const low = sample.toLowerCase();
+  const textLen = cleanText(sample).length;
+  if (PRIVATE_HOST_RE.test(h) || BLOCKED_HOSTS.has(h) || BLOCKED_HOSTS.has('www.' + h)) {
+    return { accessState: 'BLOCKED', status: 'RETRIEVAL_FAILED', error: error || 'Private or blocked host', note: 'Carmen does not retrieve private or blocked hosts.' };
+  }
+  if (httpStatus === 401) {
+    return { accessState: 'AUTHENTICATION_REQUIRED', status: 'RETRIEVAL_FAILED', error: 'HTTP 401', note: 'This source requires a login. Carmen will not sign in.' };
+  }
+  if (httpStatus === 402) {
+    return { accessState: 'PAYWALLED', status: 'RETRIEVAL_FAILED', error: 'HTTP 402', note: 'Absolutely cannot retrieve due to paywall.' };
+  }
+  if (httpStatus === 403 || httpStatus === 451) {
+    return { accessState: 'BLOCKED', status: 'RETRIEVAL_FAILED', error: 'HTTP ' + httpStatus, note: 'The host blocked public retrieval.' };
+  }
+  if (httpStatus === 404 || httpStatus === 410) {
+    return { accessState: 'BLOCKED', status: 'RETRIEVAL_FAILED', error: 'HTTP ' + httpStatus, note: 'This page is gone or was not found.' };
+  }
+  if (httpStatus && httpStatus >= 500) {
+    return { accessState: 'UNAVAILABLE', status: 'RETRIEVAL_FAILED', error: 'HTTP ' + httpStatus, note: 'The host did not return a usable page.' };
+  }
+  if (/cloudflare[- ](?:challenge|error)|attention required|just a moment\.\.\.|enable javascript and cookies to continue/i.test(low) && textLen < 500) {
+    return { accessState: 'BLOCKED', status: 'RETRIEVAL_FAILED', error: error || 'challenge page', note: 'An anti-bot or challenge page blocked retrieval. Carmen does not bypass it.' };
+  }
+  const loginWall = /(sign in to continue|log in to continue|you must (?:log|sign) in|create an account to (?:continue|view)|authentication required|login to view)/i.test(low);
+  const paywallWall = /(subscribe to (?:continue|read|view)|become a (?:paid )?member|this article is for subscribers|\bpaywall\b|members[- ]only content)/i.test(low);
+  const ageWall = /(you must be (?:18|21)|age verification required|verify your age|age-?gate)/i.test(low);
+  if ((loginWall || AUTH_HOST_RE.test(h)) && textLen < 1400) {
+    return { accessState: 'AUTHENTICATION_REQUIRED', status: 'RETRIEVAL_FAILED', error: error || 'login wall', note: 'Authentication required — could not retrieve. Carmen does not log in or scrape behind accounts.' };
+  }
+  if ((paywallWall) && textLen < 1600) {
+    return { accessState: 'PAYWALLED', status: 'RETRIEVAL_FAILED', error: error || 'paywall', note: 'Absolutely cannot retrieve due to paywall. Public titles, snippets, and thumbnails are not the protected content.' };
+  }
+  if (ageWall && textLen < 1600) {
+    return { accessState: 'AGE_RESTRICTED', status: 'RETRIEVAL_FAILED', error: error || 'age gate', note: 'Age or access restriction — could not retrieve. Carmen does not bypass gates.' };
+  }
+  if (paywallWall && textLen >= 1600) {
+    return { accessState: 'PARTIALLY_RETRIEVED', status: 'RETRIEVED', error: '', note: 'Public teaser retrieved. Full article appears paywalled and was not retrieved.' };
+  }
+  if (error && /timeout/i.test(error)) {
+    return { accessState: 'UNAVAILABLE', status: 'RETRIEVAL_FAILED', error: 'timeout', note: 'The page timed out. Carmen did not invent its contents.' };
+  }
+  if (!httpStatus && error) {
+    return { accessState: 'UNAVAILABLE', status: 'RETRIEVAL_FAILED', error: String(error).slice(0, 200), note: 'Retrieval failed. Carmen did not invent this source’s contents.' };
+  }
+  if (textLen < 80) {
+    return { accessState: 'PARTIALLY_RETRIEVED', status: 'RETRIEVED', error: '', note: 'Only a thin public preview was available.' };
+  }
+  if (MEMBER_HOST_RE.test(h)) {
+    return { accessState: 'PARTIALLY_RETRIEVED', status: 'RETRIEVED', error: '', note: 'Public landing page retrieved. Member or logged-in content was not accessed.' };
+  }
+  return { accessState: 'DIRECTLY_RETRIEVED', status: 'RETRIEVED', error: '', note: '' };
+}
+
+const CONTEXT_RELATIONS = [
+  { id: 'interview', re: /\b(interview|interviews|podcast|talk show|q\s*&\s*a|qanda)\b/i, synonyms: 'interview OR podcast OR talk OR q&a' },
+  { id: 'visual', re: /\b(photos?|images?|pics?|gallery|portrait|headshot)\b/i, synonyms: 'photos OR images OR gallery OR portrait' },
+  { id: 'video', re: /\b(videos?|youtube|clip|footage|watch)\b/i, synonyms: 'video OR youtube OR clip OR footage' },
+  { id: 'clothing', re: /\b(wearing|outfit|dress|clothing|clothes|costume|wardrobe)\b/i, synonyms: 'wearing OR outfit OR dress OR photos' },
+  { id: 'vehicle', re: /\b(car|truck|vehicle|motorcycle|bike)\b/i, synonyms: 'car OR vehicle OR photos' },
+  { id: 'performance', re: /\b(concert|performance|show|tour|stage|set)\b/i, synonyms: 'performance OR concert OR live OR show' },
+  { id: 'hobby', re: /\b(hobby|hobbies)\b/i, synonyms: 'hobby OR photos' },
+  { id: 'location', re: /\b(in|at|near)\s+[A-Z][A-Za-z.-]+/i, synonyms: 'photos OR event OR location' },
+  { id: 'technique', re: /\b(technique|position|pose|poses)\b/i, synonyms: 'photos OR video OR reference' },
+  { id: 'object', re: /\b(with|holding|using)\b/i, synonyms: 'photos OR images' },
+];
+
+function parseQueryContext(q, classification) {
+  const raw = String(q || '').trim().replace(/\s+/g, ' ');
+  const empty = { subject: raw, context: '', relation: '', full: raw };
+  if (!raw || (classification && classification.isUrl)) return empty;
+  const type = classification && classification.type;
+  const words = raw.split(/\s+/);
+  let subject = raw, context = '';
+  if (type === 'person' && words.length >= 3 && words.slice(0, 2).every(w => /^[A-Za-z][A-Za-z.'’-]*$/.test(w))) {
+    subject = words.slice(0, 2).join(' ');
+    context = words.slice(2).join(' ');
+  } else if (type === 'person' && words.length >= 4) {
+    subject = words.slice(0, 2).join(' ');
+    context = words.slice(2).join(' ');
+  }
+  let relation = '';
+  for (const rel of CONTEXT_RELATIONS) {
+    if (rel.re.test(raw) || (context && rel.re.test(context))) {
+      relation = rel.id;
+      break;
+    }
+  }
+  if (context && !relation) relation = 'context';
+  return { subject, context, relation, full: raw };
+}
+
+function attachContext(q, classification) {
+  const out = (classification && typeof classification === 'object') ? classification : { type: 'topic', confidence: 'low', reason: '', isUrl: false };
+  const ctx = parseQueryContext(q, out);
+  if (ctx.context) {
+    out.subject = ctx.subject;
+    out.context = ctx.context;
+    out.relation = ctx.relation;
+  }
+  return out;
+}
+
+function contextualSynonyms(context, relation) {
+  const rel = CONTEXT_RELATIONS.find(r => r.id === relation);
+  if (rel && rel.synonyms) {
+    if (relation === 'clothing' || relation === 'technique' || relation === 'object' || relation === 'location') {
+      return String(context || '') + ' OR ' + rel.synonyms;
+    }
+    return rel.synonyms;
+  }
+  return context ? (context + ' photos OR images OR video') : '';
+}
+
+function isStockImage(url) {
+  return typeof url === 'string' && STOCK_IMAGE_RE.test(url);
+}
 
 function classifyQuery(q, hint = '') {
   const raw = String(q || '').trim();
+  const done = (obj) => attachContext(raw, obj);
   const hintMap = {
     person: 'person', topic: 'topic', website: 'website', claim: 'topic',
     product: 'product', position: 'technique', other: '', organization: 'organization',
@@ -453,52 +794,52 @@ function classifyQuery(q, hint = '') {
     technique: 'technique', skill: 'skill', project: 'project', instruction: 'technique',
   };
   const hinted = hintMap[String(hint || '').toLowerCase()] || '';
-  if (!raw) return { type: 'unknown', confidence: 'low', reason: 'Empty query', isUrl: false };
+  if (!raw) return done({ type: 'unknown', confidence: 'low', reason: 'Empty query', isUrl: false });
   const maybeUrl = /^https?:\/\//i.test(raw) || (/^[\w.-]+\.[a-z]{2,}([/:?]|$)/i.test(raw) && !/\s/.test(raw));
   if (maybeUrl) {
     const url = normalizeUrlForStore(raw.startsWith('http') ? raw : 'https://' + raw) || ('https://' + raw);
     const host = hostOf(url);
     const isImage = /\.(jpg|jpeg|png|webp|gif|avif)(\?|$)/i.test(url);
     if (/reddit\.com$/i.test(host) || host.endsWith('.reddit.com')) {
-      return { type: 'reddit', confidence: 'high', reason: 'Direct Reddit URL', isUrl: true, url, isImage };
+      return done({ type: 'reddit', confidence: 'high', reason: 'Direct Reddit URL', isUrl: true, url, isImage });
     }
-    return { type: 'website', confidence: 'high', reason: 'Direct URL', isUrl: true, url, isImage };
+    return done({ type: 'website', confidence: 'high', reason: 'Direct URL', isUrl: true, url, isImage });
   }
   if (TECHNIQUE_HINTS.has(hinted) || (TECHNIQUE_WORD_RE.test(raw) && !SKILL_WORD_RE.test(raw))) {
-    return { type: 'technique', confidence: hinted ? 'medium' : 'medium', reason: 'Looks like a technique, position, or instructional form', isUrl: false };
+    return done({ type: 'technique', confidence: hinted ? 'medium' : 'medium', reason: 'Looks like a technique, position, or instructional form', isUrl: false });
   }
   if (SKILL_HINTS.has(hinted) || SKILL_WORD_RE.test(raw) || /\bhow to\b/i.test(raw)) {
-    return { type: hinted === 'project' ? 'project' : 'skill', confidence: 'medium', reason: 'Looks like a skill, craft, or project to learn', isUrl: false };
+    return done({ type: hinted === 'project' ? 'project' : 'skill', confidence: 'medium', reason: 'Looks like a skill, craft, or project to learn', isUrl: false });
   }
   if (/^@[\w.]+/.test(raw) || /\b(instagram|tiktok|onlyfans|twitter|linkedin)\b/i.test(raw)) {
-    return { type: 'social', confidence: 'medium', reason: 'Looks like a social handle or profile query', isUrl: false };
+    return done({ type: 'social', confidence: 'medium', reason: 'Looks like a social handle or profile query', isUrl: false });
   }
   if (/\b(reddit|r\/[a-z0-9_]+)/i.test(raw)) {
-    return { type: hinted || 'reddit', confidence: 'medium', reason: 'Reddit/community query', isUrl: false };
+    return done({ type: hinted || 'reddit', confidence: 'medium', reason: 'Reddit/community query', isUrl: false });
   }
   if (/\b(inc|llc|corp|company|university|hospital|foundation)\b/i.test(raw)) {
-    return { type: 'organization', confidence: 'medium', reason: 'Organization language in the query', isUrl: false };
+    return done({ type: 'organization', confidence: 'medium', reason: 'Organization language in the query', isUrl: false });
   }
   if (/\b(19|20)\d{2}\b/.test(raw) && /\b(toyota|honda|ford|chevy|chevrolet|nissan|bmw|runner|civic|f-?150|mustang|iphone|ipad)\b/i.test(raw)) {
-    return { type: 'vehicle', confidence: 'medium', reason: 'Year + vehicle/product tokens', isUrl: false };
+    return done({ type: 'vehicle', confidence: 'medium', reason: 'Year + vehicle/product tokens', isUrl: false });
   }
   if (/\b(iphone|ipad|pixel \d|playstation|xbox|macbook)\b/i.test(raw)) {
-    return { type: 'product', confidence: 'medium', reason: 'Product-like query', isUrl: false };
+    return done({ type: 'product', confidence: 'medium', reason: 'Product-like query', isUrl: false });
   }
   const words = raw.split(/\s+/);
   const nameLike = words.length >= 2 && words.length <= 4 && words.every(w => /^[A-Za-z][A-Za-z.'’-]*$/.test(w));
   const looksLikeProductPhrase = words.some(w => NON_NAME_TOKENS.test(w));
   if (nameLike && looksLikeProductPhrase && !hinted) {
-    return { type: 'topic', confidence: 'low', reason: 'Phrase looks like a product/topic, not a personal name', isUrl: false };
+    return done({ type: 'topic', confidence: 'low', reason: 'Phrase looks like a product/topic, not a personal name', isUrl: false });
   }
   if (nameLike && (!hinted || hinted === 'person') && !looksLikeProductPhrase) {
-    return { type: 'person', confidence: words.length === 1 ? 'low' : 'medium', reason: 'Name-like query — treating as a person candidate search', isUrl: false };
+    return done({ type: 'person', confidence: words.length === 1 ? 'low' : 'medium', reason: 'Name-like query — treating as a person candidate search', isUrl: false });
   }
   if (words.length === 1 && /^[A-Za-z]{2,}$/.test(raw)) {
-    return { type: hinted || 'ambiguous', confidence: 'low', reason: 'Single token — many people/entities could match', isUrl: false };
+    return done({ type: hinted || 'ambiguous', confidence: 'low', reason: 'Single token — many people/entities could match', isUrl: false });
   }
-  if (hinted) return { type: hinted, confidence: 'medium', reason: 'Using the selected subject type as a search hint', isUrl: false };
-  return { type: 'topic', confidence: 'low', reason: 'Treated as a topic/query, not a specific named entity', isUrl: false };
+  if (hinted) return done({ type: hinted, confidence: 'medium', reason: 'Using the selected subject type as a search hint', isUrl: false });
+  return done({ type: 'topic', confidence: 'low', reason: 'Treated as a topic/query, not a specific named entity', isUrl: false });
 }
 
 function researchPaths(type) {
@@ -510,8 +851,10 @@ function researchPaths(type) {
       { id: 'videos', label: 'Videos' },
       { id: 'presence', label: 'Public web presence' },
       { id: 'timeline', label: 'Timeline' },
-      { id: 'related', label: 'Related people & entities' },
+      { id: 'related', label: 'Related people' },
+      { id: 'entities', label: 'Related entities' },
       { id: 'sources', label: 'Sources' },
+      { id: 'evidence', label: 'Evidence' },
       { id: 'leads', label: 'Leads' },
       { id: 'questions', label: 'Questions to investigate' },
     ],
@@ -521,8 +864,9 @@ function researchPaths(type) {
       { id: 'variants', label: 'Models & variants' },
       { id: 'images', label: 'Images' },
       { id: 'videos', label: 'Videos' },
-      { id: 'manuals', label: 'Manuals & documents' },
       { id: 'reviews', label: 'Reviews' },
+      { id: 'pricing', label: 'Pricing & history' },
+      { id: 'manuals', label: 'Manuals & documents' },
       { id: 'alternatives', label: 'Alternatives' },
       { id: 'sources', label: 'Sources' },
       { id: 'questions', label: 'Questions' },
@@ -530,11 +874,14 @@ function researchPaths(type) {
     vehicle: [
       { id: 'overview', label: 'Overview' },
       { id: 'specs', label: 'Specifications' },
-      { id: 'variants', label: 'Years & variants' },
+      { id: 'variants', label: 'Years & generations' },
       { id: 'images', label: 'Images' },
       { id: 'videos', label: 'Videos' },
+      { id: 'issues', label: 'Common issues' },
+      { id: 'reviews', label: 'Reviews' },
       { id: 'manuals', label: 'Manuals' },
       { id: 'maintenance', label: 'Maintenance & parts' },
+      { id: 'alternatives', label: 'Alternatives' },
       { id: 'sources', label: 'Sources' },
       { id: 'questions', label: 'Questions' },
     ],
@@ -551,26 +898,34 @@ function researchPaths(type) {
     ],
     skill: [
       { id: 'goal', label: 'What you are trying to accomplish' },
+      { id: 'concepts', label: 'Concepts' },
       { id: 'materials', label: 'Materials' },
       { id: 'tools', label: 'Tools' },
       { id: 'steps', label: 'Steps' },
       { id: 'measurements', label: 'Measurements' },
       { id: 'techniques', label: 'Techniques' },
+      { id: 'videos', label: 'Videos' },
+      { id: 'variations', label: 'Variations' },
       { id: 'safety', label: 'Safety considerations' },
       { id: 'trouble', label: 'Troubleshooting' },
       { id: 'tutorials', label: 'Tutorials' },
+      { id: 'related', label: 'Related projects' },
       { id: 'sources', label: 'References' },
     ],
     project: [
       { id: 'goal', label: 'What you are trying to accomplish' },
+      { id: 'concepts', label: 'Concepts' },
       { id: 'materials', label: 'Materials' },
       { id: 'tools', label: 'Tools' },
       { id: 'steps', label: 'Steps' },
       { id: 'measurements', label: 'Measurements' },
       { id: 'techniques', label: 'Techniques' },
+      { id: 'videos', label: 'Videos' },
+      { id: 'variations', label: 'Variations' },
       { id: 'safety', label: 'Safety considerations' },
       { id: 'trouble', label: 'Troubleshooting' },
       { id: 'tutorials', label: 'Tutorials' },
+      { id: 'related', label: 'Related projects' },
       { id: 'sources', label: 'References' },
     ],
     place: [
@@ -637,19 +992,24 @@ function inferPathsFromQuestion(question, allPaths) {
   const available = new Set((allPaths || []).map(p => p.id));
   const out = [];
   const rules = [
-    [/image|photo|visual|picture|gallery|pic\b/, ['images', 'visuals']],
+    [/image|photo|visual|picture|gallery|pic\b|portrait/, ['images', 'visuals']],
     [/video|youtube|interview|clip|watch|footage/, ['videos']],
     [/timeline|history|when|chronolog|date/, ['timeline', 'history']],
     [/identity|alias|who is|real name|handle/, ['identity']],
     [/presence|website|profile|social|official/, ['presence', 'official']],
-    [/related|other people|connected|associated/, ['related']],
+    [/related|other people|connected|associated/, ['related', 'entities']],
     [/tutorial|how to|learn|teach|instruct|procedure|steps/, ['tutorials', 'steps']],
     [/tool|material|part|supply/, ['tools', 'materials']],
     [/safety|hazard|ppe/, ['safety']],
     [/spec|measurement|dimension/, ['specs', 'measurements']],
-    [/source|citation|evidence|reference/, ['sources']],
-    [/variation|variant|model/, ['variations', 'variants']],
+    [/source|citation|evidence|reference/, ['sources', 'evidence']],
+    [/variation|variant|model|generation/, ['variations', 'variants']],
     [/term|definition|what is this|meaning/, ['what', 'terms', 'definitions']],
+    [/review|rating|complaint/, ['reviews']],
+    [/price|pricing|cost|history of/, ['pricing']],
+    [/issue|problem|common (fault|fail)/, ['issues', 'trouble']],
+    [/concept|theory|explained/, ['concepts']],
+    [/clothing|wearing|outfit|dress/, ['images', 'visuals']],
   ];
   for (const [re, ids] of rules) {
     if (!re.test(t)) continue;
@@ -684,13 +1044,22 @@ function pathSearchVariants(seed, selectedPaths) {
     if (!t || extra.some(x => x.q === t)) return;
     extra.push({ q: t, why });
   };
-  if (ids.has('images') || ids.has('visuals')) add(seed + ' photos OR images OR gallery', 'visual evidence');
+  if (ids.has('images') || ids.has('visuals')) add(seed + ' photos OR images OR gallery OR portrait', 'visual evidence');
   if (ids.has('videos')) add(seed + ' video OR youtube OR interview', 'video sources');
   if (ids.has('timeline') || ids.has('history')) add(seed + ' timeline OR history', 'chronology');
   if (ids.has('presence') || ids.has('official')) add(seed + ' official OR profile OR website', 'public presence');
   if (ids.has('tutorials') || ids.has('steps')) add(seed + ' tutorial OR procedure OR how to', 'instructional sources');
   if (ids.has('safety')) add(seed + ' safety', 'safety context');
-  return extra.slice(0, 4);
+  if (ids.has('identity')) add(seed + ' biography OR profile OR "who is"', 'identity sources');
+  if (ids.has('reviews')) add(seed + ' review OR reviews', 'reviews');
+  if (ids.has('pricing')) add(seed + ' price OR pricing OR history', 'pricing history');
+  if (ids.has('issues') || ids.has('trouble')) add(seed + ' problems OR issues OR common problems', 'known issues');
+  if (ids.has('related') || ids.has('entities')) add(seed + ' related OR associated', 'related entities');
+  if (ids.has('evidence')) add(seed + ' evidence OR documentation OR source', 'evidence');
+  if (ids.has('concepts')) add(seed + ' explained OR concept OR overview', 'concepts');
+  if (ids.has('variations') || ids.has('variants')) add(seed + ' variants OR generations OR versions', 'variants');
+  if (ids.has('alternatives')) add(seed + ' alternative OR vs OR compared', 'alternatives');
+  return extra.slice(0, 12);
 }
 
 function youtubeId(url) {
@@ -731,14 +1100,20 @@ function collectDiveVideos(retrieved, results) {
     const vim = vimeoId(url);
     const host = hostOf(url).replace(/^www\./, '');
     const embedUrl = yt ? ('https://www.youtube.com/embed/' + yt) : (vim ? ('https://player.vimeo.com/video/' + vim) : '');
+    const restrictedHost = /(onlyfans|patreon|substack)\.com/i.test(host);
+    const playable = !!embedUrl && !restrictedHost;
     out.push({
       url,
       pageUrl: pageUrl || url,
       title: title || host,
       domain: host,
       thumbnail: thumb || (yt ? ('https://i.ytimg.com/vi/' + yt + '/hqdefault.jpg') : ''),
-      embedUrl,
-      playable: !!embedUrl,
+      embedUrl: playable ? embedUrl : '',
+      playable,
+      accessState: restrictedHost ? 'PAYWALLED' : (playable ? 'DIRECTLY_RETRIEVED' : 'REFERENCED'),
+      accessNote: restrictedHost
+        ? 'Playback requires a paid or logged-in account. Carmen cannot retrieve it.'
+        : (playable ? '' : 'No public embed is available. Open the source to watch — Carmen does not invent playback.'),
       retrievedAt: new Date().toISOString(),
     });
   };
@@ -815,6 +1190,15 @@ function buildSearchVariants(q, classification) {
     return out.slice(0, 3);
   }
   add(clean, 'primary query');
+  const subject = classification.subject || clean;
+  const context = classification.context || '';
+  if (context && classification.type === 'person') {
+    add('"' + subject.replace(/"/g, '') + '" ' + context, 'person + requested context');
+    const syn = contextualSynonyms(context, classification.relation);
+    if (syn) add('"' + subject.replace(/"/g, '') + '" ' + syn, 'contextual visual/source synonyms');
+    add(subject + ' official OR website OR profile', 'official/profile pages for the person');
+    return out.slice(0, 5);
+  }
   if (classification.type === 'person' && /\s/.test(clean)) {
     add('"' + clean.replace(/"/g, '') + '"', 'exact name');
     add(clean + ' official OR website OR profile', 'official/profile pages');
@@ -836,6 +1220,37 @@ function buildSearchVariants(q, classification) {
     add('"' + clean.replace(/"/g, '') + '"', 'exact phrase');
   }
   return out.slice(0, 3);
+}
+
+function buildExpandedVariants(q, classification) {
+  const clean = String(q || '').trim().replace(/\s+/g, ' ').slice(0, 200);
+  const out = [];
+  const add = (query, why) => {
+    const t = String(query || '').trim();
+    if (!t || t === clean) return;
+    if (!out.some(x => x.q === t)) out.push({ q: t, why });
+  };
+  const subject = (classification && classification.subject) || clean;
+  const context = (classification && classification.context) || '';
+  add(subject + ' official OR website OR homepage OR profile', 'official / public profile pages');
+  add(clean + ' interview OR biography OR feature', 'interviews and features');
+  add(clean + ' photos OR images OR gallery OR portrait', 'image indexes');
+  add(clean + ' youtube OR video OR vimeo OR interview', 'video indexes');
+  add(clean + ' reddit OR forum OR discussion', 'public discussion');
+  add('"' + subject.replace(/"/g, '') + '"', 'exact subject');
+  if (context) {
+    add('"' + subject.replace(/"/g, '') + '" ' + context, 'subject + requested context');
+    const syn = contextualSynonyms(context, classification && classification.relation);
+    if (syn) add('"' + subject.replace(/"/g, '') + '" ' + syn, 'contextual synonyms');
+  }
+  add(clean + ' site:.org OR wikipedia', 'public indexes');
+  if (classification && classification.type === 'person') {
+    add(subject + ' news OR press OR "official site"', 'editorial and official coverage');
+  }
+  if (classification && (classification.type === 'technique' || classification.type === 'skill')) {
+    add(clean + ' diagram OR tutorial OR demonstrated', 'instructional visual sources');
+  }
+  return out.slice(0, 10);
 }
 
 function scoreResult(query, item, classification) {
@@ -881,6 +1296,15 @@ function scoreResult(query, item, classification) {
   }
   if (classification.type === 'technique' && (item.image || (item.images && item.images.length))) {
     score += 8; bits.push('visual reference');
+  }
+  if (classification.context) {
+    const ctxTokens = String(classification.context).toLowerCase().split(/\s+/).filter(t => t.length > 2 && !/^(and|the|for|with)$/i.test(t));
+    const blob = title + ' ' + snip + ' ' + url;
+    if (ctxTokens.length && ctxTokens.every(t => blob.includes(t))) {
+      score += 18; bits.push('requested context present');
+    } else if (ctxTokens.some(t => blob.includes(t))) {
+      score += 8; bits.push('partial context match');
+    }
   }
   if (NAV_TITLE_RE.test(String(item.title || '').trim())) { score -= 45; bits.push('generic nav title'); }
   if (SEO_JUNK_RE.test(host) || SEO_JUNK_RE.test(url)) { score -= 30; bits.push('SEO/name-mill site'); }
@@ -985,19 +1409,23 @@ function rankImages(urls, pageUrl) {
 }
 
 async function enrichTopResults(results, classification) {
-  const take = classification.type === 'person' || classification.isUrl ? 4 : 3;
+  const take = classification.type === 'person' || classification.isUrl ? 6 : 3;
   const picked = results.slice(0, take);
-  for (const r of results.slice(take, 12)) {
-    if (picked.length >= take + 2) break;
+  for (const r of results.slice(take, 14)) {
+    if (picked.length >= take + 3) break;
     const host = (r.domain || hostOf(r.url)).replace(/^www\./, '');
-    if (PROFILE_HOST_RE.test(host) && !picked.includes(r)) picked.push(r);
+    if ((PROFILE_HOST_RE.test(host) || r.image) && !picked.includes(r)) picked.push(r);
   }
+  const galleryExtra = [];
   await Promise.all(picked.map(async (item) => {
+    if (item.retrievalStatus) return;
     if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) return;
     SEARCH_BUDGET.used++;
     try {
       const retrieved = await retrieveSource(item.url);
       item.retrievalStatus = retrieved.status;
+      item.accessState = retrieved.accessState || (retrieved.status === 'RETRIEVED' ? 'DIRECTLY_RETRIEVED' : 'UNAVAILABLE');
+      item.accessNote = retrieved.accessNote || retrieved.error || '';
       item.retrievedAt = retrieved.retrievedAt || null;
       if (retrieved.status === 'RETRIEVED') {
         if (retrieved.title && retrieved.title.length > 4 && (!item.title || item.title.length < retrieved.title.length)) {
@@ -1005,7 +1433,7 @@ async function enrichTopResults(results, classification) {
         }
         if ((!item.snippet || item.snippet.length < 40) && retrieved.description) item.snippet = retrieved.description;
         const imgs = rankImages([retrieved.ogImage, ...(retrieved.images || []), ...(item.images || [])], retrieved.finalUrl || item.url);
-        item.images = imgs.slice(0, 8);
+        item.images = imgs.slice(0, 12);
         item.image = item.images[0] || '';
         item.fingerprint = retrieved.fingerprint;
         item.textExcerpt = String(retrieved.textExcerpt || retrieved.text || '').slice(0, 1800);
@@ -1017,18 +1445,43 @@ async function enrichTopResults(results, classification) {
         if (retrieved.author) item.author = retrieved.author;
         if (retrieved.subreddit) item.subreddit = retrieved.subreddit;
         if (retrieved.published) item.published = retrieved.published;
+        if (retrieved.galleryUrls && (classification.type === 'person' || classification.type === 'social')) {
+          for (const g of retrieved.galleryUrls) galleryExtra.push(g);
+        }
       } else {
-        item.provenance = item.provenance || 'DISCOVERED';
+        item.provenance = item.accessState === 'PAYWALLED' || item.accessState === 'AUTHENTICATION_REQUIRED' ? 'RETRIEVAL_FAILED' : (item.provenance || 'DISCOVERED');
         item.retrievalError = retrieved.error || 'retrieval failed';
+        if (retrieved.ogImage || (retrieved.images && retrieved.images.length)) {
+          const imgs = rankImages([retrieved.ogImage, ...(retrieved.images || []), ...(item.images || [])], item.url);
+          item.images = imgs.slice(0, 6);
+          item.image = item.image || imgs[0] || '';
+          item.publicEvidence = retrieved.publicEvidence || 'Public thumbnail or snippet only — protected content was not retrieved.';
+        }
       }
     } catch (e) {
       item.provenance = 'DISCOVERED';
+      item.accessState = item.accessState || 'UNAVAILABLE';
       item.retrievalError = String(e?.message || e).slice(0, 160);
     }
     if (item.provenance === 'RETRIEVED' && /official|profile|models\//i.test(item.reason || item.url)) {
       item.score = (item.score || 0) + 4;
     }
   }));
+  for (const g of galleryExtra.slice(0, 2)) {
+    if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
+    if (results.some(r => r.url === g)) continue;
+    SEARCH_BUDGET.used++;
+    try {
+      const retrieved = await retrieveSource(g);
+      if (retrieved.status !== 'RETRIEVED') continue;
+      const imgs = rankImages([retrieved.ogImage, ...(retrieved.images || [])], retrieved.finalUrl || g);
+      const parent = results.find(r => hostOf(r.url) === hostOf(g));
+      if (parent && imgs.length) {
+        parent.images = rankImages([...(parent.images || []), ...imgs], parent.url).slice(0, 12);
+        parent.image = parent.image || parent.images[0] || '';
+      }
+    } catch {}
+  }
   results.sort((a, b) => (b.score || 0) - (a.score || 0));
   return results;
 }
@@ -1053,6 +1506,8 @@ async function inspectDirectUrl(classification, results, seen, diagnostics) {
     if (row) {
       row.provenance = 'RETRIEVED';
       row.retrievalStatus = 'RETRIEVED';
+      row.accessState = retrieved.accessState || 'DIRECTLY_RETRIEVED';
+      row.accessNote = retrieved.accessNote || '';
       row.textExcerpt = String(retrieved.textExcerpt || retrieved.text || '').slice(0, 1800);
       row.images = imgs;
       row.image = imgs[0] || row.image;
@@ -1062,16 +1517,19 @@ async function inspectDirectUrl(classification, results, seen, diagnostics) {
         row.profiles = retrieved.identifiers.profiles;
       }
     }
-  } else if (classification.isImage) {
-    uniqueAdd(results, seen, {
-      title: humanizePath(classification.url) || classification.url,
-      url: classification.url,
-      source: 'Direct image URL',
-      snippet: 'Image URL submitted for inspection. Carmen did not invent this image.',
-      image: classification.url,
-      images: [classification.url],
-      queryVariant: classification.url,
-    });
+  } else {
+    diagnostics.DirectURL.accessState = retrieved.accessState || 'UNAVAILABLE';
+    if (classification.isImage) {
+      uniqueAdd(results, seen, {
+        title: humanizePath(classification.url) || classification.url,
+        url: classification.url,
+        source: 'Direct image URL',
+        snippet: 'Image URL submitted for inspection. Carmen did not invent this image.',
+        image: classification.url,
+        images: [classification.url],
+        queryVariant: classification.url,
+      });
+    }
   }
   return retrieved;
 }
@@ -1084,23 +1542,45 @@ function humanizePath(url) {
 }
 
 async function runDiscovery(query, opts = {}) {
-  SEARCH_BUDGET = { used: 0, max: opts.budget || 36 };
+  const expanded = opts.expanded === true || opts.expanded === 'true' || opts.expanded === 1;
+  SEARCH_BUDGET = { used: 0, max: opts.budget || (expanded ? 56 : 36) };
   const q = String(query || '').trim().slice(0, 500);
   const classification = classifyQuery(q, opts.hint);
   const variants = buildSearchVariants(classification.isUrl ? (opts.displayQuery || q) : q, classification);
+  if (expanded) {
+    for (const v of buildExpandedVariants(q, classification)) variants.push(v);
+  }
   if (Array.isArray(opts.extraQueries)) {
-    for (const extra of opts.extraQueries) variants.push({ q: extra, why: 'deep-dive expansion' });
+    for (const extra of opts.extraQueries) {
+      const t = typeof extra === 'string' ? extra : extra && extra.q;
+      if (t) variants.push({ q: t, why: (extra && extra.why) || 'deep-dive expansion' });
+    }
   }
   const results = [], seen = new Set(), diagnostics = {};
-  if (!q) return { query: q, classification, variants, results, providers: diagnostics, count: 0 };
+  if (!q) return { query: q, classification, variants, results, providers: diagnostics, count: 0, expanded };
+
+  async function runVariant(variant, includeSocial) {
+    const jobs = [
+      ddg(variant.q, results, seen, diagnostics),
+      bing(variant.q, results, seen, diagnostics),
+    ];
+    if (includeSocial) {
+      jobs.push(reddit(variant.q, results, seen, diagnostics));
+      jobs.push(wikipedia(variant.q, results, seen, diagnostics, classification));
+    }
+    await Promise.all(jobs);
+  }
 
   if (classification.isUrl) {
-    await inspectDirectUrl(classification, results, seen, diagnostics);
-    const follow = variants.filter(v => v.q && v.q !== classification.url).slice(0, 1);
+    const direct = await inspectDirectUrl(classification, results, seen, diagnostics);
+    const follow = variants.filter(v => v.q && v.q !== classification.url).slice(0, expanded ? 3 : 1);
     if (!follow.length) {
       const host = hostOf(classification.url).replace(/^www\./, '');
       const pathName = humanizePath(classification.url);
       if (pathName && /[a-z]/i.test(pathName) && pathName.toLowerCase() !== host.split('.')[0]) follow.push({ q: pathName, why: 'name inferred from URL path' });
+    }
+    if (direct && direct.status !== 'RETRIEVED') {
+      diagnostics.ContinuedSearch = { reason: 'submitted URL inaccessible (' + (direct.accessState || direct.error || 'failed') + ') — searching public alternatives' };
     }
     for (const variant of follow) {
       if (!variants.some(v => v.q === variant.q)) variants.push(variant);
@@ -1111,38 +1591,67 @@ async function runDiscovery(query, opts = {}) {
       ]);
     }
   } else {
-    const webVariants = variants.slice(0, 3);
+    const webVariants = variants.slice(0, expanded ? 6 : 3);
     for (let i = 0; i < webVariants.length; i++) {
-      const variant = webVariants[i];
-      const jobs = [
-        ddg(variant.q, results, seen, diagnostics),
-        bing(variant.q, results, seen, diagnostics),
-      ];
-      if (i === 0) {
-        jobs.push(reddit(variant.q, results, seen, diagnostics));
-        jobs.push(wikipedia(variant.q, results, seen, diagnostics, classification));
-      }
-      await Promise.all(jobs);
-      if (results.length >= MAX_RESULTS) break;
+      await runVariant(webVariants[i], i === 0);
+      if (!expanded && results.length >= MAX_RESULTS) break;
     }
     if (results.length < 6 && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
       await startpage(q, results, seen, diagnostics);
     }
   }
 
+  if (expanded) {
+    const jobs = [];
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(q, results, seen, diagnostics));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingVideos(q, results, seen, diagnostics));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(google(q, results, seen, diagnostics));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(mojeek(q, results, seen, diagnostics));
+    if (jobs.length) await Promise.all(jobs);
+    if (classification.context && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
+      await bingImages('"' + (classification.subject || q) + '" ' + classification.context, results, seen, diagnostics);
+    }
+  } else if (classification.type === 'person' && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 2) {
+    await bingImages(classification.subject || q, results, seen, diagnostics);
+  }
+
   let ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
   if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
 
+  const retrievedN = ranked.filter(r => r.retrievalStatus === 'RETRIEVED' || r.provenance === 'RETRIEVED').length;
+  if (!expanded && (ranked.length < 3 || retrievedN === 0) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+    diagnostics.ContinuedSearch = {
+      reason: ranked.length < 3 ? 'few public results on the first pass' : 'obvious sources were not retrievable',
+      philosophy: 'One blocked website is not the end of the investigation.',
+    };
+    const more = buildExpandedVariants(q, classification).slice(0, 3);
+    for (const v of more) {
+      if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
+      if (!variants.some(x => x.q === v.q)) variants.push(v);
+      await Promise.all([ddg(v.q, results, seen, diagnostics), bing(v.q, results, seen, diagnostics)]);
+    }
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages(q, results, seen, diagnostics);
+    ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
+    if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
+  }
+
   for (const r of ranked) {
     if (!r.provenance) r.provenance = r.retrievalStatus === 'RETRIEVED' ? 'RETRIEVED' : 'DISCOVERED';
+    if (!r.accessState) {
+      r.accessState = r.retrievalStatus === 'RETRIEVED' ? 'DIRECTLY_RETRIEVED' : (r.retrievalStatus === 'RETRIEVAL_FAILED' ? 'REFERENCED' : 'UNVERIFIED');
+    }
     if (!r.images) r.images = r.image ? [r.image] : [];
     r.observedAt = r.observedAt || new Date().toISOString();
   }
 
   let warning = ranked.length ? undefined : 'No public-web results were returned. Provider diagnostics are included for troubleshooting.';
   if (classification.isUrl && diagnostics.DirectURL && !diagnostics.DirectURL.ok) {
-    const fail = 'Submitted URL could not be retrieved (' + (diagnostics.DirectURL.error || 'blocked or failed') + '). Carmen did not pretend to inspect it.';
+    const fail = 'Submitted URL could not be retrieved (' + (diagnostics.DirectURL.accessState ? accessLabel(diagnostics.DirectURL.accessState) : (diagnostics.DirectURL.error || 'blocked or failed')) + '). Carmen did not pretend to inspect it and kept looking for public alternatives.';
     warning = warning ? fail + ' ' + warning : fail;
+  }
+  if (diagnostics.ContinuedSearch && !expanded) {
+    const note = 'Carmen kept searching after the obvious path failed.';
+    warning = warning ? warning + ' ' + note : note;
   }
 
   return {
@@ -1154,6 +1663,8 @@ async function runDiscovery(query, opts = {}) {
     count: ranked.length,
     paths: researchPaths(classification.type),
     warning,
+    expanded,
+    continued: !!diagnostics.ContinuedSearch,
   };
 }
 
@@ -1161,8 +1672,9 @@ async function searchWeb(req) {
   const u = new URL(req.url);
   const q = (u.searchParams.get('q') || '').trim().slice(0, 500);
   const hint = (u.searchParams.get('type') || u.searchParams.get('subject') || '').trim();
-  if (!q) return json({ results: [], query: '', count: 0, providers: {}, classification: classifyQuery('') }, 200, req);
-  const discovery = await runDiscovery(q, { hint, enrich: true });
+  const expanded = u.searchParams.get('expanded') === '1' || u.searchParams.get('expanded') === 'true';
+  if (!q) return json({ results: [], query: '', count: 0, providers: {}, classification: classifyQuery(''), expanded: false }, 200, req);
+  const discovery = await runDiscovery(q, { hint, enrich: true, expanded });
   return json(discovery, 200, req);
 }
 
@@ -1243,7 +1755,7 @@ async function provider(env, messages, temperature = 0.2) {
   } finally { clearTimeout(timer); }
 }
 
-const CARMEN_SYSTEM = 'You are Carmen, a conservative AI research assistant for adult users. Be concise and useful. Clearly distinguish OBSERVED (directly stated/visible), INFERRED (labeled interpretation), and UNKNOWN. Never invent facts, sources, URLs, dates, or evidence. Never claim something was saved or sent unless the user explicitly requested it. Never autonomously contact people, send messages, post, comment, submit forms, make purchases, create accounts, perform transactions, or take any external action. You may research, analyze, organize, and prepare information only. For sexual or self-bondage topics, do not provide explicit step-by-step sexual or self-bondage instructions; you may organize public sources, terminology, visual references, and research questions. For general skills and crafts you may outline procedures only when they are grounded in retrieved sources.';
+const CARMEN_SYSTEM = 'You are Carmen, a conservative AI research assistant for adult users. Be concise and useful. Clearly distinguish OBSERVED (directly stated/visible), INFERRED (labeled interpretation), and UNKNOWN. Never invent facts, sources, URLs, dates, or evidence. Never claim something was saved or sent unless the user explicitly requested it. Never autonomously contact people, send messages, post, comment, submit forms, make purchases, create accounts, perform transactions, or take any external action. You may research, analyze, organize, and prepare information only. Never claim you retrieved paywalled, login-gated, age-gated, or blocked content. Public titles, search snippets, and thumbnails are not the protected content — label them as referenced public evidence only. If the only remaining relevant source is paywalled, say clearly: Absolutely cannot retrieve due to paywall. For sexual or self-bondage topics, do not provide explicit step-by-step sexual or self-bondage instructions; you may organize public sources, terminology, visual references, and research questions. For general skills and crafts you may outline procedures only when they are grounded in retrieved sources. Visual likeness is not identity proof.';
 
 async function chat(req, env) {
   try {
@@ -1340,30 +1852,38 @@ async function imageProxy(req) {
 
 function collectDiveImages(retrieved, results) {
   const out = [], seen = new Set();
-  const add = (url, pageUrl, source) => {
+  const add = (url, pageUrl, source, extra = {}) => {
     const u = usableImage(url);
     if (!u) return;
     const key = u.replace(/[?#].*$/, '');
     if (seen.has(key)) return;
     seen.add(key);
+    const stock = isStockImage(u);
     out.push({
       url: u,
       sourceUrl: u,
       pageUrl: pageUrl || '',
       domain: hostOf(pageUrl || u).replace(/^www\./, ''),
       source: source || 'retrieved page',
+      kind: extra.kind || (stock ? 'stock' : source === 'og:image' ? 'og' : 'page'),
+      stock,
+      caption: extra.caption || (stock ? 'Possible stock/generic image — not identity proof' : 'Image keeps page provenance. Visual likeness is not identity proof.'),
       retrievedAt: new Date().toISOString(),
     });
   };
   for (const page of retrieved || []) {
-    if (page.ogImage) add(page.ogImage, page.finalUrl || page.url, 'og:image');
-    for (const img of page.images || []) add(img, page.finalUrl || page.url, 'page image');
+    if (page.ogImage) add(page.ogImage, page.finalUrl || page.url, 'og:image', { kind: 'og' });
+    for (const img of page.images || []) add(img, page.finalUrl || page.url, page.accessState === 'DIRECTLY_RETRIEVED' ? 'retrieved page' : 'public preview', { kind: 'page' });
   }
   for (const r of results || []) {
-    if (r.image) add(r.image, r.url, r.source);
-    for (const img of r.images || []) add(img, r.url, r.source);
+    if (r.image) add(r.image, r.url, r.source || 'search', { kind: r.imageOrigin === 'image-index' ? 'index' : 'search' });
+    for (const img of r.images || []) add(img, r.url, r.source || 'search', { kind: r.imageOrigin === 'image-index' ? 'index' : 'search' });
   }
-  return out.slice(0, 24);
+  out.sort((a, b) => {
+    const rank = (x) => x.stock ? 0 : x.kind === 'og' ? 4 : x.kind === 'page' ? 3 : x.kind === 'index' ? 2 : 1;
+    return rank(b) - rank(a);
+  });
+  return out.slice(0, 36);
 }
 
 async function deepDiveHandler(req, env) {
@@ -1377,6 +1897,7 @@ async function deepDiveHandler(req, env) {
     }
     const seed = query || String(candidate.title || '').trim();
     const classification = classifyQuery(seed, hint);
+    const expanded = b.expanded === true || b.expanded === 'true' || b.expanded === 1;
     const resolved = resolveDivePaths(classification.type, b);
     const selectedPaths = resolved.selected;
     const selectedIds = new Set(selectedPaths.map(p => p.id));
@@ -1384,24 +1905,41 @@ async function deepDiveHandler(req, env) {
     const extra = [];
     const retrieved = [];
     const seenUrl = new Set();
+    const retrieveCap = expanded || resolved.all ? 8 : 6;
     const pushRet = async (url) => {
-      if (!url || seenUrl.has(url) || retrieved.length >= 6) return;
+      if (!url || seenUrl.has(url) || retrieved.length >= retrieveCap) return;
       seenUrl.add(url);
       retrieved.push(await retrieveSource(url));
     };
     if (candidate?.url) await pushRet(candidate.url);
     const focus = retrieved[0];
     const ids = (focus && focus.identifiers) || { profiles: [], handles: [], aliases: [] };
+    if (focus && focus.status !== 'RETRIEVED') {
+      extra.push(seed);
+      extra.push('"' + (classification.subject || seed).replace(/"/g, '') + '"');
+    }
     if (candidate?.url) {
       const host = hostOf(candidate.url).replace(/^www\./, '');
-      if (host) extra.push('"' + seed.replace(/"/g, '') + '" site:' + host);
+      if (host) extra.push('"' + (classification.subject || seed).replace(/"/g, '') + '" site:' + host);
     }
     for (const h of (ids.handles || []).slice(0, 2)) extra.push(h);
-    if (classification.type === 'person') extra.push('"' + seed.replace(/"/g, '') + '" (profile OR official OR website)');
+    if (classification.type === 'person') extra.push('"' + (classification.subject || seed).replace(/"/g, '') + '" (profile OR official OR website)');
+    if (classification.context) {
+      extra.push('"' + (classification.subject || seed).replace(/"/g, '') + '" ' + classification.context);
+      const syn = contextualSynonyms(classification.context, classification.relation);
+      if (syn) extra.push('"' + (classification.subject || seed).replace(/"/g, '') + '" ' + syn);
+    }
     if (classification.type === 'technique') extra.push(seed + ' tutorial OR diagram');
     if (classification.type === 'skill' || classification.type === 'project') extra.push(seed + ' procedure OR safety');
     for (const v of pathSearchVariants(seed, selectedPaths)) extra.push(v.q);
     extra.push(seed + ' reddit');
+    if (expanded || selectedIds.has('images') || selectedIds.has('visuals') || resolved.all) {
+      extra.push((classification.subject || seed) + ' photos OR images OR gallery OR portrait');
+    }
+    if (expanded || selectedIds.has('videos') || resolved.all) {
+      extra.push((classification.subject || seed) + ' youtube OR video OR interview');
+    }
+    const focusBlocked = !!(focus && focus.status !== 'RETRIEVED');
     const plan = {
       subject: seed,
       type: classification.type,
@@ -1410,41 +1948,64 @@ async function deepDiveHandler(req, env) {
       all: resolved.all,
       selectedPaths: selectedPaths.map(p => p.id),
       customQuestion,
+      expanded,
+      context: classification.context || '',
+      relation: classification.relation || '',
       investigating: [
-        resolved.all ? 'Investigate all relevant research paths for this entity type' : ('Investigate selected paths: ' + selectedPaths.map(p => p.label).join(', ')),
+        resolved.all ? 'Investigate ALL research paths for this entity type — every path listed below' : ('Investigate selected paths: ' + selectedPaths.map(p => p.label).join(', ')),
         customQuestion ? ('User question: ' + customQuestion.slice(0, 180)) : 'No custom question — follow the selected paths',
-        candidate?.url ? 'Retrieve the selected source page and public identifiers found on it' : 'Retrieve the strongest public sources',
-        selectedIds.has('images') || selectedIds.has('visuals') ? 'Collect images with page provenance' : 'Images collected only when they appear on retrieved pages',
-        selectedIds.has('videos') ? 'Collect playable or openable public videos' : 'Video collection skipped unless a source page includes one',
+        classification.context ? ('Requested context: ' + classification.subject + ' in relation to “' + classification.context + '” (' + (classification.relation || 'context') + ')') : 'Subject-only research (no extra visual/contextual relation requested)',
+        candidate?.url ? (focusBlocked ? ('Selected source is inaccessible (' + accessLabel(focus.accessState) + '). One blocked website is not the end — searching public alternatives.') : 'Retrieve the selected source page and public identifiers found on it') : 'Retrieve the strongest public sources',
+        selectedIds.has('images') || selectedIds.has('visuals') || resolved.all ? 'Collect images from official pages, features, image indexes, and public thumbnails with provenance' : 'Images collected only when they appear on retrieved pages',
+        selectedIds.has('videos') || resolved.all ? 'Collect playable or openable public videos. No fake playback.' : 'Video collection skipped unless a source page includes one',
+        expanded ? 'Expanded Research is on — broader variants, image/video indexes, public alternatives' : 'Normal research pass. Expanded Research can go further if sources are thin or blocked.',
         'Separate OBSERVED / INFERRED / UNKNOWN — visual likeness is not identity proof',
+        'Never treat paywalled or login-gated content as retrieved evidence',
       ],
-      variants: extra.slice(0, 8),
+      variants: extra.slice(0, resolved.all || expanded ? 12 : 8),
       identifiers: ids,
-      safety: 'Read-only public research. Carmen will not contact anyone, send messages, post, or take external actions.',
+      safety: 'Read-only public research. Carmen will not contact anyone, send messages, post, log in, bypass paywalls, or take external actions.',
     };
 
-    const discovery = await runDiscovery(seed, { hint: classification.type, extraQueries: extra.slice(0, 4), enrich: true });
+    const extraLimit = resolved.all || expanded ? 8 : 4;
+    const discovery = await runDiscovery(seed, {
+      hint: classification.type,
+      extraQueries: extra.slice(0, extraLimit),
+      enrich: true,
+      expanded: expanded || focusBlocked,
+    });
     for (const p of (ids.profiles || []).slice(0, 3)) await pushRet(p);
+    for (const g of (focus && focus.galleryUrls) || []) await pushRet(g);
     const rankedForRetrieve = [...discovery.results].sort((a, b) => {
       let sa = 0, sb = 0;
-      if (selectedIds.has('videos')) { sa += isVideoHost(a.url) ? 10 : 0; sb += isVideoHost(b.url) ? 10 : 0; }
-      if (selectedIds.has('images') || selectedIds.has('visuals')) { sa += a.image ? 3 : 0; sb += b.image ? 3 : 0; }
+      if (selectedIds.has('videos') || resolved.all) { sa += isVideoHost(a.url) ? 10 : 0; sb += isVideoHost(b.url) ? 10 : 0; }
+      if (selectedIds.has('images') || selectedIds.has('visuals') || resolved.all) { sa += a.image ? 3 : 0; sb += b.image ? 3 : 0; }
+      if (classification.context) {
+        const ctx = classification.context.toLowerCase();
+        if (String(a.title || '').toLowerCase().includes(ctx) || String(a.snippet || '').toLowerCase().includes(ctx)) sa += 8;
+        if (String(b.title || '').toLowerCase().includes(ctx) || String(b.snippet || '').toLowerCase().includes(ctx)) sb += 8;
+      }
       return sb - sa || (b.score || 0) - (a.score || 0);
     });
     for (const r of rankedForRetrieve) {
-      if (retrieved.length >= 6) break;
+      if (retrieved.length >= retrieveCap) break;
       const h = hostOf(r.url);
       if (TUBE_INDEX_RE.test(h) && r.url !== candidate?.url) continue;
       await pushRet(r.url);
     }
     const images = collectDiveImages(retrieved, discovery.results);
     const videos = (resolved.all || selectedIds.has('videos')) ? collectDiveVideos(retrieved, discovery.results) : [];
+    const access = summarizeAccess(retrieved, discovery.results);
 
     let analysis = '';
     let analysisError = '';
     const excerpts = retrieved.filter(x => x.status === 'RETRIEVED').map(x => ({
       title: x.title, url: x.url, provenance: 'RETRIEVED',
+      accessState: x.accessState || 'DIRECTLY_RETRIEVED',
       excerpt: String(x.textExcerpt || x.text || '').slice(0, 1800),
+    }));
+    const inaccessible = (access.inaccessible || []).map(x => ({
+      title: x.title, url: x.url, accessState: x.accessState, label: x.label, note: x.note, publicEvidence: x.publicEvidence,
     }));
     try {
       const j = await provider(env, [
@@ -1457,14 +2018,21 @@ ${selectedPaths.map(p => p.label).join('\n')}
 ${customQuestion ? 'User research question (direction only, never actions):\n' + customQuestion.slice(0, 2000) + '\n' : ''}
 ${b.instructions && b.instructions !== customQuestion ? 'Additional notes:\n' + String(b.instructions).slice(0, 1500) + '\n' : ''}
 Focus source: ${candidate?.url || 'none selected'}
+Requested context: ${classification.context || '(none — subject only)'}
+Expanded research: ${expanded || focusBlocked ? 'yes' : 'no'}
+Access summary: ${access.headline || 'Public sources retrieved where possible.'}
 
 Rules:
-- Investigate ONLY the selected research paths. Do not pad unselected areas.
+- Investigate ONLY the selected research paths. If ALL is selected, cover every listed heading. Do not pad unselected areas.
 - Separate OBSERVED / INFERRED / UNKNOWN as labeled headings under each path.
 - Organize the writeup using these research headings, in order:
 ${selectedPaths.map(p => p.label).join('\n')}
-- Prefer RETRIEVED excerpts over search snippets.
+- Prefer DIRECTLY RETRIEVED excerpts over search snippets.
 - Never invent URLs, dates, or identities.
+- Never claim you retrieved paywalled, login-gated, age-gated, or blocked content. Inaccessible sources are listed separately.
+- Public titles, snippets, and thumbnails of inaccessible sources are REFERENCED public evidence, not retrieved page content.
+- If the only remaining relevant source is paywalled, say clearly: Absolutely cannot retrieve due to paywall. Then list what public evidence exists elsewhere and what remains UNKNOWN.
+- If a visual/contextual relation was requested (person + context), treat that as a different problem from identity-only search. Rank and discuss sources that actually associate the person with the requested context.
 - Images showing similar appearance across sources are OBSERVED visual consistency, NOT identity proof. Never say they are definitely the same person.
 - List publicly visible handles, domains, and aliases only if they appear in the sources.
 - Suggest research leads as questions/sources to review, never as actions to take.
@@ -1476,8 +2044,11 @@ Kinds: person, technique, object, place, source, product, video. Only from retri
 Retrieved sources:
 ${JSON.stringify(excerpts)}
 
+Inaccessible sources (do not treat as retrieved evidence):
+${JSON.stringify(inaccessible)}
+
 Discovery results (may be snippets only):
-${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: r.url, source: r.source, snippet: r.snippet, reason: r.reason, provenance: r.provenance })))}` },
+${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: r.url, source: r.source, snippet: r.snippet, reason: r.reason, provenance: r.provenance, accessState: r.accessState })))}` },
       ], 0.2);
       analysis = extractMessageContent(j);
     } catch (e) {
@@ -1496,6 +2067,9 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
     if (discovery.results.length) suggestions.push('Carmen found ' + discovery.results.length + ' public sources that may be relevant.');
     if (videos.length) suggestions.push(videos.length + ' public video source' + (videos.length === 1 ? '' : 's') + ' surfaced.');
     if (related.length) suggestions.push('Would you like to investigate a related entity without leaving this case?');
+    if (access.headline) suggestions.push(access.headline);
+    if (focusBlocked && !expanded) suggestions.push('The selected source was inaccessible. Expanded Research can keep looking across public alternatives.');
+    if (!expanded && (access.paywalled || access.authenticationRequired)) suggestions.push('Protected sources were not retrieved. Public alternatives and references are labeled honestly.');
 
     return json({
       plan,
@@ -1509,11 +2083,13 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
       leads,
       related,
       suggestions,
+      access,
       paths: selectedPaths,
       availablePaths: researchPaths(classification.type),
       selectedPathIds: selectedPaths.map(p => p.id),
       all: resolved.all,
       customQuestion,
+      expanded: expanded || discovery.expanded || false,
       providers: discovery.providers,
       query: seed,
     }, 200, req);
@@ -1602,7 +2178,7 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '40',
+        version: '41',
         build: 'workspace',
         schemaVersion: 2,
         provider: ai.provider,
@@ -1611,7 +2187,7 @@ export default {
         routes: ['/health', '/search', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -1648,8 +2224,10 @@ function extractMeta(html) {
   const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '';
   const desc = (html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i) ||
     html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i) || [])[1] || '';
-  const ogImage = (html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']*)["']/i) ||
-    html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:image["']/i) || [])[1] || '';
+  const ogImage = (html.match(/<meta[^>]+property=["']og:image(?::url)?["'][^>]+content=["']([^"']*)["']/i) ||
+    html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:image(?::url)?["']/i) ||
+    html.match(/<meta[^>]+(?:name|property)=["']twitter:image(?::src)?["'][^>]+content=["']([^"']*)["']/i) ||
+    html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+(?:name|property)=["']twitter:image/i) || [])[1] || '';
   const ogVideo = (html.match(/<meta[^>]+property=["']og:video(?::url)?["'][^>]+content=["']([^"']*)["']/i) ||
     html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:video(?::url)?["']/i) || [])[1] || '';
   return {
@@ -1704,13 +2282,36 @@ function simpleFingerprint(text) {
   return 'fp_' + (h >>> 0).toString(16);
 }
 
-async function retrieveSource(targetUrl) {
+async function retrieveWayback(url) {
+  try {
+    const r = await fetchText('https://archive.org/wayback/available?url=' + encodeURIComponent(url), {
+      headers: { accept: 'application/json', 'user-agent': 'CarmenResearch/41 (investigation workspace)' },
+    }, 8000);
+    if (!r.ok) return null;
+    const j = await r.json();
+    const snap = j?.archived_snapshots?.closest;
+    if (!snap || !snap.available || !snap.url) return null;
+    return snap.url;
+  } catch { return null; }
+}
+
+function decorateAccess(base, access) {
+  return {
+    ...base,
+    status: access.status || base.status,
+    accessState: access.accessState,
+    accessNote: access.note || base.accessNote || '',
+    error: access.error || base.error,
+  };
+}
+
+async function retrieveSource(targetUrl, opts = {}) {
   const url = normalizeUrlForStore(targetUrl);
-  if (!url) return { status: 'RETRIEVAL_FAILED', error: 'Invalid URL', url: targetUrl };
+  if (!url) return { status: 'RETRIEVAL_FAILED', accessState: 'UNVERIFIED', error: 'Invalid URL', url: targetUrl };
   let host = '';
-  try { host = new URL(url).hostname; } catch { return { status: 'RETRIEVAL_FAILED', error: 'Invalid URL', url }; }
+  try { host = new URL(url).hostname; } catch { return { status: 'RETRIEVAL_FAILED', accessState: 'UNVERIFIED', error: 'Invalid URL', url }; }
   if (PRIVATE_HOST_RE.test(host) || BLOCKED_HOSTS.has(host.toLowerCase())) {
-    return { status: 'RETRIEVAL_FAILED', error: 'Private or blocked host', url, host };
+    return { status: 'RETRIEVAL_FAILED', accessState: 'BLOCKED', error: 'Private or blocked host', url, host, accessNote: 'Carmen does not retrieve private or blocked hosts.' };
   }
   if (/(^|\.)reddit\.com$/i.test(host)) {
     try {
@@ -1728,6 +2329,7 @@ async function retrieveSource(targetUrl) {
           if (typeof post.url_overridden_by_dest === 'string' && /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(post.url_overridden_by_dest)) images.push(post.url_overridden_by_dest);
           return {
             status: 'RETRIEVED',
+            accessState: 'DIRECTLY_RETRIEVED',
             url,
             finalUrl: post.permalink ? ('https://www.reddit.com' + post.permalink) : url,
             title: post.title || 'Reddit post',
@@ -1749,15 +2351,38 @@ async function retrieveSource(targetUrl) {
   }
   try {
     const r = await fetchText(url, { headers: BROWSER_HEADERS, redirect: 'follow' }, RETRIEVE_TIMEOUT_MS);
-    if (!r.ok) return { status: 'RETRIEVAL_FAILED', error: `HTTP ${r.status}`, url, httpStatus: r.status };
+    if (!r.ok) {
+      const access = classifyAccess({ httpStatus: r.status, html: '', url, host, error: 'HTTP ' + r.status });
+      const failed = decorateAccess({ url, host, httpStatus: r.status, error: 'HTTP ' + r.status }, access);
+      const canAlt = !opts.skipAlt && (access.accessState === 'BLOCKED' || access.accessState === 'UNAVAILABLE') && access.accessState !== 'PAYWALLED' && access.accessState !== 'AUTHENTICATION_REQUIRED' && access.accessState !== 'AGE_RESTRICTED';
+      if (canAlt && (r.status === 404 || r.status === 410)) {
+        const snap = await retrieveWayback(url);
+        if (snap) {
+          const alt = await retrieveSource(snap, { skipAlt: true });
+          if (alt.status === 'RETRIEVED') {
+            return {
+              ...alt,
+              url,
+              accessState: 'PUBLIC_ALTERNATIVE',
+              accessNote: 'Original page was unavailable. Public archived snapshot retrieved. This is not a paywall bypass.',
+              alternativeOf: url,
+              alternativeSource: 'Internet Archive',
+              alternativeUrl: snap,
+            };
+          }
+        }
+      }
+      return failed;
+    }
     const buf = await r.arrayBuffer();
     if (buf.byteLength > MAX_RETRIEVE_BYTES) {
-      return { status: 'RETRIEVAL_FAILED', error: 'Response too large', url, bytes: buf.byteLength };
+      return { status: 'RETRIEVAL_FAILED', accessState: 'BLOCKED', error: 'Response too large', url, bytes: buf.byteLength, accessNote: 'The response was too large to retrieve safely.' };
     }
     const ct = (r.headers.get('content-type') || '').toLowerCase();
     if (ct.startsWith('image/')) {
       return {
         status: 'RETRIEVED',
+        accessState: 'DIRECTLY_RETRIEVED',
         url,
         finalUrl: r.url || url,
         title: humanizePath(url) || host,
@@ -1774,27 +2399,22 @@ async function retrieveSource(targetUrl) {
       };
     }
     const html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+    const access = classifyAccess({ httpStatus: r.status, html, url, host });
     const meta = extractMeta(html);
     const text = cleanText(html).slice(0, MAX_TEXT_CHARS);
-    const rawImgs = [];
-    if (meta.ogImage) rawImgs.push(meta.ogImage);
-    const imgRe = /<img[^>]+src=["']([^"']+)["']/gi;
-    let m;
-    while ((m = imgRe.exec(html)) && rawImgs.length < 40) rawImgs.push(m[1]);
-    const images = rankImages(rawImgs, r.url || url).slice(0, MAX_IMAGES);
+    const extraImgs = extractImagesFromHtml(html, r.url || url);
+    const images = rankImages([meta.ogImage, ...extraImgs], r.url || url).slice(0, 18);
     const identifiers = extractPublicIdentifiers(html, r.url || url);
     let ogAbs = meta.ogImage;
     try { if (ogAbs) ogAbs = new URL(decodeEntities(ogAbs), r.url || url).href; } catch {}
     let ogVideo = meta.ogVideo || '';
     try { if (ogVideo) ogVideo = new URL(decodeEntities(ogVideo), r.url || url).href; } catch {}
-    return {
-      status: 'RETRIEVED',
+    const publicBits = [meta.title, meta.description, ogAbs].filter(Boolean).join(' · ').slice(0, 400);
+    const base = {
       url,
       finalUrl: r.url || url,
       title: meta.title,
       description: meta.description,
-      text,
-      textExcerpt: text,
       ogImage: ogAbs || images[0] || '',
       ogVideo,
       images,
@@ -1803,13 +2423,52 @@ async function retrieveSource(targetUrl) {
       bytes: buf.byteLength,
       contentType: r.headers.get('content-type') || '',
       identifiers,
+      galleryUrls: galleryLinks(html, r.url || url),
+    };
+    if (access.status !== 'RETRIEVED') {
+      return {
+        ...base,
+        status: 'RETRIEVAL_FAILED',
+        accessState: access.accessState,
+        accessNote: access.note,
+        error: access.error || 'inaccessible',
+        httpStatus: r.status,
+        publicEvidence: publicBits,
+        text: '',
+        textExcerpt: '',
+      };
+    }
+    return {
+      ...base,
+      status: 'RETRIEVED',
+      accessState: access.accessState,
+      accessNote: access.note,
+      text,
+      textExcerpt: text,
+      publicEvidence: access.accessState === 'PARTIALLY_RETRIEVED' ? publicBits : '',
     };
   } catch (e) {
-    return {
-      status: 'RETRIEVAL_FAILED',
-      error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 300),
-      url,
-    };
+    const err = e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 300);
+    const access = classifyAccess({ html: '', url, host, error: err });
+    const failed = decorateAccess({ url, error: err }, access);
+    if (!opts.skipAlt && err === 'timeout') {
+      const snap = await retrieveWayback(url);
+      if (snap) {
+        const alt = await retrieveSource(snap, { skipAlt: true });
+        if (alt.status === 'RETRIEVED') {
+          return {
+            ...alt,
+            url,
+            accessState: 'PUBLIC_ALTERNATIVE',
+            accessNote: 'Original page timed out. Public archived snapshot retrieved. This is not a paywall bypass.',
+            alternativeOf: url,
+            alternativeSource: 'Internet Archive',
+            alternativeUrl: snap,
+          };
+        }
+      }
+    }
+    return failed;
   }
 }
 
@@ -1830,4 +2489,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, collectDiveVideos, parseRelated };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, collectDiveVideos, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext };

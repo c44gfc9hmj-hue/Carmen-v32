@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -153,6 +153,57 @@ console.log('--- dive path selection is not cosmetic ---');
   const rel = parseRelated('RELATED\n- technique: a public form — mentioned on the source page\n- person: someone else — linked from the same site');
   assert(rel.length >= 1 && rel[0].kind === 'technique', 'related entities parsed from writeup');
   assert(!JSON.stringify(variants).toLowerCase().includes('frogtie'), 'path variants are not hardcoded to a test query');
+  const personAll = resolveDivePaths('person', { all: true });
+  assert(personAll.selected.some(p => p.id === 'evidence'), 'ALL person paths include evidence');
+  assert(personAll.selected.some(p => p.id === 'videos'), 'ALL person paths include videos');
+  const skillAll = resolveDivePaths('skill', { all: true });
+  assert(skillAll.selected.length === researchPaths('skill').length, 'ALL skill selects every skill path');
+  const allVariants = pathSearchVariants('example subject', personAll.selected);
+  assert(allVariants.length >= 4, 'ALL generates multiple path-specific search variants');
+}
+
+console.log('--- contextual visual research ---');
+{
+  const c = classifyQuery('Alex Rivera interview');
+  assert(c.type === 'person', 'person + context still classifies as person');
+  assert(c.context && /interview/i.test(c.context), 'remainder is treated as requested context');
+  assert(c.relation === 'interview', 'interview relation detected');
+  const v = buildSearchVariants('Alex Rivera interview', c);
+  assert(v.some(x => /interview/i.test(x.q)), 'variants include the requested context');
+  assert(v.some(x => /official|profile|website/i.test(x.q)), 'variants still look for official/profile pages');
+  const ranked = rankResults('Alex Rivera interview', [
+    { title: 'Alex Rivera plumbing', url: 'https://alexriveraplumbing.example', source: 'Bing', snippet: 'local plumber' },
+    { title: 'Alex Rivera interview', url: 'https://news.example/alex-rivera-interview', source: 'Bing', snippet: 'A public interview with Alex Rivera' },
+  ], c);
+  assert(ranked[0].url.includes('interview'), 'context-matching source ranks above a name-only collision');
+  const parsed = parseQueryContext('Alex Rivera red dress', classifyQuery('Alex Rivera red dress'));
+  assert(parsed.subject === 'Alex Rivera' && parsed.context === 'red dress', 'clothing context split from the person');
+}
+
+console.log('--- expanded research variants ---');
+{
+  const c = classifyQuery('Alex Rivera');
+  const ex = buildExpandedVariants('Alex Rivera', c);
+  assert(ex.some(x => /photos|images|gallery/i.test(x.q)), 'expanded variants include image indexes');
+  assert(ex.some(x => /youtube|video/i.test(x.q)), 'expanded variants include video indexes');
+  assert(ex.some(x => /official|profile|website/i.test(x.q)), 'expanded variants include official pages');
+  assert(!JSON.stringify(ex).toLowerCase().includes('riley'), 'expanded variants are not hardcoded to a test person');
+}
+
+console.log('--- access states ---');
+{
+  const pay = classifyAccess({ httpStatus: 200, html: '<html><title>Subscribe to continue</title><body>Subscribe to continue reading this article. Become a member today.</body></html>', url: 'https://news.example/story', host: 'news.example' });
+  assert(pay.accessState === 'PAYWALLED', 'paywall language is PAYWALLED');
+  assert(pay.status === 'RETRIEVAL_FAILED', 'paywalled content is not marked retrieved');
+  assert(/paywall/i.test(accessLabel(pay.accessState)), 'paywall label is explicit');
+  const auth = classifyAccess({ httpStatus: 401, html: '', url: 'https://example.com/private', host: 'example.com' });
+  assert(auth.accessState === 'AUTHENTICATION_REQUIRED', 'HTTP 401 is authentication required');
+  const age = classifyAccess({ httpStatus: 200, html: '<p>You must be 18. Age verification required before viewing.</p>', url: 'https://example.com/gate', host: 'example.com' });
+  assert(age.accessState === 'AGE_RESTRICTED', 'age gate detected');
+  const ok = classifyAccess({ httpStatus: 200, html: '<html><title>Example Domain</title><body>' + 'This domain is for use in illustrative examples in documents. '.repeat(8) + '</body></html>', url: 'https://example.com/', host: 'example.com' });
+  assert(ok.accessState === 'DIRECTLY_RETRIEVED', 'ordinary public page is directly retrieved');
+  const priv = classifyAccess({ httpStatus: 200, html: '', url: 'http://127.0.0.1/', host: '127.0.0.1' });
+  assert(priv.accessState === 'BLOCKED', 'private host is blocked');
 }
 
 console.log('--- no hardcoded test subjects in production worker ---');
@@ -161,6 +212,7 @@ console.log('--- no hardcoded test subjects in production worker ---');
   assert(!/\bfrogtie\b/i.test(src), 'worker does not hardcode frogtie');
   assert(!/dreamorgan/i.test(src), 'worker does not hardcode the person-search test domain');
   assert(!/\bdrea morgan\b/i.test(src), 'worker does not hardcode Drea Morgan');
+  assert(!/\briley reid\b/i.test(src), 'worker does not hardcode Riley Reid');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

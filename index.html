@@ -87,6 +87,12 @@ main{max-width:720px;margin:0 auto;padding:14px 16px 28px}
 .badge.observed{color:var(--observed);border-color:#2a3a44}
 .badge.inferred{color:var(--inferred);border-color:#3a3148}
 .badge.unknown{color:var(--unknown);border-color:#4a4020}
+.badge.access-ok{color:var(--good);border-color:#2a4432}
+.badge.access-warn{color:var(--warn);border-color:#4a4020}
+.badge.access-bad{color:var(--danger);border-color:#4a2020}
+.access-banner{border:1px solid var(--warn);background:#1a1710;border-radius:12px;padding:10px 12px;margin:8px 0;font-size:13px}
+.access-banner b{display:block;margin-bottom:4px}
+.expanded-card{border:1px dashed var(--line2);border-radius:14px;padding:12px;margin:10px 0;background:#10141a}
 .confidence.high{color:var(--good)}
 .confidence.medium{color:var(--warn)}
 .confidence.low{color:var(--danger)}
@@ -199,6 +205,11 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <div id="classBar"></div>
     <div id="suggestBar"></div>
     <div id="searchDiagnostics" class="diags"></div>
+    <div id="expandedResearch" class="expanded-card hidden">
+      <h3 style="margin:0 0 6px">Expanded Research</h3>
+      <p class="muted" id="expandedLead">Try harder across the public web. One blocked website is not the end of the investigation.</p>
+      <button class="btn primary" id="expandedBtn">Expanded Research</button>
+    </div>
   </div>
   <div class="card">
     <h3>Candidates <span id="resultCount" class="badge"></span></h3>
@@ -208,6 +219,9 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <div class="pathpick" id="diveSelectChips"></div>
       <label class="hint">Custom question — Carmen will choose useful paths from this</label>
       <textarea id="diveCustom" placeholder="Focus on public interviews and videos…"></textarea>
+      <label class="hint" style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <input id="diveExpanded" type="checkbox" style="width:auto;flex:0 0 auto"> Use Expanded Research (try harder across the public web)
+      </label>
       <div class="row" style="margin-top:8px">
         <button class="btn primary" id="startDiveBtn">Start Deep Dive</button>
         <button class="btn ghost" id="cancelDiveBtn">Not now</button>
