@@ -42,16 +42,29 @@ button.ghost{background:transparent}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .chip{padding:7px 11px;border-radius:999px;border:1px solid var(--line);background:#0f1520;font-size:12px;font-weight:600;color:var(--muted)}
 .chip.active{background:#1d4f67;border-color:#2b6f91;color:#fff}
-.result{border:1px solid var(--line);border-radius:14px;padding:11px;margin-bottom:9px;background:var(--card2);cursor:pointer;-webkit-tap-highlight-color:rgba(255,255,255,.05)}
+.result{border:1px solid var(--line);border-radius:16px;padding:0;margin-bottom:12px;background:var(--card2);cursor:pointer;-webkit-tap-highlight-color:rgba(255,255,255,.05);overflow:hidden}
+.result.selected{border-color:var(--accent);box-shadow:0 0 0 2px #7dd3fc55}
+.result .hero{width:100%;height:190px;object-fit:cover;background:#0a0e14;display:block}
+.result .rbody{padding:11px}
 .result .rhead{display:flex;gap:9px}
-.result .rthumb{flex:0 0 auto;width:64px;height:64px;border-radius:9px;object-fit:cover;background:#000;border:1px solid var(--line)}
+.result .rthumb{flex:0 0 auto;width:92px;height:92px;border-radius:10px;object-fit:cover;background:#000;border:1px solid var(--line)}
 .result .rmeta{min-width:0;flex:1}
-.result .rtitle{font-weight:600;line-height:1.25}
+.result .rtitle{font-weight:700;line-height:1.25;font-size:16px}
 .result .rsrc{font-size:11px;color:var(--muted);margin-top:2px}
 .result .rsrc .host{color:var(--accent)}
 .result .rsnippet{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.result .rwhy{font-size:12px;color:var(--accent);margin-top:6px;line-height:1.35}
 .result .racts{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
 .result .racts button{flex:1;min-width:74px;padding:7px 8px;font-size:12px}
+.thumbs{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;padding-bottom:2px}
+.thumbs img{width:76px;height:76px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#000;flex:0 0 auto}
+.selbar{border:1px dashed var(--accent);border-radius:14px;padding:10px;margin-bottom:10px;background:#0e2a36}
+.dive-step{font-size:12px;color:var(--muted);margin:4px 0}
+.dive-step.on{color:var(--good)}
+.imgstrip img.broken{display:none}
+.confidence.high{color:var(--good)}
+.confidence.medium{color:var(--warn)}
+.confidence.low{color:var(--danger)}
 .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#1b2433;color:var(--muted);border:1px solid var(--line)}
 .badge.observed{background:#0e2a36;color:var(--observed);border-color:#1d4f67}
 .badge.inferred{background:#241a36;color:var(--inferred);border-color:#3b2a5c}
@@ -86,14 +99,19 @@ section.hidden{display:none!important}
 .next{border:1px dashed var(--line)}
 h4{margin:0 0 8px;font-size:14px}
 details summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}
-.skeleton{background:linear-gradient(90deg,#10151f 25%,#1b2433 37%,#10151f 63%);background-size:400% 100%;animation:sk 1.3s ease infinite;border-radius:8px}
+.aliases{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.aliases span{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:3px 8px;color:var(--muted)}
+.lightbox{position:fixed;inset:0;background:#000c;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:10px}
+.lightbox.hidden{display:none!important}
+.lightbox img{max-width:100%;max-height:72vh;object-fit:contain;border-radius:12px;background:#000}
+.lightbox .hint{text-align:center;max-width:520px}
 @keyframes sk{0%{background-position:100% 50%}100%{background-position:0 50%}}
 </style>
 </head>
 <body>
 <header>
   <h1>Carmen</h1>
-  <small>Investigation hub · discovery · evidence · synthesis</small>
+  <small>Visual public-web investigation · discovery · evidence · synthesis</small>
 </header>
 <main>
 
@@ -108,12 +126,9 @@ details summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}
     <label style="margin-top:10px">What are you investigating?</label>
     <textarea id="projectQuestion" placeholder="Example: Background and public footprint of a person, topic, website, product, or claim."></textarea>
     <label style="margin-top:10px">Instructions <span class="hint">(research direction — never external actions)</span></label>
-    <textarea id="projectInstructions" placeholder="Goals, questions to answer, sources to prioritize or exclude, dates/locations/identifiers that matter, uncertainty you want resolved…"></textarea>
-    <div class="row" style="margin-top:8px">
-      <button id="saveProjectQuestion" class="primary">Save investigation</button>
-      <button id="resumeHint" class="ghost" type="button">Investigations</button>
-    </div>
-    <p id="projectMeta" class="muted" style="margin-top:6px">Not saved yet</p>
+    <textarea id="projectInstructions" placeholder="Goals, questions to answer, sources to prioritize or exclude, dates/locations/identifiers that matter…"></textarea>
+    <button id="saveProjectQuestion" class="primary" style="margin-top:8px">Save investigation</button>
+    <p id="projectMeta" class="muted" style="margin-top:6px">Investigations stay on this phone.</p>
     <p id="projectCount" class="muted">0 evidence items</p>
   </section>
 
@@ -155,8 +170,8 @@ details summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}
   <section id="investigateView">
     <div class="card">
       <h3>Discovery</h3>
-      <p class="muted">Enter a person, topic, website, claim, product, or position. Carmen searches public sources and surfaces useful results before deeper analysis.</p>
-      <label>Subject type</label>
+      <p class="muted">Give Carmen a person, entity, topic, object, or URL. It classifies the query, searches public sources, and ranks visual candidates — not a generic dump of search-engine links.</p>
+      <label>Subject type <span class="hint">(hint — Carmen also auto-classifies)</span></label>
       <div class="chips" id="subjectChips">
         <button class="chip active" data-subject="person">Person</button>
         <button class="chip" data-subject="topic">Topic</button>
@@ -166,26 +181,30 @@ details summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}
         <button class="chip" data-subject="position">Position / Instruction</button>
         <button class="chip" data-subject="other">Other</button>
       </div>
-      <label>Subject or query</label>
-      <textarea id="searchQuery" placeholder="Example: a name, a question, a URL, or a claim to verify."></textarea>
+      <label>Subject, URL, or query</label>
+      <textarea id="searchQuery" placeholder="A name, a domain, a Reddit URL, a product, or a claim."></textarea>
       <div class="row" style="margin-top:8px">
         <button id="discoverBtn" class="primary">🔍 Discover</button>
-        <button id="deepDiveBtn">🧠 Deep dive</button>
+        <button id="deepDiveBtn" disabled>🧠 Deep dive</button>
         <button id="addQueueBtn">＋ Queue URL</button>
       </div>
+      <p id="deepDiveHint" class="hint">Search first, then tap a candidate to select it. Deep Dive expands that candidate with more public sources, images, and OBSERVED / INFERRED / UNKNOWN analysis.</p>
       <p class="warning">Carmen only reads public information. It never contacts people, sends messages, posts, submits forms, or takes external actions.</p>
+      <div id="classBar"></div>
       <div id="searchDiagnostics" class="diags"></div>
     </div>
 
     <div class="card">
-      <h3>Discovery results <span id="resultCount" class="badge"></span></h3>
+      <h3>Candidates <span id="resultCount" class="badge"></span></h3>
+      <div id="selectedBanner"></div>
       <div id="results"></div>
-      <p id="resultsEmpty" class="muted">Run a discovery search to see public results here. Each result keeps its URL, source, snippet, timestamp, and image where available.</p>
+      <p id="resultsEmpty" class="muted">Run discovery to see ranked public candidates. Each card keeps images, provenance, a match reason, and a Deep Dive action.</p>
     </div>
 
     <div class="card">
       <h3>Deep dive</h3>
-      <p class="muted">Carmen reviews the current subject and saved discovery context, then separates observations, inferences, and unknowns. Nothing is sent externally.</p>
+      <p class="muted">Expands the selected candidate: more public sources, retrieved pages, images with provenance, and conservative analysis. Not a repeat of the same keyword search.</p>
+      <div id="deepDiveProgress"></div>
       <div id="deepDiveResult"></div>
     </div>
 
@@ -220,7 +239,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}
     <div class="card">
       <h3>Carmen Browser</h3>
       <div class="urlrow">
-        <input id="url" value="https://www.google.com" inputmode="url" autocapitalize="off" spellcheck="false">
+        <input id="url" value="" placeholder="https://…" inputmode="url" autocapitalize="off" spellcheck="false">
         <button id="go" class="primary">Go</button>
       </div>
       <div class="row" style="margin-top:8px">
@@ -361,6 +380,11 @@ details summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}
 </nav>
 
 <div id="toast" class="toast hidden"></div>
+<div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true">
+  <img id="lightboxImg" alt="Evidence image">
+  <p id="lightboxCap" class="hint"></p>
+  <button id="lightboxClose" class="ghost">Close</button>
+</div>
 <script src="app.js"></script>
 </body>
 </html>

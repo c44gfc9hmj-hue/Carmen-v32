@@ -7,9 +7,9 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '37';
-const BACKEND_KEY = 'carmen_phone_backend_v37';
-const URL_KEY = 'carmen_last_url_v37';
+const VERSION = '38';
+const BACKEND_KEY = 'carmen_phone_backend_v36';
+const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
 const DB_VERSION = 2;
 const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).length) ? window.CARMEN_BACKEND : location.origin;
@@ -17,6 +17,9 @@ const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).leng
 let db = null, stream = null, current = null, historyStack = [], historyIndex = -1, currentProjectId = null;
 let currentSubject = 'person';
 let lastResults = [];
+let selectedCandidate = null;
+let lastClassification = null;
+let lastDiscoveryMeta = null;
 
 $('backend').value = localStorage.getItem(BACKEND_KEY) || SAME_ORIGIN;
 
@@ -133,13 +136,9 @@ async function ensureProject() {
   }
   currentProjectId = (currentProjectId && ps.some(p => p.id === currentProjectId)) ? currentProjectId : ps[0].id;
   renderProjects(ps);
-  const curP = ps.find(p => p.id === currentProjectId);
-  $('projectQuestion').value = curP?.question || '';
-  if ($('projectInstructions')) $('projectInstructions').value = curP?.instructions || '';
-  if ($('projectMeta')) {
-    const lu = curP?.updatedAt || curP?.createdAt;
-    $('projectMeta').textContent = lu ? ('Saved · last updated ' + new Date(lu).toLocaleString()) : 'Not saved yet';
-  }
+  const cur = ps.find(p => p.id === currentProjectId);
+  $('projectQuestion').value = cur?.question || '';
+  if ($('projectInstructions')) $('projectInstructions').value = cur?.instructions || '';
   await refresh();
 }
 function renderProjects(ps) {
@@ -160,7 +159,7 @@ async function refresh() {
   renderPatternBoard(projectRefs);
   renderArchive(projectRefs);
   renderSourceStats(projectRefs);
-  await renderDashboard(projectRefs, projectEvents);
+  renderDashboard(projectRefs);
   const q = queue.filter(x => x.projectId === currentProjectId);
   $('queueCount').textContent = q.filter(x => x.status === 'queued').length;
   renderQueue(q);
@@ -245,18 +244,10 @@ function evidenceHealth(refs) {
   if (n < 5) tips.push(`Add ${5 - n} more reference${5 - n === 1 ? '' : 's'} for a stronger comparison set.`);
   return { score, label: score >= 80 ? 'Strongly documented' : score >= 55 ? 'Developing' : 'Needs more documentation', tips };
 }
-async function renderDashboard(refs, events = []) {
+function renderDashboard(refs) {
   const h = evidenceHealth(refs);
   $('evidenceHealth').innerHTML = `<div class="stat" style="grid-template-columns:repeat(3,1fr)"><div><div class="num">${h.score}%</div><small>Documentation</small></div><div><div class="num">${refs.filter(r => r.sourceType).length}</div><small>Typed sources</small></div><div><div class="num">${refs.filter(r => Array.isArray(r.observations) && r.observations.length).length}</div><small>Analyzed</small></div></div><p><b>${esc(h.label)}</b></p><small>${h.tips.map(esc).join(' · ')}</small>`;
-  const projectEvents = (events || []).filter(e => e.projectId === currentProjectId)
-    .sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))).slice(0, 20);
-  const typeLabel = (t) => ({ investigation_created:'Investigation created', investigation_resumed:'Resumed', instructions_changed:'Instructions updated', discovery_saved:'Discovery', source_retrieved:'Source retrieved', retrieval_failed:'Retrieval failed', evidence_saved:'Evidence saved', deep_dive:'Deep dive', analysis_completed:'Analysis', pattern_created:'Pattern', lead_created:'Lead', queue_added:'Queued', reference_saved:'Capture saved', evidence_synthesis:'Synthesis' }[t] || t);
-  $('timeline').innerHTML = projectEvents.map(e => {
-    const when = e.at ? new Date(e.at).toLocaleString() : '';
-    const extra = e.url ? esc(hostOf(e.url) || e.url) : (e.query ? esc(String(e.query).slice(0, 60)) : (e.subject || ''));
-    const prov = e.provenance ? ' ' + provenanceBadge(e.provenance) : '';
-    return `<div class="pattern"><b>${esc(typeLabel(e.type))}</b>${prov}<br><small>${when}${extra ? ' · ' + extra : ''}</small></div>`;
-  }).join('') || '<span class="muted">Investigation timeline will appear here as you work.</span>';
+  $('timeline').innerHTML = refs.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 8).map(r => `<div class="pattern"><b>${esc(r.title || r.url || 'Evidence')}</b> <span class="badge">${esc(sourceTypeLabel(r.sourceType || 'web'))}</span><br><small>${new Date(r.createdAt).toLocaleString()} · ${esc(r.sourceName || hostOf(r.url) || 'source')}</small></div>`).join('') || '<span class="muted">Your recent evidence timeline will appear here.</span>';
 }
 
 /* ---------- research queue ---------- */
@@ -298,6 +289,36 @@ function subjectQueryHint(s) {
   return ({ person: 'Full name and any known context work best.', website: 'Paste a domain or URL.', claim: 'State the claim to verify.', product: 'Product, brand, or entity name.', position: 'Paste the instruction or position to examine.', topic: 'Describe the topic or question.', other: 'Describe what to investigate.' }[s] || '');
 }
 function backendUrl() { return $('backend').value.trim().replace(/\/$/, ''); }
+function imgSrc(u) {
+  if (!u || typeof u !== 'string') return '';
+  if (u.startsWith('data:image/')) return u;
+  const base = backendUrl();
+  if (!base) return u;
+  return base + '/img?u=' + encodeURIComponent(u);
+}
+function confidenceLabel(c) {
+  return c === 'high' ? 'High confidence' : c === 'medium' ? 'Medium confidence' : 'Low confidence';
+}
+function updateDeepDiveState() {
+  const btn = $('deepDiveBtn');
+  const hint = $('deepDiveHint');
+  if (!btn) return;
+  const q = $('searchQuery')?.value.trim();
+  const hasCandidates = lastResults.length > 0;
+  const ready = !!(selectedCandidate || hasCandidates);
+  btn.disabled = !ready;
+  btn.classList.toggle('primary', !!selectedCandidate);
+  if (!q && !hasCandidates) {
+    hint.textContent = 'Enter a subject or URL and run Discover. Deep Dive stays unavailable until Carmen has a candidate to investigate.';
+  } else if (!hasCandidates) {
+    hint.textContent = 'No public candidates yet. Run Discover — Deep Dive will not invent sources.';
+  } else if (!selectedCandidate) {
+    hint.textContent = 'Tap a candidate card to select it, then Deep Dive. Without a selection, Deep Dive uses the top-ranked results.';
+    btn.disabled = false;
+  } else {
+    hint.textContent = 'Deep Dive will expand “' + (selectedCandidate.title || selectedCandidate.domain || 'this candidate') + '” with more public sources, images, and OBSERVED / INFERRED / UNKNOWN analysis.';
+  }
+}
 
 async function retrieveSource(url) {
   const base = backendUrl();
@@ -315,31 +336,37 @@ function provenanceBadge(p) {
 
 async function discover() {
   const q = $('searchQuery').value.trim();
-  if (!q) return toast('Enter a subject or query first.');
+  if (!q) return toast('Enter a subject, name, or URL first.');
   const base = backendUrl();
   if (!base) return toast('Set the Carmen Worker URL in Capture → Connection.');
   localStorage.setItem(BACKEND_KEY, base);
   const btn = $('discoverBtn');
   btn.disabled = true;
-  $('results').innerHTML = '<div class="skeleton" style="height:64px;margin-bottom:9px"></div>'.repeat(3);
+  selectedCandidate = null;
+  $('results').innerHTML = '<div class="skeleton" style="height:120px;margin-bottom:9px"></div>'.repeat(3);
   $('resultsEmpty').classList.add('hidden');
-  $('searchDiagnostics').textContent = 'Searching public sources…';
+  $('searchDiagnostics').textContent = 'Searching public sources and ranking candidates…';
+  $('classBar').innerHTML = '';
+  $('selectedBanner').innerHTML = '';
+  updateDeepDiveState();
   try {
-    const r = await fetch(base + '/search?q=' + encodeURIComponent(q), { headers: { accept: 'application/json' } });
+    const r = await fetch(base + '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(currentSubject), { headers: { accept: 'application/json' } });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
     if (!r.ok || data.error) throw Error(data.error || `HTTP ${r.status}`);
     lastResults = Array.isArray(data.results) ? data.results : [];
+    lastClassification = data.classification || null;
+    lastDiscoveryMeta = data;
+    renderClassification(data);
     renderResults(lastResults, data.providers || {});
-    const discId = 'disc_' + crypto.randomUUID();
-    await put('discoveries', { id: discId, projectId: currentProjectId, query: q, subject: currentSubject, results: lastResults, providers: data.providers || {}, at: new Date().toISOString(), status: 'DISCOVERED' });
-    try {
-      const projs = await all('projects');
-      const p = projs.find(x => x.id === currentProjectId);
-      if (p) { p.lastDiscoveryId = discId; p.updatedAt = new Date().toISOString(); await put('projects', p); }
-    } catch {}
-    await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'discovery_saved', at: new Date().toISOString(), query: q, discId, resultCount: lastResults.length });
-    toast(lastResults.length ? `Found ${lastResults.length} public result${lastResults.length === 1 ? '' : 's'}.` : 'No public results. See diagnostics.');
+    await put('discoveries', {
+      id: currentProjectId, projectId: currentProjectId, query: q, subject: currentSubject,
+      results: lastResults, providers: data.providers || {}, classification: data.classification,
+      variants: data.variants, at: new Date().toISOString(), status: 'DISCOVERED',
+    });
+    await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'discovery_saved', at: new Date().toISOString(), query: q, resultCount: lastResults.length });
+    updateDeepDiveState();
+    toast(lastResults.length ? `Ranked ${lastResults.length} public candidate${lastResults.length === 1 ? '' : 's'}.` : 'No public results. See diagnostics.');
   } catch (e) {
     $('results').innerHTML = '';
     $('resultsEmpty').textContent = 'Discovery failed: ' + e.message;
@@ -348,34 +375,86 @@ async function discover() {
     toast('Discovery failed: ' + e.message);
   } finally {
     btn.disabled = false;
+    updateDeepDiveState();
   }
+}
+function renderClassification(data) {
+  const c = data && data.classification;
+  if (!c) { $('classBar').innerHTML = ''; return; }
+  const variants = (data.variants || []).map(v => esc(v.q) + (v.why ? ` <span class="muted">(${esc(v.why)})</span>` : '')).join(' · ');
+  const warn = data.warning ? `<p class="warning">${esc(data.warning)}</p>` : '';
+  $('classBar').innerHTML = `<p class="hint" style="margin-top:8px"><span class="badge">${esc(c.type)}</span> <span class="confidence ${esc(c.confidence)}">${esc(c.confidence)}</span> — ${esc(c.reason)}${c.isUrl ? ' · treating this as a page to inspect' : ''}${variants ? '<br>Search variants: ' + variants : ''}</p>${warn}`;
+}
+function selectCandidate(r, i) {
+  selectedCandidate = r;
+  document.querySelectorAll('#results .result').forEach(el => el.classList.toggle('selected', el.dataset.i === String(i)));
+  $('selectedBanner').innerHTML = r ? `<div class="selbar"><b>Selected candidate</b><br>${esc(r.title || r.url)} · ${esc(r.domain || hostOf(r.url))}<br><small>${esc(r.reason || '')}</small></div>` : '';
+  updateDeepDiveState();
+  persistSelection(r);
+}
+async function persistSelection(r) {
+  if (!currentProjectId || !r) return;
+  try {
+    const disc = (await all('discoveries')).find(d => d.id === currentProjectId) || { id: currentProjectId, projectId: currentProjectId };
+    disc.selectedUrl = r.url;
+    disc.results = lastResults;
+    await put('discoveries', disc);
+  } catch {}
+}
+function openLightbox(src, cap) {
+  const box = $('lightbox');
+  if (!box) return;
+  $('lightboxImg').src = src;
+  $('lightboxCap').textContent = cap || 'Image keeps its page provenance. Visual consistency is not identity proof.';
+  box.classList.remove('hidden');
+}
+function closeLightbox() {
+  const box = $('lightbox');
+  if (!box) return;
+  box.classList.add('hidden');
+  $('lightboxImg').src = '';
 }
 function renderResults(results, providers) {
   $('resultCount').textContent = results.length ? String(results.length) : '';
   $('searchDiagnostics').innerHTML = renderDiagnostics(providers);
   if (!results.length) {
     $('results').innerHTML = '';
-    $('resultsEmpty').textContent = 'No public-web results were returned. Provider diagnostics below show which sources responded.';
+    $('resultsEmpty').textContent = 'No public-web candidates were returned. Diagnostics below show which sources responded.';
     $('resultsEmpty').classList.remove('hidden');
+    updateDeepDiveState();
     return;
   }
   $('resultsEmpty').classList.add('hidden');
-  $('results').innerHTML = results.map((r, i) => `<div class="result" data-i="${i}">
-    <div class="rhead">
-      ${r.image ? `<img class="rthumb" src="${esc(r.image)}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
-      <div class="rmeta">
-        <div class="rtitle"><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.title)}</a></div>
-        <div class="rsrc"><span class="host">${esc(hostOf(r.url))}</span> · ${esc(r.source)}${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''} · <span class="badge">DISCOVERED</span></div>
+  $('results').innerHTML = results.map((r, i) => {
+    const imgs = [...new Set([r.image, ...(r.images || [])].filter(Boolean))].slice(0, 6);
+    const hero = imgs[0];
+    const rest = imgs.slice(1, 5);
+    const selected = selectedCandidate && selectedCandidate.url === r.url;
+    const aliases = (r.aliases || []).filter(Boolean).slice(0, 4);
+    return `<div class="result${selected ? ' selected' : ''}" data-i="${i}">
+      ${hero ? `<img class="hero" data-full="${esc(imgSrc(hero))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(hero))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
+      <div class="rbody">
+        <div class="rhead">
+          ${!hero && r.image ? `<img class="rthumb" data-full="${esc(imgSrc(r.image))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(r.image))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
+          <div class="rmeta">
+            <div class="rtitle">${esc(r.title)}</div>
+            <div class="rsrc"><span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
+          </div>
+        </div>
+        ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
+        ${aliases.length ? `<div class="aliases">${aliases.map(a => `<span>${esc(a)}</span>`).join('')}</div>` : ''}
+        ${r.snippet ? `<div class="rsnippet">${esc(r.snippet)}</div>` : ''}
+        ${rest.length ? `<div class="thumbs">${rest.map(u => `<img data-full="${esc(imgSrc(u))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(u))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>` : ''}
+        <div class="racts">
+          <button data-ract="select" data-i="${i}">${selected ? 'Selected' : 'Select'}</button>
+          <button data-ract="open" data-i="${i}">Open</button>
+          <button data-ract="evidence" data-i="${i}">Save evidence</button>
+          <button data-ract="dive" data-i="${i}">Deep dive</button>
+        </div>
       </div>
-    </div>
-    ${r.snippet ? `<div class="rsnippet">${esc(r.snippet)}</div>` : ''}
-    <div class="racts">
-      <button data-ract="open" data-i="${i}">Open</button>
-      <button data-ract="evidence" data-i="${i}">Save evidence</button>
-      <button data-ract="queue" data-i="${i}">Queue</button>
-      <button data-ract="dive" data-i="${i}">Deep dive</button>
-    </div>
-  </div>`).join('');
+    </div>`;
+  }).join('');
+  updateDeepDiveState();
 }
 function renderDiagnostics(providers) {
   const entries = Object.entries(providers || {});
@@ -388,7 +467,7 @@ async function saveResultAsEvidence(r) {
   if (existing) { toast('That result is already saved in this investigation.'); return; }
   const id = 'ref_' + crypto.randomUUID();
   let retrieval = null;
-  let provenance = 'DISCOVERED';
+  let provenance = r.provenance || 'DISCOVERED';
   try {
     toast('Retrieving source…');
     retrieval = await retrieveSource(r.url);
@@ -398,29 +477,24 @@ async function saveResultAsEvidence(r) {
     provenance = 'RETRIEVAL_FAILED';
     retrieval = { status: 'RETRIEVAL_FAILED', error: String(e.message || e).slice(0, 200) };
   }
+  const images = (retrieval && retrieval.images) || r.images || [];
   const ref = {
     id, projectId: currentProjectId, createdAt: new Date().toISOString(),
     source: 'public-web', url: r.url, title: (retrieval && retrieval.title) || r.title, urlFingerprint: fp,
-    context: r.snippet || '', sourceType: r.sourceType || inferSourceType(r), sourceName: hostOf(r.url),
+    context: r.snippet || '', sourceType: r.sourceType || inferSourceType(r), sourceName: r.domain || hostOf(r.url),
     snippet: r.snippet || '', observedAt: r.observedAt || new Date().toISOString(), fromSearch: true,
+    reason: r.reason || '', confidence: r.confidence || '',
     provenance, retrievalStatus: provenance,
     retrievedAt: retrieval && retrieval.retrievedAt || null,
-    canonicalUrl: retrieval && retrieval.canonicalUrl || null,
-    textExcerpt: retrieval && retrieval.textExcerpt || null,
+    textExcerpt: retrieval && (retrieval.textExcerpt || retrieval.text) || r.textExcerpt || null,
     description: retrieval && retrieval.description || null,
-    author: retrieval && retrieval.author || null,
-    published: retrieval && retrieval.published || null,
-    images: retrieval && retrieval.images || [],
+    images,
+    image: r.image || images[0] || '',
     contentFingerprint: retrieval && retrieval.fingerprint || null,
     retrievalError: retrieval && retrieval.error || null,
   };
   await put('refs', ref);
   await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'evidence_saved', at: new Date().toISOString(), refId: id, url: r.url, provenance });
-  if (provenance === 'RETRIEVED') {
-    await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'source_retrieved', at: new Date().toISOString(), refId: id, url: r.url });
-  } else if (provenance === 'RETRIEVAL_FAILED') {
-    await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'retrieval_failed', at: new Date().toISOString(), refId: id, url: r.url, error: retrieval && retrieval.error });
-  }
   await refresh();
   toast(provenance === 'RETRIEVED' ? 'Saved with retrieved source content.' : provenance === 'RETRIEVAL_FAILED' ? 'Saved (retrieval failed — snippet only).' : 'Saved to evidence.');
 }
@@ -435,74 +509,78 @@ async function deepDive(focusResult) {
   const base = backendUrl();
   if (!base) return toast('Set the Carmen Worker URL in Capture → Connection.');
   const subject = $('searchQuery').value.trim() || $('projectQuestion').value.trim();
-  if (!subject) return toast('Enter a subject or query first.');
+  const candidate = focusResult || selectedCandidate || lastResults[0] || null;
+  if (!subject && !candidate) return toast('Search and select a candidate first.');
   localStorage.setItem(BACKEND_KEY, base);
   const btn = $('deepDiveBtn');
   btn.disabled = true;
-  $('deepDiveResult').innerHTML = '<p class="muted">Carmen is reviewing the subject and discovery context…</p>';
+  if (candidate) selectCandidate(candidate, Math.max(0, lastResults.findIndex(x => x.url === candidate.url)));
+  $('deepDiveProgress').innerHTML = '<p class="dive-step on">Planning investigation…</p><p class="dive-step">Retrieving public sources…</p><p class="dive-step">Collecting images…</p><p class="dive-step">Analyzing OBSERVED / INFERRED / UNKNOWN…</p>';
+  $('deepDiveResult').innerHTML = '<p class="muted">Deep Dive expands the selected candidate. This is read-only public research.</p>';
   let instructions = '';
   try {
     const p = (await all('projects')).find(x => x.id === currentProjectId);
-    instructions = (p && p.instructions) || '';
+    instructions = (p && p.instructions) || ($('projectInstructions') && $('projectInstructions').value.trim()) || '';
   } catch {}
-  let grounded = [];
   try {
-    const refs = (await all('refs')).filter(r => r.projectId === currentProjectId && r.retrievalStatus === 'RETRIEVED' && r.textExcerpt);
-    grounded = refs.slice(0, 4).map(r => ({
-      title: r.title, url: r.url, provenance: r.provenance || r.retrievalStatus,
-      excerpt: String(r.textExcerpt || '').slice(0, 2500),
-      canonicalUrl: r.canonicalUrl || null,
-    }));
-  } catch {}
-  const context = {
-    subject: currentSubject, subjectLabel: subjectLabel(currentSubject),
-    instructions: instructions || undefined,
-    results: (focusResult ? [focusResult] : lastResults.slice(0, 8)).map(r => ({ title: r.title, url: r.url, source: r.source, snippet: r.snippet, provenance: 'DISCOVERED' })),
-    retrieved: grounded,
-  };
-  const userMsg = `Investigation subject (${subjectLabel(currentSubject)}): ${subject}
-${instructions ? '\nUser instructions (research direction only):\n' + instructions + '\n' : ''}
-Review the evidence below. Prefer RETRIEVED source excerpts over search snippets when both exist.
-Separate your answer into three clearly labeled sections — OBSERVED (directly supported by retrieved or visible source material), INFERRED (your labeled interpretations), and UNKNOWN (gaps that cannot be resolved from this evidence).
-Never invent facts, sources, URLs, or dates. Never treat a search snippet as if the full page was retrieved. If evidence is thin, say so under UNKNOWN.
-
-Retrieved sources (prefer these):
-${JSON.stringify(context.retrieved, null, 2)}
-
-Discovery snippets (DISCOVERED only — not full retrieval):
-${JSON.stringify(context.results, null, 2)}`;
-  try {
-    const r = await fetch(base + '/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ subject: { type: currentSubject, label: subjectLabel(currentSubject), query: subject }, context, messages: [{ role: 'user', content: userMsg }] }) });
+    const r = await fetch(base + '/dive', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: subject,
+        subject: currentSubject,
+        candidate,
+        instructions,
+      }),
+    });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
     if (!r.ok || data.error) throw Error(data.error || `HTTP ${r.status}`);
-    renderDeepDive(data.text || '', subject);
-    // Persist the deep-dive output with the investigation so it resumes later.
+    if (Array.isArray(data.results) && data.results.length) {
+      lastResults = data.results;
+      renderResults(lastResults, data.providers || {});
+    }
+    renderDeepDivePayload(data, subject);
     const disc = (await all('discoveries')).find(d => d.id === currentProjectId) || { id: currentProjectId, projectId: currentProjectId };
-    disc.deepDiveText = data.text || '';
+    disc.deepDiveText = data.analysis || '';
     disc.deepDiveAt = new Date().toISOString();
     disc.deepDiveSubject = subject;
-    disc.deepDiveFocusUrl = focusResult?.url || '';
+    disc.deepDiveFocusUrl = candidate?.url || '';
+    disc.deepDivePlan = data.plan;
+    disc.deepDiveImages = data.images;
+    disc.results = lastResults;
     await put('discoveries', disc);
-    await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'deep_dive', at: new Date().toISOString(), subject, focusUrl: focusResult?.url || '' });
+    await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'deep_dive', at: new Date().toISOString(), subject, focusUrl: candidate?.url || '' });
+    for (const raw of (data.leads || []).slice(0, 8)) {
+      const t = String(raw.text || raw).trim();
+      if (t) await put('leads', { id: 'lead_' + crypto.randomUUID(), projectId: currentProjectId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), text: t, url: raw.url || '', status: 'new', refIds: [] });
+    }
+    await refresh();
     toast('Deep dive complete.');
   } catch (e) {
     const msg = String(e.message || e);
     const isConfig = /API_KEY|not configured|provider is not configured/i.test(msg);
-    const isTimeout = /timeout|AbortError/i.test(msg);
-    let help = '';
-    if (isConfig) {
-      help = `<p class="hint"><b>AI is not configured on this Worker.</b> Search, discovery, evidence, queue, and local save/resume still work. To enable Deep Dive / Analyze / Synthesize an operator must run:<br><code style="font-size:11px">npx wrangler secret put API_KEY</code><br>on the Carmen Worker. The key never leaves the server.</p>`;
-    } else if (isTimeout) {
-      help = `<p class="hint">The AI provider timed out. Try again with fewer results or a shorter subject. Your investigation state was not lost.</p>`;
-    } else {
-      help = `<p class="hint">Deep Dive uses the server-side AI provider. Non-AI investigation features remain available.</p>`;
-    }
-    $('deepDiveResult').innerHTML = `<div class="claim unknown"><b>Deep Dive unavailable</b><br>${esc(msg)}</div>${help}`;
+    $('deepDiveResult').innerHTML = `<div class="claim unknown"><b>Deep Dive unavailable</b><br>${esc(msg)}</div>${isConfig ? '<p class="hint">Search and evidence still work. AI analysis needs the Worker secret.</p>' : '<p class="hint">Non-AI investigation features remain available.</p>'}`;
     toast(isConfig ? 'AI not configured — search & evidence still work' : 'Deep dive failed: ' + msg);
-  } finally { btn.disabled = false; }
+  } finally { updateDeepDiveState(); }
 }
-function renderDeepDive(text, subject) {
+function renderDeepDivePayload(data, subject) {
+  const plan = data.plan || {};
+  const steps = (plan.investigating || []).map(s => `<p class="dive-step on">${esc(s)}</p>`).join('');
+  $('deepDiveProgress').innerHTML = steps || '<p class="dive-step on">Deep dive finished.</p>';
+  const imgs = (data.images || []).slice(0, 12);
+  const imgHtml = imgs.length ? `<div class="thumbs">${imgs.map(im => `<img src="${esc(imgSrc(im.url || im))}" alt="" title="${esc((im.domain || '') + ' · ' + (im.pageUrl || ''))}" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>
+    <p class="hint">Images keep page provenance. Visual consistency across sources is not identity proof.</p>` : '<p class="hint">No reliable images were retrieved for this candidate.</p>';
+  const retrieved = (data.retrieved || []).map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> ${provenanceBadge(x.status)}<br><small>${esc(x.finalUrl || x.url || '')}${x.error ? ' · ' + esc(x.error) : ''}</small></div>`).join('');
+  let analysisHtml = '';
+  if (data.analysis) analysisHtml = renderDeepDive(data.analysis, subject, true);
+  else if (data.analysisError) analysisHtml = `<div class="claim unknown"><b>Analysis unavailable</b><br>${esc(data.analysisError)}</div>`;
+  $('deepDiveResult').innerHTML = `
+    <div class="claim"><b>Investigating</b><br>${esc(plan.subject || subject)} <span class="badge">${esc(plan.type || currentSubject)}</span><br><small>${esc(plan.why || '')}</small><br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
+    ${retrieved ? `<h4>Retrieved sources</h4>${retrieved}` : ''}
+    <h4>Visual evidence</h4>${imgHtml}
+    ${analysisHtml}`;
+}
+function renderDeepDive(text, subject, asFragment) {
   // Lightly structure the model's OBSERVED / INFERRED / UNKNOWN sections if present.
   const sections = text.split(/\n(?=#+\s*(?:OBSERVED|INFERRED|UNKNOWN)|\b(OBSERVED|INFERRED|UNKNOWN)\b\s*[:\-])/i).filter(Boolean);
   let html;
@@ -519,7 +597,9 @@ function renderDeepDive(text, subject) {
   } else {
     html = `<div class="claim"><b>Deep dive: ${esc(subject)}</b><br>${esc(text).replace(/\n/g, '<br>')}</div>`;
   }
-  $('deepDiveResult').innerHTML = html + '<p class="hint">Distinguish OBSERVED (in sources), INFERRED (Carmen\'s interpretation), and UNKNOWN (gaps). Verify before relying on any single source.</p>';
+  html += '<p class="hint">Distinguish OBSERVED (in sources), INFERRED (Carmen\'s interpretation), and UNKNOWN (gaps). Visual consistency is not identity proof.</p>';
+  if (asFragment) return html;
+  $('deepDiveResult').innerHTML = html;
 }
 
 /* ---------- leads ---------- */
@@ -596,13 +676,7 @@ function wire() {
   $('projectSelect').onchange = async () => {
     currentProjectId = $('projectSelect').value;
     const ps = await all('projects');
-    const curP = ps.find(p => p.id === currentProjectId);
-  $('projectQuestion').value = curP?.question || '';
-  if ($('projectInstructions')) $('projectInstructions').value = curP?.instructions || '';
-  if ($('projectMeta')) {
-    const lu = curP?.updatedAt || curP?.createdAt;
-    $('projectMeta').textContent = lu ? ('Saved · last updated ' + new Date(lu).toLocaleString()) : 'Not saved yet';
-  }
+    $('projectQuestion').value = ps.find(p => p.id === currentProjectId)?.question || '';
     await loadDiscovery();
     await refresh();
   };
@@ -628,17 +702,16 @@ function wire() {
     toast('Investigation renamed.');
   };
   $('saveProjectQuestion').onclick = async () => {
-    const p = (await all('projects')).find(x => x.id === currentProjectId);
+    const ps = await all('projects'), p = ps.find(x => x.id === currentProjectId);
     if (!p) return;
-    const prevInst = p.instructions || '';
     p.question = $('projectQuestion').value.trim();
+    const prevInst = p.instructions || '';
     p.instructions = ($('projectInstructions') && $('projectInstructions').value.trim()) || '';
     p.updatedAt = new Date().toISOString();
     await put('projects', p);
     if (p.instructions !== prevInst) {
       await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'instructions_changed', at: p.updatedAt });
     }
-    if ($('projectMeta')) $('projectMeta').textContent = 'Saved · last updated ' + new Date(p.updatedAt).toLocaleString();
     toast('Investigation saved.');
   };
 
@@ -652,28 +725,37 @@ function wire() {
   };
 
   // discovery
+  $('searchQuery').addEventListener('input', updateDeepDiveState);
+  $('searchQuery').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); discover(); } });
   $('discoverBtn').onclick = discover;
-  $('deepDiveBtn').onclick = () => deepDive(null);
+  $('deepDiveBtn').onclick = () => deepDive(selectedCandidate);
   $('addQueueBtn').onclick = () => { setTab('investigate'); $('queueUrl').focus(); };
+  if ($('lightboxClose')) $('lightboxClose').onclick = closeLightbox;
+  if ($('lightbox')) $('lightbox').addEventListener('click', e => { if (e.target.id === 'lightbox') closeLightbox(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
   $('results').onclick = async e => {
+    const full = e.target.closest('img[data-full]');
+    if (full && full.dataset.full) {
+      e.stopPropagation();
+      openLightbox(full.dataset.full, full.dataset.cap || '');
+      return;
+    }
     const b = e.target.closest('[data-ract]');
     if (!b) {
-      // Tapping the card body (not an action button or the title link) opens
-      // that result's URL. cursor:pointer on .result makes iOS synthesize the
-      // click so the whole card is a tap target on iPhone.
-      if (e.target.closest('a')) return;            // let the title link open natively
+      if (e.target.closest('a')) return;
       const card = e.target.closest('.result');
       if (!card) return;
       const r = lastResults[+card.dataset.i]; if (!r) return;
-      window.open(r.url, '_blank', 'noopener,noreferrer');
+      selectCandidate(r, +card.dataset.i);
       return;
     }
     const r = lastResults[+b.dataset.i]; if (!r) return;
     const act = b.dataset.ract;
-    if (act === 'open') { window.open(r.url, '_blank', 'noopener,noreferrer'); }
+    if (act === 'select') { selectCandidate(r, +b.dataset.i); }
+    else if (act === 'open') { window.open(r.url, '_blank', 'noopener,noreferrer'); }
     else if (act === 'evidence') { await saveResultAsEvidence(r); }
     else if (act === 'queue') { await queueFromResult(r); }
-    else if (act === 'dive') { await deepDive(r); }
+    else if (act === 'dive') { selectCandidate(r, +b.dataset.i); await deepDive(r); }
   };
 
   // queue
@@ -877,34 +959,55 @@ function applyLeadFilter() {
 
 /* ---------- load saved discovery for current project ---------- */
 async function loadDiscovery() {
-  const disc = (await all('discoveries')).find(d => d.id === currentProjectId);
+  const disc = (await all('discoveries')).find(d => d.id === currentProjectId) || (await all('discoveries')).filter(d => d.projectId === currentProjectId).sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))[0];
   if (!disc) {
     lastResults = [];
+    selectedCandidate = null;
     $('results').innerHTML = '';
     $('resultCount').textContent = '';
-    $('resultsEmpty').textContent = 'Run a discovery search to see public results here. Each result keeps its URL, source, snippet, timestamp, and image where available.';
+    $('resultsEmpty').textContent = 'Run discovery to see ranked public candidates. Each card keeps images, provenance, a match reason, and a Deep Dive action.';
     $('resultsEmpty').classList.remove('hidden');
     $('searchDiagnostics').innerHTML = '';
+    if ($('classBar')) $('classBar').innerHTML = '';
+    if ($('selectedBanner')) $('selectedBanner').innerHTML = '';
     $('deepDiveResult').innerHTML = '';
+    if ($('deepDiveProgress')) $('deepDiveProgress').innerHTML = '';
+    updateDeepDiveState();
     return;
   }
   lastResults = disc.results || [];
+  lastClassification = disc.classification || null;
   if (disc.subject) {
     currentSubject = disc.subject;
     document.querySelectorAll('#subjectChips .chip').forEach(x => x.classList.toggle('active', x.dataset.subject === disc.subject));
   }
   if (disc.query) $('searchQuery').value = disc.query;
+  renderClassification(disc);
   renderResults(lastResults, disc.providers || {});
-  if (disc.deepDiveText) renderDeepDive(disc.deepDiveText, disc.deepDiveSubject || disc.query || '');
-  else $('deepDiveResult').innerHTML = '';
+  const focusUrl = disc.selectedUrl || disc.deepDiveFocusUrl;
+  if (focusUrl) {
+    const focus = lastResults.find(r => r.url === focusUrl);
+    if (focus) selectCandidate(focus, lastResults.indexOf(focus));
+  }
+  if (disc.deepDiveText) {
+    renderDeepDivePayload({ plan: disc.deepDivePlan, analysis: disc.deepDiveText, images: disc.deepDiveImages || [], retrieved: [] }, disc.deepDiveSubject || disc.query || '');
+  } else $('deepDiveResult').innerHTML = '';
+  updateDeepDiveState();
 }
 
 /* ---------- init ---------- */
 async function init() {
   wire();
-  const last = localStorage.getItem(URL_KEY) || 'https://www.google.com';
-  historyStack = [last]; historyIndex = 0;
-  navigate(last, false); updateNav();
+  const last = localStorage.getItem(URL_KEY) || '';
+  $('url').value = last || 'https://www.google.com';
+  if (last) {
+    historyStack = [last]; historyIndex = 0;
+    navigate(last, false);
+  } else {
+    historyStack = []; historyIndex = -1;
+    $('webview').src = 'about:blank';
+  }
+  updateNav();
   await openDB();
   await migrateLegacy('carmen-phone-v18', 'carmen_migrated_v18_to_v23', ['projects', 'refs', 'events']);
   await migrateLegacy('carmen-phone-v19', 'carmen_migrated_v19_to_v23', ['projects', 'refs', 'events', 'leads']);

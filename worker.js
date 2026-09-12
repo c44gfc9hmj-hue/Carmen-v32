@@ -1,5 +1,6 @@
 // Carmen — canonical Cloudflare Worker backend.
-// Routes: GET /health, GET /search, POST /chat, POST /analyze, POST /synthesize.
+// Routes: GET /health, GET /search, GET /img, POST /dive, GET|POST /retrieve, GET|POST /source,
+// POST /chat, POST /analyze, POST /synthesize.
 // Everything else is served from static assets (the Carmen frontend) via the ASSETS binding.
 //
 // Safety contract: Carmen is a research/analysis tool only. It never contacts
@@ -11,6 +12,7 @@
 const MAX_RESULTS = 20;
 const SEARCH_TIMEOUT_MS = 8000;
 const AI_TIMEOUT_MS = 30000;
+let SEARCH_BUDGET = { used: 0, max: 36 };
 
 const PROVIDERS = ['DuckDuckGo', 'Bing', 'Google', 'Mojeek', 'Startpage', 'Yahoo', 'Reddit'];
 
@@ -26,6 +28,8 @@ const BLOCKED_HOSTS = new Set([
   'accounts.google.com', 'myaccount.google.com', 'policies.google.com',
   'go.microsoft.com', 'www.msn.com', 'msn.com',
   'support.startpage.com', 'support.duckduckgo.com',
+  'blog.mojeek.com', 'community.mojeek.com',
+  'about.google', 'ads.google.com',
 ]);
 
 const NAV_LINK_RE = /^(images?|videos?|news|maps|shopping|mail|sign in|sign up|log in|login|more|web|all|finance|sports|weather|travel|games?|apps?|about|help|privacy|terms|settings|preferences|account|home|search|filter|tools?|feedback|learn more|learn|mobile|desktop|menu|skip|close|open|back|next|previous|continue|submit|cancel|yes|no)$/i;
@@ -68,19 +72,32 @@ function json(value, status, req, extra = {}) {
 }
 
 function cleanText(s = '') {
-  return String(s)
+  return decodeEntities(String(s)
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&/g, '&').replace(/"/g, '"').replace(/&#39;/g, "'")
-    .replace(/</g, '<').replace(/>/g, '>').replace(/&#x27;/g, "'")
-    .replace(/&nbsp;/g, ' ')
+    .replace(/<[^>]*>/g, ' '))
     .replace(/\s+/g, ' ').trim();
+}
+
+function decodeEntities(s = '') {
+  // Build named-entity patterns at runtime so the source cannot get HTML-decoded
+  // by editors into no-op replacements.
+  return String(s)
+    .replace(new RegExp('&' + 'nbsp;', 'gi'), ' ')
+    .replace(new RegExp('&' + 'amp;', 'gi'), '&')
+    .replace(new RegExp('&' + 'quot;', 'gi'), '"')
+    .replace(new RegExp('&' + 'apos;', 'gi'), "'")
+    .replace(new RegExp('&' + 'lt;', 'gi'), '<')
+    .replace(new RegExp('&' + 'gt;', 'gi'), '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ''; } })
+    .replace(/&#(\d+);/g, (_, n) => { try { return String.fromCodePoint(Number(n)); } catch { return ''; } });
 }
 
 // Resolve redirect-wrapped URLs (DuckDuckGo uddg=, etc.).
 function unwrap(raw) {
-  let url = String(raw || '').trim();
+  let url = decodeEntities(String(raw || '')).trim();
   if (!url) return '';
   if (url.startsWith('//')) url = 'https:' + url;
   try {
@@ -99,7 +116,7 @@ function validUrl(url) {
 
 // Strip a trailing/leading bare URL copied into a title by messy anchor parsing.
 function cleanTitle(title) {
-  let t = cleanText(title);
+  let t = cleanText(decodeEntities(title));
   if (!t) return '';
   // Remove any embedded "https://..." fragments (Bing/Yahoo splice the URL into the title).
   t = t.replace(/https?:\/\/\S+/gi, ' ').trim();
@@ -132,13 +149,17 @@ function uniqueAdd(results, seen, item) {
   try { key = new URL(url).href.replace(/#.*$/, ''); } catch { return false; }
   if (seen.has(key)) return false;
   seen.add(key);
+  const images = Array.isArray(item.images) ? item.images.filter(x => typeof x === 'string' && x.startsWith('http')).slice(0, 8) : [];
+  const image = typeof item.image === 'string' && item.image.startsWith('http') ? item.image : (images[0] || '');
   results.push({
     title: title.slice(0, 240),
     url: key,
     source: String(item.source || 'Public web').slice(0, 120),
-    snippet: cleanText(item.snippet || '').slice(0, 600),
-    image: typeof item.image === 'string' && item.image.startsWith('http') ? item.image : '',
+    snippet: cleanText(decodeEntities(item.snippet || '')).slice(0, 600),
+    image,
+    images,
     observedAt: new Date().toISOString(),
+    queryVariant: item.queryVariant || '',
   });
   return true;
 }
@@ -263,7 +284,13 @@ function parseAnchors(html, source, results, seen, limit) {
   }
 }
 
-async function htmlSearch(url, source, parser, results, seen, diagnostics) {
+async function htmlSearch(url, source, parser, results, seen, diagnostics, queryVariant = '') {
+  if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) {
+    diagnostics[source] = { error: 'skipped (fetch budget)' };
+    return;
+  }
+  SEARCH_BUDGET.used++;
+  const before = results.length;
   try {
     const r = await fetchText(url, { headers: BROWSER_HEADERS });
     diagnostics[source] = { status: r.status, ok: r.ok };
@@ -274,91 +301,543 @@ async function htmlSearch(url, source, parser, results, seen, diagnostics) {
   } catch (e) {
     diagnostics[source] = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 200) };
   }
+  if (queryVariant) {
+    for (let i = before; i < results.length; i++) {
+      if (!results[i].queryVariant) results[i].queryVariant = queryVariant;
+    }
+  }
 }
 
 async function ddg(q, results, seen, diagnostics) {
-  await htmlSearch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q) + '&kp=-2', 'DuckDuckGo', parseDDG, results, seen, diagnostics);
+  await htmlSearch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q) + '&kp=-2', 'DuckDuckGo', parseDDG, results, seen, diagnostics, q);
   if (results.length < 8) {
-    await htmlSearch('https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(q), 'DuckDuckGo Lite', parseAnchors.bind(null), results, seen, diagnostics);
+    await htmlSearch('https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(q), 'DuckDuckGo Lite', null, results, seen, diagnostics, q);
   }
 }
 
 async function bing(q, results, seen, diagnostics) {
-  await htmlSearch('https://www.bing.com/search?q=' + encodeURIComponent(q) + '&adlt=off', 'Bing', parseBing, results, seen, diagnostics);
+  await htmlSearch('https://www.bing.com/search?q=' + encodeURIComponent(q) + '&adlt=off', 'Bing', parseBing, results, seen, diagnostics, q);
 }
 
 async function google(q, results, seen, diagnostics) {
-  await htmlSearch('https://www.google.com/search?q=' + encodeURIComponent(q) + '&safe=off&num=10', 'Google', parseGoogle, results, seen, diagnostics);
+  await htmlSearch('https://www.google.com/search?q=' + encodeURIComponent(q) + '&safe=off&num=10', 'Google', parseGoogle, results, seen, diagnostics, q);
 }
 
 async function mojeek(q, results, seen, diagnostics) {
-  await htmlSearch('https://www.mojeek.com/search?q=' + encodeURIComponent(q), 'Mojeek', parseMojeek, results, seen, diagnostics);
+  await htmlSearch('https://www.mojeek.com/search?q=' + encodeURIComponent(q), 'Mojeek', parseMojeek, results, seen, diagnostics, q);
 }
 
 async function startpage(q, results, seen, diagnostics) {
-  await htmlSearch('https://www.startpage.com/sp/search?query=' + encodeURIComponent(q) + '&cat=web', 'Startpage', parseStartpage, results, seen, diagnostics);
+  await htmlSearch('https://www.startpage.com/sp/search?query=' + encodeURIComponent(q) + '&cat=web', 'Startpage', parseStartpage, results, seen, diagnostics, q);
 }
 
 async function yahoo(q, results, seen, diagnostics) {
-  await htmlSearch('https://search.yahoo.com/search?p=' + encodeURIComponent(q), 'Yahoo', parseYahoo, results, seen, diagnostics);
+  await htmlSearch('https://search.yahoo.com/search?p=' + encodeURIComponent(q), 'Yahoo', parseYahoo, results, seen, diagnostics, q);
 }
 
 async function reddit(q, results, seen, diagnostics) {
-  try {
-    const r = await fetchText('https://www.reddit.com/search.json?q=' + encodeURIComponent(q) + '&limit=25&sort=relevance&t=all&include_over_18=on', {
-      headers: { accept: 'application/json', 'user-agent': 'CarmenResearch/3.0' },
-    });
-    diagnostics.Reddit = { status: r.status, ok: r.ok };
-    if (!r.ok) return;
-    const j = await r.json();
-    for (const child of j?.data?.children || []) {
-      const d = child?.data;
-      if (!d?.permalink) continue;
-      uniqueAdd(results, seen, {
-        title: d.title || 'Reddit result',
-        url: 'https://www.reddit.com' + d.permalink,
-        source: d.subreddit_name_prefixed || (d.subreddit ? 'Reddit · r/' + d.subreddit : 'Reddit'),
-        snippet: d.selftext || '',
-        image: typeof d.thumbnail === 'string' && d.thumbnail.startsWith('http') ? d.thumbnail : '',
+  if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) {
+    diagnostics.Reddit = { error: 'skipped (fetch budget)' };
+    return;
+  }
+  SEARCH_BUDGET.used++;
+  const endpoints = [
+    'https://old.reddit.com/search.json?q=' + encodeURIComponent(q) + '&limit=25&sort=relevance&t=all&include_over_18=on',
+    'https://www.reddit.com/search.json?q=' + encodeURIComponent(q) + '&limit=25&sort=relevance&t=all&include_over_18=on',
+    'https://api.reddit.com/search?q=' + encodeURIComponent(q) + '&limit=25&sort=relevance&t=all&include_over_18=on',
+  ];
+  let lastErr = null;
+  for (const endpoint of endpoints) {
+    try {
+      const r = await fetchText(endpoint, {
+        headers: { ...BROWSER_HEADERS, accept: 'application/json' },
       });
-      if (results.length >= MAX_RESULTS) break;
+      diagnostics.Reddit = { status: r.status, ok: r.ok };
+      if (!r.ok) { lastErr = 'HTTP ' + r.status; continue; }
+      const j = await r.json();
+      for (const child of j?.data?.children || []) {
+        const d = child?.data;
+        if (!d?.permalink) continue;
+        uniqueAdd(results, seen, {
+          title: d.title || 'Reddit result',
+          url: 'https://www.reddit.com' + d.permalink,
+          source: d.subreddit_name_prefixed || (d.subreddit ? 'Reddit · r/' + d.subreddit : 'Reddit'),
+          snippet: d.selftext || '',
+          image: typeof d.thumbnail === 'string' && d.thumbnail.startsWith('http') ? d.thumbnail : (d.preview?.images?.[0]?.source?.url ? decodeEntities(d.preview.images[0].source.url) : ''),
+          queryVariant: q,
+        });
+        if (results.length >= MAX_RESULTS) break;
+      }
+      return;
+    } catch (e) {
+      lastErr = e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 200);
     }
-  } catch (e) { diagnostics.Reddit = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 200) }; }
+  }
+  if (!diagnostics.Reddit) diagnostics.Reddit = { error: lastErr || 'unavailable' };
 }
 
-function searchVariants(q) {
-  const clean = q.trim().replace(/\s+/g, ' ');
-  const variants = [clean];
-  if (/\s/.test(clean) && !/^".*"$/.test(clean)) variants.push('"' + clean.replace(/"/g, '') + '"');
-  return [...new Set(variants)];
+async function wikipedia(q, results, seen, diagnostics, classification) {
+  if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) return;
+  SEARCH_BUDGET.used++;
+  try {
+    const r = await fetchText('https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=' + encodeURIComponent(q) + '&utf8=1&format=json&srlimit=5', {
+      headers: { accept: 'application/json', 'user-agent': 'CarmenResearch/38 (investigation workspace)' },
+    });
+    diagnostics.Wikipedia = { status: r.status, ok: r.ok };
+    if (!r.ok) return;
+    const j = await r.json();
+    const hits = j?.query?.search || [];
+    const tokens = String(q || '').toLowerCase().split(/\s+/).filter(t => t.length > 2);
+    for (const hit of hits) {
+      const title = hit.title || '';
+      if (tokens.length && tokens.every(t => !title.toLowerCase().includes(t))) continue;
+      if (classification && classification.type === 'person' && tokens.length >= 2) {
+        const hitCount = tokens.filter(t => title.toLowerCase().includes(t)).length;
+        if (hitCount === 0) continue;
+      }
+      const url = 'https://en.wikipedia.org/wiki/' + encodeURIComponent(title.replace(/ /g, '_'));
+      uniqueAdd(results, seen, {
+        title,
+        url,
+        source: 'Wikipedia',
+        snippet: cleanText(hit.snippet || ''),
+        queryVariant: q,
+      });
+    }
+    const top = hits[0]?.title;
+    if (top && SEARCH_BUDGET.used < SEARCH_BUDGET.max && !(tokens.length && tokens.every(t => !String(top).toLowerCase().includes(t)))) {
+      SEARCH_BUDGET.used++;
+      try {
+        const r2 = await fetchText('https://en.wikipedia.org/w/api.php?action=query&titles=' + encodeURIComponent(top) + '&prop=pageimages|extracts&pithumbsize=640&exintro=1&explaintext=1&format=json', {
+          headers: { accept: 'application/json', 'user-agent': 'CarmenResearch/38 (investigation workspace)' },
+        });
+        const j2 = await r2.json();
+        const page = Object.values(j2?.query?.pages || {})[0];
+        if (page) {
+          const url = 'https://en.wikipedia.org/wiki/' + encodeURIComponent(String(page.title || top).replace(/ /g, '_'));
+          const existing = results.find(x => x.url === url);
+          const thumb = page.thumbnail?.source;
+          if (existing && thumb) {
+            existing.image = existing.image || thumb;
+            existing.images = [...new Set([...(existing.images || []), thumb])];
+            if (page.extract && !existing.snippet) existing.snippet = String(page.extract).slice(0, 600);
+          }
+        }
+      } catch {}
+    }
+  } catch (e) {
+    diagnostics.Wikipedia = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 200) };
+  }
+}
+
+const SEO_JUNK_RE = /(nameberry|howmanyofme|houseofnames|behindthename|urbandictionary|quizlet\.com|coursehero|chegg\.com|slideplayer|scribd\.com|pinterest\.com|fandom\.com\/wiki\/Special)/i;
+const TUBE_INDEX_RE = /(nudevista|xvideos|pornhub|xnxx|spankbang|xhamster|redtube|youporn|alohatube|tubepornstars|heavyfetish|bdsmx\.tube|thothub|fapello|erome)\./i;
+const RETAILER_RE = /(bestbuy|walmart|amazon|ebay|target|newegg|bhphotovideo|costco)\./i;
+const NAV_TITLE_RE = /^(blog|community|newsletter|home|login|sign in|search|menu)$/i;
+const SKIP_IMAGE_RE = /(favicon|sprite|1x1|pixel|tracking|badge\.svg|logo\.(png|svg|jpg|gif)|icon-?\d+|apple-touch-icon|join\.(jpg|png|gif)|play\.(png|gif|jpg)|spinner|placeholder|blank\.(gif|png)|custom_assets|\/icons?\/)/i;
+const NON_NAME_TOKENS = /^(workers?|iphone|ipad|server|engine|cloud|docs?|api|sdk|framework|protocol|database|linux|windows|android|ios|iphones?)$/i;
+const PROFILE_HOST_RE = /(^|\.)(linkedin|instagram|twitter|x|onlyfans)\.com$/i;
+
+function classifyQuery(q, hint = '') {
+  const raw = String(q || '').trim();
+  const hintMap = {
+    person: 'person', topic: 'topic', website: 'website', claim: 'topic',
+    product: 'product', position: 'topic', other: '', organization: 'organization',
+    vehicle: 'vehicle', place: 'place', social: 'social', reddit: 'reddit',
+  };
+  const hinted = hintMap[String(hint || '').toLowerCase()] || '';
+  if (!raw) return { type: 'unknown', confidence: 'low', reason: 'Empty query', isUrl: false };
+  const maybeUrl = /^https?:\/\//i.test(raw) || (/^[\w.-]+\.[a-z]{2,}([/:?]|$)/i.test(raw) && !/\s/.test(raw));
+  if (maybeUrl) {
+    const url = normalizeUrlForStore(raw.startsWith('http') ? raw : 'https://' + raw) || ('https://' + raw);
+    const host = hostOf(url);
+    const isImage = /\.(jpg|jpeg|png|webp|gif|avif)(\?|$)/i.test(url);
+    if (/reddit\.com$/i.test(host) || host.endsWith('.reddit.com')) {
+      return { type: 'reddit', confidence: 'high', reason: 'Direct Reddit URL', isUrl: true, url, isImage };
+    }
+    return { type: 'website', confidence: 'high', reason: 'Direct URL', isUrl: true, url, isImage };
+  }
+  if (/^@[\w.]+/.test(raw) || /\b(instagram|tiktok|onlyfans|twitter|linkedin)\b/i.test(raw)) {
+    return { type: 'social', confidence: 'medium', reason: 'Looks like a social handle or profile query', isUrl: false };
+  }
+  if (/\b(reddit|r\/[a-z0-9_]+)/i.test(raw)) {
+    return { type: hinted || 'reddit', confidence: 'medium', reason: 'Reddit/community query', isUrl: false };
+  }
+  if (/\b(inc|llc|corp|company|university|hospital|foundation)\b/i.test(raw)) {
+    return { type: 'organization', confidence: 'medium', reason: 'Organization language in the query', isUrl: false };
+  }
+  if (/\b(19|20)\d{2}\b/.test(raw) && /\b(toyota|honda|ford|chevy|chevrolet|nissan|bmw|runner|civic|f-?150|mustang|iphone|ipad)\b/i.test(raw)) {
+    return { type: 'vehicle', confidence: 'medium', reason: 'Year + vehicle/product tokens', isUrl: false };
+  }
+  if (/\b(iphone|ipad|pixel \d|playstation|xbox|macbook)\b/i.test(raw)) {
+    return { type: 'product', confidence: 'medium', reason: 'Product-like query', isUrl: false };
+  }
+  const words = raw.split(/\s+/);
+  const nameLike = words.length >= 2 && words.length <= 4 && words.every(w => /^[A-Za-z][A-Za-z.'’-]*$/.test(w));
+  const looksLikeProductPhrase = words.some(w => NON_NAME_TOKENS.test(w));
+  if (nameLike && looksLikeProductPhrase && !hinted) {
+    return { type: 'topic', confidence: 'low', reason: 'Phrase looks like a product/topic, not a personal name', isUrl: false };
+  }
+  if (nameLike && (!hinted || hinted === 'person') && !looksLikeProductPhrase) {
+    return { type: 'person', confidence: words.length === 1 ? 'low' : 'medium', reason: 'Name-like query — treating as a person candidate search', isUrl: false };
+  }
+  if (words.length === 1 && /^[A-Za-z]{2,}$/.test(raw)) {
+    return { type: hinted || 'ambiguous', confidence: 'low', reason: 'Single token — many people/entities could match', isUrl: false };
+  }
+  if (hinted) return { type: hinted, confidence: 'medium', reason: 'Using the selected subject type as a search hint', isUrl: false };
+  return { type: 'topic', confidence: 'low', reason: 'Treated as a topic/query, not a specific named entity', isUrl: false };
+}
+
+function buildSearchVariants(q, classification) {
+  const clean = q.trim().replace(/\s+/g, ' ').slice(0, 200);
+  const out = [];
+  const add = (query, why) => {
+    const t = String(query || '').trim();
+    if (!t) return;
+    if (!out.some(x => x.q === t)) out.push({ q: t, why });
+  };
+  if (classification.isUrl) {
+    add(classification.url, 'inspect the submitted URL');
+    const host = hostOf(classification.url).replace(/^www\./, '');
+    const pathName = humanizePath(classification.url);
+    if (pathName && /[a-z]/i.test(pathName) && pathName.toLowerCase() !== host.split('.')[0] && pathName.length >= 4) {
+      add(pathName, 'name inferred from URL path');
+    } else if (host) {
+      add(host, 'search the domain');
+    }
+    return out.slice(0, 3);
+  }
+  add(clean, 'primary query');
+  if (classification.type === 'person' && /\s/.test(clean)) {
+    add('"' + clean.replace(/"/g, '') + '"', 'exact name');
+    add(clean + ' official OR website OR profile', 'official/profile pages');
+  } else if (classification.type === 'website') {
+    add(clean.replace(/^https?:\/\//, ''), 'domain form');
+  } else if (classification.type === 'product' || classification.type === 'vehicle') {
+    add('"' + clean.replace(/"/g, '') + '"', 'exact product string');
+  } else if (classification.type === 'reddit') {
+    add(clean.replace(/^r\//, ''), 'community query');
+  } else if (/\s/.test(clean) && !/^".*"$/.test(clean)) {
+    add('"' + clean.replace(/"/g, '') + '"', 'exact phrase');
+  }
+  return out.slice(0, 3);
+}
+
+function scoreResult(query, item, classification) {
+  const q = String(query || '').toLowerCase().replace(/['"]/g, '');
+  const tokens = q.split(/\s+/).filter(t => t.length > 1);
+  const title = String(item.title || '').toLowerCase();
+  const url = String(item.url || '').toLowerCase();
+  const host = hostOf(item.url).replace(/^www\./, '');
+  const sld = host.split('.')[0] || '';
+  const snip = String(item.snippet || '').toLowerCase();
+  let score = 8;
+  const bits = [];
+  if (classification.isUrl && classification.url && (item.url === classification.url || item.url === classification.url.replace(/\/$/, ''))) {
+    score += 50; bits.push('submitted URL');
+  }
+  if (q && title.includes(q)) { score += 42; bits.push('exact query in title'); }
+  else if (tokens.length && tokens.every(t => title.includes(t))) { score += 24; bits.push('all name tokens in title'); }
+  else if (tokens.some(t => title.includes(t))) { score += 8; bits.push('partial name match'); }
+  if (tokens.length && tokens.every(t => host.includes(t) || url.includes(t))) { score += 20; bits.push('name tokens in URL/domain'); }
+  const brandHit = tokens.find(t => t.length > 2 && (t === sld || host === t + '.com' || host.endsWith('.' + t + '.com')));
+  if ((classification.type === 'product' || classification.type === 'organization' || classification.type === 'vehicle' || classification.type === 'website' || classification.type === 'topic') && brandHit) {
+    score += 36; bits.push('official brand/domain match');
+  } else if ((classification.type === 'product' || classification.type === 'organization' || classification.type === 'website') && tokens.some(t => t.length > 3 && host.includes(t))) {
+    score += 16; bits.push('brand/domain match');
+  }
+  if (/official site|official website/i.test(item.snippet || '') || /\/models\/|\/about|\/profile/i.test(url)) {
+    score += 16; bits.push('likely official or profile page');
+  }
+  if (host.endsWith('wikipedia.org')) {
+    const missing = tokens.filter(t => t.length > 2 && !title.includes(t) && !url.includes(t) && !snip.includes(t));
+    if (classification.type === 'person' && missing.length) { score -= 36; bits.push('encyclopedia hit missing name tokens'); }
+    else if (tokens.length && tokens.every(t => !title.includes(t))) { score -= 40; bits.push('encyclopedia hit unrelated to query'); }
+    else { score += 16; bits.push('encyclopedia source'); }
+  }
+  if (PROFILE_HOST_RE.test(host)) { score += 14; bits.push('public profile host'); }
+  if (host === 'reddit.com' || host.endsWith('.reddit.com')) { score += 12; bits.push('Reddit thread'); }
+  if (item.image || (item.images && item.images.length)) { score += 6; bits.push('has visual evidence'); }
+  if (NAV_TITLE_RE.test(String(item.title || '').trim())) { score -= 45; bits.push('generic nav title'); }
+  if (SEO_JUNK_RE.test(host) || SEO_JUNK_RE.test(url)) { score -= 30; bits.push('SEO/name-mill site'); }
+  if (TUBE_INDEX_RE.test(host) || /\/(top|playlists?|pornstar|search)\//i.test(url)) {
+    score -= 22; bits.push('aggregator/index, not a primary source');
+  }
+  if (classification.type === 'product' && RETAILER_RE.test(host)) {
+    score -= 18; bits.push('retailer listing, not manufacturer');
+  }
+  if (/\/tag\/|\/tags\/|\/browse\//i.test(url)) { score -= 10; bits.push('tag/index page'); }
+  if (host.endsWith('mojeek.com') || host.endsWith('startpage.com') || host.endsWith('bing.com')) { score -= 40; bits.push('search-engine chrome'); }
+  if (classification.confidence === 'low' || classification.type === 'ambiguous') {
+    score = Math.min(score, 48);
+  }
+  const confidence = score >= 55 ? 'high' : score >= 32 ? 'medium' : 'low';
+  let reason;
+  if (classification.type === 'ambiguous' || (classification.confidence === 'low' && tokens.length <= 1)) {
+    reason = score >= 32
+      ? 'Ambiguous query — ' + (bits[0] || 'name overlap') + '; many people/entities could match'
+      : 'Low confidence — single-token overlap, many collisions possible';
+  } else if (score >= 55) reason = 'Strong match — ' + bits.slice(0, 2).join(' + ');
+  else if (score >= 32) reason = 'Possible match — ' + (bits[0] || 'name overlap') + ', limited corroborating evidence';
+  else if (classification.type === 'person' && tokens.some(t => title.includes(t))) reason = 'Low confidence — name collision or thin context';
+  else reason = 'Low confidence — weak overlap with the query';
+  return { score, confidence, reason, signals: bits };
+}
+
+function aliasesFor(item, query) {
+  const out = [];
+  const path = humanizePath(item.url);
+  if (path && /[A-Za-z]{3,}/.test(path) && !/^\d/.test(path) && path.toLowerCase() !== String(query || '').toLowerCase()) out.push(path);
+  const handle = (String(item.url || '').match(/(?:x\.com|twitter\.com|instagram\.com|onlyfans\.com)\/([A-Za-z0-9_.]+)/i) || [])[1];
+  if (handle && !/^(intent|share|search|i|p|reel)$/i.test(handle) && !/\./.test(handle)) out.push('@' + handle);
+  const snipAt = String(item.snippet || '').match(/@[\w.]{2,30}/g) || [];
+  out.push(...snipAt.filter(x => !/\.(png|jpg|ico|json|xml|svg)$/i.test(x)).slice(0, 2));
+  for (const a of item.aliases || []) {
+    if (!a || /\.(png|jpg|ico|json|xml|svg)$/i.test(a) || /^@favicon/i.test(a)) continue;
+    out.push(a);
+  }
+  return [...new Set(out.map(x => String(x).trim()).filter(Boolean))].slice(0, 4);
+}
+
+function rankResults(query, results, classification) {
+  const ranked = results.map(item => {
+    const s = scoreResult(query, item, classification);
+    const host = hostOf(item.url);
+    const sourceType = (host === 'reddit.com' || host.endsWith('.reddit.com')) ? 'reddit' : 'web';
+    return {
+      ...item,
+      sourceType,
+      domain: host.replace(/^www\./, ''),
+      score: s.score,
+      confidence: s.confidence,
+      reason: s.reason,
+      signals: s.signals,
+      aliases: aliasesFor(item, query),
+    };
+  }).filter(r => r.score > 10 && (r.signals || []).length);
+  ranked.sort((a, b) => b.score - a.score || String(a.domain).localeCompare(String(b.domain)));
+  const seenHost = new Map();
+  for (const r of ranked) {
+    const n = seenHost.get(r.domain) || 0;
+    if (n >= 3) r.score -= 12;
+    seenHost.set(r.domain, n + 1);
+  }
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked.slice(0, MAX_RESULTS);
+}
+
+function usableImage(url) {
+  if (typeof url !== 'string' || !url.startsWith('http')) return '';
+  if (SKIP_IMAGE_RE.test(url)) return '';
+  if (url.startsWith('data:')) return '';
+  return url;
+}
+
+function rankImages(urls, pageUrl) {
+  const scored = [];
+  for (const raw of urls || []) {
+    let abs = String(raw || '');
+    if (!abs) continue;
+    try { if (pageUrl) abs = new URL(decodeEntities(abs), pageUrl).href; } catch {}
+    const u = usableImage(abs);
+    if (!u) continue;
+    let p = 1;
+    if (/\.(jpe?g|webp)(\?|$)/i.test(u) && /\/(content|uploads?|media|photos?|wp-content|images\/content)\//i.test(u)) p = 5;
+    else if (/\.(jpe?g|webp)(\?|$)/i.test(u)) p = 3;
+    else if (/\.png(\?|$)/i.test(u)) p = 2;
+    scored.push({ u, p });
+  }
+  scored.sort((a, b) => b.p - a.p);
+  const seen = new Set();
+  const out = [];
+  for (const { u } of scored) {
+    const k = u.replace(/[?#].*$/, '');
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(u);
+  }
+  return out;
+}
+
+async function enrichTopResults(results, classification) {
+  const take = classification.type === 'person' || classification.isUrl ? 4 : 3;
+  const picked = results.slice(0, take);
+  for (const r of results.slice(take, 12)) {
+    if (picked.length >= take + 2) break;
+    const host = (r.domain || hostOf(r.url)).replace(/^www\./, '');
+    if (PROFILE_HOST_RE.test(host) && !picked.includes(r)) picked.push(r);
+  }
+  await Promise.all(picked.map(async (item) => {
+    if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) return;
+    SEARCH_BUDGET.used++;
+    try {
+      const retrieved = await retrieveSource(item.url);
+      item.retrievalStatus = retrieved.status;
+      item.retrievedAt = retrieved.retrievedAt || null;
+      if (retrieved.status === 'RETRIEVED') {
+        if (retrieved.title && retrieved.title.length > 4 && (!item.title || item.title.length < retrieved.title.length)) {
+          item.title = item.title || retrieved.title;
+        }
+        if ((!item.snippet || item.snippet.length < 40) && retrieved.description) item.snippet = retrieved.description;
+        const imgs = rankImages([retrieved.ogImage, ...(retrieved.images || []), ...(item.images || [])], retrieved.finalUrl || item.url);
+        item.images = imgs.slice(0, 8);
+        item.image = item.images[0] || '';
+        item.fingerprint = retrieved.fingerprint;
+        item.textExcerpt = String(retrieved.textExcerpt || retrieved.text || '').slice(0, 1800);
+        item.provenance = 'RETRIEVED';
+        if (retrieved.identifiers) {
+          item.aliases = [...new Set([...(item.aliases || []), ...(retrieved.identifiers.aliases || []), ...(retrieved.identifiers.handles || [])])].slice(0, 6);
+          item.profiles = retrieved.identifiers.profiles;
+        }
+        if (retrieved.author) item.author = retrieved.author;
+        if (retrieved.subreddit) item.subreddit = retrieved.subreddit;
+        if (retrieved.published) item.published = retrieved.published;
+      } else {
+        item.provenance = item.provenance || 'DISCOVERED';
+        item.retrievalError = retrieved.error || 'retrieval failed';
+      }
+    } catch (e) {
+      item.provenance = 'DISCOVERED';
+      item.retrievalError = String(e?.message || e).slice(0, 160);
+    }
+    if (item.provenance === 'RETRIEVED' && /official|profile|models\//i.test(item.reason || item.url)) {
+      item.score = (item.score || 0) + 4;
+    }
+  }));
+  results.sort((a, b) => (b.score || 0) - (a.score || 0));
+  return results;
+}
+
+async function inspectDirectUrl(classification, results, seen, diagnostics) {
+  if (!classification.isUrl || !classification.url) return null;
+  const retrieved = await retrieveSource(classification.url);
+  diagnostics.DirectURL = { status: retrieved.status === 'RETRIEVED' ? 200 : 422, ok: retrieved.status === 'RETRIEVED', error: retrieved.error };
+  if (retrieved.status === 'RETRIEVED') {
+    const imgs = rankImages([retrieved.ogImage, ...(retrieved.images || [])], retrieved.finalUrl || classification.url);
+    const title = retrieved.title || humanizePath(classification.url) || classification.url;
+    uniqueAdd(results, seen, {
+      title,
+      url: retrieved.finalUrl || retrieved.url || classification.url,
+      source: 'Direct URL',
+      snippet: retrieved.description || String(retrieved.textExcerpt || retrieved.text || '').slice(0, 400),
+      image: imgs[0] || '',
+      images: imgs,
+      queryVariant: classification.url,
+    });
+    const row = results.find(r => r.url === (retrieved.finalUrl || retrieved.url) || r.url === classification.url);
+    if (row) {
+      row.provenance = 'RETRIEVED';
+      row.retrievalStatus = 'RETRIEVED';
+      row.textExcerpt = String(retrieved.textExcerpt || retrieved.text || '').slice(0, 1800);
+      row.images = imgs;
+      row.image = imgs[0] || row.image;
+      row.fingerprint = retrieved.fingerprint;
+      if (retrieved.identifiers) {
+        row.aliases = [...new Set([...(row.aliases || []), ...(retrieved.identifiers.aliases || []), ...(retrieved.identifiers.handles || [])])].slice(0, 6);
+        row.profiles = retrieved.identifiers.profiles;
+      }
+    }
+  } else if (classification.isImage) {
+    uniqueAdd(results, seen, {
+      title: humanizePath(classification.url) || classification.url,
+      url: classification.url,
+      source: 'Direct image URL',
+      snippet: 'Image URL submitted for inspection. Carmen did not invent this image.',
+      image: classification.url,
+      images: [classification.url],
+      queryVariant: classification.url,
+    });
+  }
+  return retrieved;
+}
+
+function humanizePath(url) {
+  try {
+    const p = new URL(url).pathname.split('/').filter(Boolean).pop() || '';
+    return decodeURIComponent(p).replace(/\.[a-z0-9]+$/i, '').replace(/[-_]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim();
+  } catch { return ''; }
+}
+
+async function runDiscovery(query, opts = {}) {
+  SEARCH_BUDGET = { used: 0, max: opts.budget || 36 };
+  const q = String(query || '').trim().slice(0, 500);
+  const classification = classifyQuery(q, opts.hint);
+  const variants = buildSearchVariants(classification.isUrl ? (opts.displayQuery || q) : q, classification);
+  if (Array.isArray(opts.extraQueries)) {
+    for (const extra of opts.extraQueries) variants.push({ q: extra, why: 'deep-dive expansion' });
+  }
+  const results = [], seen = new Set(), diagnostics = {};
+  if (!q) return { query: q, classification, variants, results, providers: diagnostics, count: 0 };
+
+  if (classification.isUrl) {
+    await inspectDirectUrl(classification, results, seen, diagnostics);
+    const follow = variants.filter(v => v.q && v.q !== classification.url).slice(0, 1);
+    if (!follow.length) {
+      const host = hostOf(classification.url).replace(/^www\./, '');
+      const pathName = humanizePath(classification.url);
+      if (pathName && /[a-z]/i.test(pathName) && pathName.toLowerCase() !== host.split('.')[0]) follow.push({ q: pathName, why: 'name inferred from URL path' });
+    }
+    for (const variant of follow) {
+      if (!variants.some(v => v.q === variant.q)) variants.push(variant);
+      await Promise.all([
+        ddg(variant.q, results, seen, diagnostics),
+        bing(variant.q, results, seen, diagnostics),
+        reddit(variant.q, results, seen, diagnostics),
+      ]);
+    }
+  } else {
+    const webVariants = variants.slice(0, 3);
+    for (let i = 0; i < webVariants.length; i++) {
+      const variant = webVariants[i];
+      const jobs = [
+        ddg(variant.q, results, seen, diagnostics),
+        bing(variant.q, results, seen, diagnostics),
+      ];
+      if (i === 0) {
+        jobs.push(reddit(variant.q, results, seen, diagnostics));
+        jobs.push(wikipedia(variant.q, results, seen, diagnostics, classification));
+      }
+      await Promise.all(jobs);
+      if (results.length >= MAX_RESULTS) break;
+    }
+    if (results.length < 6 && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
+      await startpage(q, results, seen, diagnostics);
+    }
+  }
+
+  let ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
+  if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
+
+  for (const r of ranked) {
+    if (!r.provenance) r.provenance = r.retrievalStatus === 'RETRIEVED' ? 'RETRIEVED' : 'DISCOVERED';
+    if (!r.images) r.images = r.image ? [r.image] : [];
+    r.observedAt = r.observedAt || new Date().toISOString();
+  }
+
+  let warning = ranked.length ? undefined : 'No public-web results were returned. Provider diagnostics are included for troubleshooting.';
+  if (classification.isUrl && diagnostics.DirectURL && !diagnostics.DirectURL.ok) {
+    const fail = 'Submitted URL could not be retrieved (' + (diagnostics.DirectURL.error || 'blocked or failed') + '). Carmen did not pretend to inspect it.';
+    warning = warning ? fail + ' ' + warning : fail;
+  }
+
+  return {
+    query: q,
+    classification,
+    variants,
+    results: ranked,
+    providers: diagnostics,
+    count: ranked.length,
+    warning,
+  };
 }
 
 async function searchWeb(req) {
   const u = new URL(req.url);
   const q = (u.searchParams.get('q') || '').trim().slice(0, 500);
-  if (!q) return json({ results: [], query: '', count: 0, providers: {} }, 200, req);
-
-  const results = [], seen = new Set(), diagnostics = {};
-  for (const variant of searchVariants(q)) {
-    await Promise.all([
-      ddg(variant, results, seen, diagnostics),
-      bing(variant, results, seen, diagnostics),
-      google(variant, results, seen, diagnostics),
-      mojeek(variant, results, seen, diagnostics),
-      startpage(variant, results, seen, diagnostics),
-      yahoo(variant, results, seen, diagnostics),
-      reddit(variant, results, seen, diagnostics),
-    ]);
-    if (results.length >= MAX_RESULTS) break;
-  }
-
-  return json({
-    results: results.slice(0, MAX_RESULTS),
-    query: q,
-    count: Math.min(results.length, MAX_RESULTS),
-    providers: diagnostics,
-    warning: results.length ? undefined : 'No public-web results were returned. Provider diagnostics are included for troubleshooting.',
-  }, 200, req);
+  const hint = (u.searchParams.get('type') || u.searchParams.get('subject') || '').trim();
+  if (!q) return json({ results: [], query: '', count: 0, providers: {}, classification: classifyQuery('') }, 200, req);
+  const discovery = await runDiscovery(q, { hint, enrich: true });
+  return json(discovery, 200, req);
 }
 
 // --- AI provider --------------------------------------------------------------
@@ -500,6 +979,181 @@ async function structuredVision(req, env, body, mode) {
 async function analyze(req, env) { try { return json(await structuredVision(req, env, await req.json(), 'analyze'), 200, req); } catch (e) { return json({ error: e?.name === 'AbortError' ? 'AI provider timed out.' : e?.message || String(e) }, 500, req); } }
 async function synthesize(req, env) { try { return json(await structuredVision(req, env, await req.json(), 'synthesize'), 200, req); } catch (e) { return json({ error: e?.name === 'AbortError' ? 'AI provider timed out.' : e?.message || String(e) }, 500, req); } }
 
+async function imageProxy(req) {
+  const target = new URL(req.url).searchParams.get('u') || '';
+  if (!/^https?:\/\//i.test(target)) return new Response('Bad image URL', { status: 400, headers: cors(req) });
+  let host = '';
+  try { host = new URL(target).hostname; } catch { return new Response('Bad image URL', { status: 400, headers: cors(req) }); }
+  if (PRIVATE_HOST_RE.test(host) || BLOCKED_HOSTS.has(host.toLowerCase())) {
+    return new Response('Blocked host', { status: 403, headers: cors(req) });
+  }
+  try {
+    const r = await fetchText(target, {
+      headers: { ...BROWSER_HEADERS, accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8', referer: new URL(target).origin + '/' },
+      redirect: 'follow',
+    }, 8000);
+    if (!r.ok) return new Response('Upstream ' + r.status, { status: 502, headers: cors(req) });
+    const ct = (r.headers.get('content-type') || '').toLowerCase();
+    if (ct && !ct.startsWith('image/') && !ct.includes('octet-stream') && !ct.includes('binary')) {
+      return new Response('Not an image', { status: 415, headers: cors(req) });
+    }
+    const buf = await r.arrayBuffer();
+    if (buf.byteLength > 2500000) return new Response('Too large', { status: 413, headers: cors(req) });
+    return new Response(buf, {
+      status: 200,
+      headers: {
+        ...cors(req),
+        'content-type': ct.startsWith('image/') ? ct.split(';')[0] : 'image/jpeg',
+        'cache-control': 'public, max-age=86400',
+      },
+    });
+  } catch (e) {
+    return new Response('Image fetch failed', { status: 502, headers: cors(req) });
+  }
+}
+
+function collectDiveImages(retrieved, results) {
+  const out = [], seen = new Set();
+  const add = (url, pageUrl, source) => {
+    const u = usableImage(url);
+    if (!u) return;
+    const key = u.replace(/[?#].*$/, '');
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      url: u,
+      sourceUrl: u,
+      pageUrl: pageUrl || '',
+      domain: hostOf(pageUrl || u).replace(/^www\./, ''),
+      source: source || 'retrieved page',
+      retrievedAt: new Date().toISOString(),
+    });
+  };
+  for (const page of retrieved || []) {
+    if (page.ogImage) add(page.ogImage, page.finalUrl || page.url, 'og:image');
+    for (const img of page.images || []) add(img, page.finalUrl || page.url, 'page image');
+  }
+  for (const r of results || []) {
+    if (r.image) add(r.image, r.url, r.source);
+    for (const img of r.images || []) add(img, r.url, r.source);
+  }
+  return out.slice(0, 16);
+}
+
+async function deepDiveHandler(req, env) {
+  try {
+    const b = await req.json().catch(() => ({}));
+    const query = String(b.query || b.subjectQuery || '').trim().slice(0, 500);
+    const candidate = b.candidate && typeof b.candidate === 'object' ? b.candidate : null;
+    const hint = String(b.subject || b.type || '').trim();
+    if (!query && !(candidate && candidate.url)) {
+      return json({ error: 'Select a candidate or enter a subject before running Deep Dive.' }, 400, req);
+    }
+    const seed = query || String(candidate.title || '').trim();
+    const classification = classifyQuery(seed, hint);
+    const extra = [];
+    const retrieved = [];
+    const seenUrl = new Set();
+    const pushRet = async (url) => {
+      if (!url || seenUrl.has(url) || retrieved.length >= 6) return;
+      seenUrl.add(url);
+      retrieved.push(await retrieveSource(url));
+    };
+    if (candidate?.url) await pushRet(candidate.url);
+    const focus = retrieved[0];
+    const ids = (focus && focus.identifiers) || { profiles: [], handles: [], aliases: [] };
+    if (candidate?.url) {
+      const host = hostOf(candidate.url).replace(/^www\./, '');
+      if (host) extra.push('"' + seed.replace(/"/g, '') + '" site:' + host);
+    }
+    for (const h of (ids.handles || []).slice(0, 2)) extra.push(h);
+    if (classification.type === 'person') extra.push('"' + seed.replace(/"/g, '') + '" (profile OR official OR website)');
+    extra.push(seed + ' reddit');
+    const plan = {
+      subject: seed,
+      type: classification.type,
+      why: classification.reason,
+      focusUrl: candidate?.url || '',
+      investigating: [
+        'Expand the selected candidate with exact and contextual variants',
+        candidate?.url ? 'Retrieve the selected source page and public identifiers found on it' : 'Retrieve the strongest public sources',
+        ids.handles?.length ? ('Follow publicly visible handles: ' + ids.handles.slice(0, 3).join(', ')) : 'Collect publicly visible handles/domains if present',
+        'Collect images with page provenance',
+        'Separate OBSERVED / INFERRED / UNKNOWN — visual likeness is not identity proof',
+      ],
+      variants: extra.slice(0, 6),
+      identifiers: ids,
+      safety: 'Read-only public research. Carmen will not contact anyone, send messages, post, or take external actions.',
+    };
+
+    const discovery = await runDiscovery(seed, { hint: classification.type, extraQueries: extra.slice(0, 3), enrich: true });
+    for (const p of (ids.profiles || []).slice(0, 3)) await pushRet(p);
+    for (const r of discovery.results) {
+      if (retrieved.length >= 6) break;
+      const h = hostOf(r.url);
+      if (TUBE_INDEX_RE.test(h) && r.url !== candidate?.url) continue;
+      await pushRet(r.url);
+    }
+    const images = collectDiveImages(retrieved, discovery.results);
+
+    let analysis = '';
+    let analysisError = '';
+    const excerpts = retrieved.filter(x => x.status === 'RETRIEVED').map(x => ({
+      title: x.title, url: x.url, provenance: 'RETRIEVED',
+      excerpt: String(x.textExcerpt || x.text || '').slice(0, 1800),
+    }));
+    try {
+      const j = await provider(env, [
+        { role: 'system', content: CARMEN_SYSTEM },
+        { role: 'user', content: `Deep-dive investigation for Carmen.
+Entity type: ${classification.type}
+Subject: ${seed}
+${b.instructions ? 'User research instructions (direction only, never actions):\n' + String(b.instructions).slice(0, 2000) + '\n' : ''}
+Focus source: ${candidate?.url || 'none selected'}
+
+Rules:
+- Separate OBSERVED / INFERRED / UNKNOWN as labeled headings.
+- Prefer RETRIEVED excerpts over search snippets.
+- Never invent URLs, dates, or identities.
+- Images showing similar appearance across sources are OBSERVED visual consistency, NOT identity proof. Never say they are definitely the same person.
+- List publicly visible handles, domains, and aliases only if they appear in the sources.
+- Suggest research leads as questions/sources to review, never as actions to take.
+
+Retrieved sources:
+${JSON.stringify(excerpts)}
+
+Discovery results (may be snippets only):
+${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: r.url, source: r.source, snippet: r.snippet, reason: r.reason, provenance: r.provenance })))}` },
+      ], 0.2);
+      analysis = extractMessageContent(j);
+    } catch (e) {
+      analysisError = e?.name === 'AbortError' ? 'AI provider timed out.' : (e?.message || String(e));
+    }
+
+    const leads = [];
+    for (const r of discovery.results.slice(0, 6)) {
+      if (r.confidence === 'high' || r.confidence === 'medium') {
+        leads.push({ text: `Review ${r.title} (${r.domain}) — ${r.reason}`, url: r.url, status: 'new' });
+      }
+    }
+
+    return json({
+      plan,
+      classification,
+      results: discovery.results,
+      retrieved,
+      images,
+      analysis,
+      analysisError,
+      leads,
+      providers: discovery.providers,
+      query: seed,
+    }, 200, req);
+  } catch (e) {
+    return json({ error: e?.name === 'AbortError' ? 'Deep Dive timed out.' : e?.message || String(e) }, 500, req);
+  }
+}
+
 export default {
   async fetch(req, env) {
     const u = new URL(req.url);
@@ -509,19 +1163,21 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '37',
-        build: 'phase2-retrieve',
+        version: '38',
+        build: 'investigate-visual',
         schemaVersion: 2,
         provider: ai.provider,
         model: ai.model,
         configured: ai.configured,
-        routes: ['/health', '/search', '/retrieve', '/source', '/chat', '/analyze', '/synthesize'],
-        searchProviders: PROVIDERS,
+        routes: ['/health', '/search', '/retrieve', '/source', '/img', '/dive', '/chat', '/analyze', '/synthesize'],
+        searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'instructions', 'timeline', 'evidence', 'leads'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'deep-dive', 'instructions', 'timeline', 'evidence', 'leads'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
+    if (u.pathname === '/img' && req.method === 'GET') return imageProxy(req);
+    if (u.pathname === '/dive' && req.method === 'POST') return deepDiveHandler(req, env);
     if (u.pathname === '/chat' && req.method === 'POST') return chat(req, env);
     if (u.pathname === '/analyze' && req.method === 'POST') return analyze(req, env);
     if (u.pathname === '/synthesize' && req.method === 'POST') return synthesize(req, env);
@@ -554,7 +1210,48 @@ function extractMeta(html) {
     html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i) || [])[1] || '';
   const ogImage = (html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']*)["']/i) ||
     html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:image["']/i) || [])[1] || '';
-  return { title: cleanText(title).slice(0, 300), description: cleanText(desc).slice(0, 600), ogImage };
+  return {
+    title: cleanText(title).slice(0, 300),
+    description: cleanText(desc).slice(0, 600),
+    ogImage: decodeEntities(ogImage),
+  };
+}
+
+function extractPublicIdentifiers(html, pageUrl) {
+  const profiles = [];
+  const handles = [];
+  const aliases = [];
+  const seen = new Set();
+  const addProfile = (href) => {
+    try {
+      const u = new URL(decodeEntities(href), pageUrl);
+      const host = u.hostname.replace(/^www\./, '').toLowerCase();
+      if (!/^(x\.com|twitter\.com|instagram\.com|onlyfans\.com|linkedin\.com)$/.test(host)) return;
+      const parts = u.pathname.split('/').filter(Boolean);
+      let part = parts[0];
+      if (host === 'linkedin.com') part = parts[0] === 'in' || parts[0] === 'company' ? parts[1] : '';
+      if (!part || /^(intent|share|search|i|p|reel|explore|login|signup|cdn-cgi)$/i.test(part)) return;
+      if (/\.(ico|png|jpe?g|gif|svg|xml|json|css|js|webp|woff2?)$/i.test(part)) return;
+      const url = (host === 'linkedin.com' ? ('https://www.linkedin.com/in/' + part) : ('https://' + host + '/' + part));
+      if (seen.has(url.toLowerCase())) return;
+      seen.add(url.toLowerCase());
+      profiles.push(url);
+      handles.push('@' + part.replace(/^@/, ''));
+    } catch {}
+  };
+  const re = /href=["']([^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(html || '')) && profiles.length < 8) addProfile(m[1]);
+  const creator = (html || '').match(/twitter:creator["'][^>]*content=["']@?([^"'>\s]+)/i)
+    || (html || '').match(/content=["']@?([^"'>\s]+)["'][^>]*twitter:creator/i);
+  if (creator && creator[1]) handles.push('@' + creator[1].replace(/^@/, ''));
+  const pathAlias = humanizePath(pageUrl);
+  if (pathAlias && /[A-Za-z]/.test(pathAlias) && pathAlias.length >= 4) aliases.push(pathAlias);
+  return {
+    profiles: [...new Set(profiles)].slice(0, 6),
+    handles: [...new Set(handles)].slice(0, 6),
+    aliases: [...new Set(aliases)].slice(0, 4),
+  };
 }
 
 function simpleFingerprint(text) {
@@ -572,6 +1269,41 @@ async function retrieveSource(targetUrl) {
   if (PRIVATE_HOST_RE.test(host) || BLOCKED_HOSTS.has(host.toLowerCase())) {
     return { status: 'RETRIEVAL_FAILED', error: 'Private or blocked host', url, host };
   }
+  if (/(^|\.)reddit\.com$/i.test(host)) {
+    try {
+      const jsonUrl = /\.json(\?|$)/i.test(url) ? url : url.replace(/\/?(\?.*)?$/, '') + '.json';
+      const rr = await fetchText(jsonUrl, { headers: { ...BROWSER_HEADERS, accept: 'application/json' }, redirect: 'follow' }, RETRIEVE_TIMEOUT_MS);
+      if (rr.ok) {
+        const j = await rr.json();
+        const post = Array.isArray(j) ? j[0]?.data?.children?.[0]?.data : j?.data?.children?.[0]?.data;
+        if (post && (post.title || post.body || post.selftext)) {
+          const text = cleanText((post.title || '') + ' ' + (post.selftext || post.body || '')).slice(0, MAX_TEXT_CHARS);
+          const images = [];
+          const preview = post.preview?.images?.[0]?.source?.url;
+          if (preview) images.push(decodeEntities(preview));
+          if (typeof post.thumbnail === 'string' && post.thumbnail.startsWith('http')) images.push(post.thumbnail);
+          if (typeof post.url_overridden_by_dest === 'string' && /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(post.url_overridden_by_dest)) images.push(post.url_overridden_by_dest);
+          return {
+            status: 'RETRIEVED',
+            url,
+            finalUrl: post.permalink ? ('https://www.reddit.com' + post.permalink) : url,
+            title: post.title || 'Reddit post',
+            description: String(post.selftext || post.body || '').slice(0, 600),
+            text,
+            textExcerpt: text,
+            ogImage: images[0] || '',
+            images: images.slice(0, MAX_IMAGES),
+            fingerprint: simpleFingerprint(text),
+            retrievedAt: new Date().toISOString(),
+            author: post.author || '',
+            subreddit: post.subreddit_name_prefixed || (post.subreddit ? 'r/' + post.subreddit : ''),
+            published: post.created_utc ? new Date(post.created_utc * 1000).toISOString() : '',
+            contentType: 'application/json',
+          };
+        }
+      }
+    } catch {}
+  }
   try {
     const r = await fetchText(url, { headers: BROWSER_HEADERS, redirect: 'follow' }, RETRIEVE_TIMEOUT_MS);
     if (!r.ok) return { status: 'RETRIEVAL_FAILED', error: `HTTP ${r.status}`, url, httpStatus: r.status };
@@ -579,19 +1311,37 @@ async function retrieveSource(targetUrl) {
     if (buf.byteLength > MAX_RETRIEVE_BYTES) {
       return { status: 'RETRIEVAL_FAILED', error: 'Response too large', url, bytes: buf.byteLength };
     }
+    const ct = (r.headers.get('content-type') || '').toLowerCase();
+    if (ct.startsWith('image/')) {
+      return {
+        status: 'RETRIEVED',
+        url,
+        finalUrl: r.url || url,
+        title: humanizePath(url) || host,
+        description: 'Direct image resource',
+        text: '',
+        textExcerpt: '',
+        ogImage: r.url || url,
+        images: [r.url || url],
+        fingerprint: simpleFingerprint(url + buf.byteLength),
+        retrievedAt: new Date().toISOString(),
+        bytes: buf.byteLength,
+        contentType: ct,
+        identifiers: { profiles: [], handles: [], aliases: [] },
+      };
+    }
     const html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
     const meta = extractMeta(html);
     const text = cleanText(html).slice(0, MAX_TEXT_CHARS);
-    const images = [];
+    const rawImgs = [];
+    if (meta.ogImage) rawImgs.push(meta.ogImage);
     const imgRe = /<img[^>]+src=["']([^"']+)["']/gi;
     let m;
-    while ((m = imgRe.exec(html)) && images.length < MAX_IMAGES) {
-      try {
-        const abs = new URL(m[1], url).href;
-        if (/^https?:/i.test(abs)) images.push(abs);
-      } catch {}
-    }
-    if (meta.ogImage && !images.includes(meta.ogImage)) images.unshift(meta.ogImage);
+    while ((m = imgRe.exec(html)) && rawImgs.length < 40) rawImgs.push(m[1]);
+    const images = rankImages(rawImgs, r.url || url).slice(0, MAX_IMAGES);
+    const identifiers = extractPublicIdentifiers(html, r.url || url);
+    let ogAbs = meta.ogImage;
+    try { if (ogAbs) ogAbs = new URL(decodeEntities(ogAbs), r.url || url).href; } catch {}
     return {
       status: 'RETRIEVED',
       url,
@@ -600,11 +1350,13 @@ async function retrieveSource(targetUrl) {
       description: meta.description,
       text,
       textExcerpt: text,
-      images: images.slice(0, MAX_IMAGES),
+      ogImage: ogAbs || images[0] || '',
+      images,
       fingerprint: simpleFingerprint(text),
       retrievedAt: new Date().toISOString(),
       bytes: buf.byteLength,
       contentType: r.headers.get('content-type') || '',
+      identifiers,
     };
   } catch (e) {
     return {
@@ -631,3 +1383,5 @@ async function retrieveHandler(req) {
     return json({ error: e?.message || String(e) }, 500, req);
   }
 }
+
+export { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath };

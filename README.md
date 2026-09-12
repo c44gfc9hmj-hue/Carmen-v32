@@ -10,8 +10,12 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
-## Phase 2 (v37) additions
+## Investigation workspace (v38) additions
 
+- Ranked discovery with query classification, match reasons, and visual candidate cards.
+- `/dive` expands a selected candidate (retrieve + images + OBSERVED/INFERRED/UNKNOWN).
+- `/img` same-origin image proxy for iPhone-reliable evidence photos.
+- Search providers (v38): DuckDuckGo, Bing, Reddit, Wikipedia, Startpage fallback. Google/Mojeek/Yahoo remain implemented but are not on the default path (Cloudflare subrequest budget).
 - `/retrieve` and `/source` — real public source retrieval with metadata, text excerpt, images, fingerprints, and explicit `RETRIEVED` / `RETRIEVAL_FAILED` status.
 - Provenance states on evidence: DISCOVERED, RETRIEVED, RETRIEVAL_FAILED (OBSERVED / INFERRED / UNKNOWN remain in AI analysis).
 - First-class **Instructions** field on every investigation (research direction only; never external actions).
@@ -24,9 +28,9 @@ consolidated into this one project.
 ## What it does
 
 - **Discovery hub** — enter a subject (person / topic / website / claim / product /
-  position), and Carmen searches public sources (DuckDuckGo, Bing, Google, Mojeek,
-  Startpage, Yahoo, Reddit), surfacing 10–20 reviewable results with URL, title,
-  source, snippet, timestamp, and image where available.
+  position), and Carmen classifies the query, searches public sources (DuckDuckGo,
+  Bing, Reddit, Wikipedia, Startpage fallback), and ranks reviewable candidates
+  with images, provenance, match reasons, and confidence.
 - **Deep dive** — Carmen reviews the subject and discovery context and separates
   OBSERVED, INFERRED, and UNKNOWN findings.
 - **Capture** — screenshot or screen-capture evidence, then run vision analysis.
@@ -48,7 +52,7 @@ stay at the project root and are never served as static assets.
 
 | File | Purpose |
 |------|---------|
-| `worker.js` | Cloudflare Worker backend: `/health`, `/search`, `/chat`, `/analyze`, `/synthesize` + static asset serving via the `ASSETS` binding. |
+| `worker.js` | Cloudflare Worker backend: `/health`, `/search`, `/retrieve`, `/source`, `/img`, `/dive`, `/chat`, `/analyze`, `/synthesize` + static asset serving via the `ASSETS` binding. |
 | `wrangler.jsonc` | Cloudflare deployment config (`assets.directory: public`). |
 | `public/index.html` | Single-page frontend (inline styles). |
 | `public/app.js` | Frontend logic (IndexedDB, discovery, capture, analysis, synthesis). |
