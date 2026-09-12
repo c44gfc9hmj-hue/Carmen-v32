@@ -10,6 +10,18 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
+## Investigation workspace (v45)
+
+v45 is a person-experience pass on live v44. It does not replace the v38 engine, v40 planner, v42 adult filter, v43 discovery graph, or v44 interest lenses / result kinds.
+
+- **Visual identification first** — when the subject is a person, candidates lead with large public images. Multiple people with the same name stay visually distinguishable. Visual resemblance is not identity proof.
+- **Card/image tap selects the person** — the selected candidate becomes the canonical entity (name, type, source URLs, images, provenance, confidence, original query, context). Deep Dive researches that resolved person, not the original search string alone.
+- **Context follows** — Adult ON/OFF/BOTH, selected lens/context, and depth stay attached to the entity into Deep Dive.
+- **Deep Dive is a destination** — its own tab/workspace, not a block on Search. After identification: Search → visual ID → select person → Deep Dive → explore.
+- **Investigative instruction** — the custom Deep Dive question is interpreted (interviews, connections, sources, images, work) instead of concatenated onto a query.
+- **Adaptive workspace** — Overview, Images, Videos, Work, Interviews, People, Organizations, Websites, Context, Sources, Evidence, Discoveries, Related. Empty sections stay hidden.
+- Images stay clickable with provenance. Videos stay playable when a public embed exists; otherwise thumbnail + Open source.
+
 ## Investigation workspace (v44)
 
 v44 is a product-quality and ranking-hardening pass on live v43. It does not replace the v38 engine, v40 planner, v42 adult filter, or v43 discovery graph.

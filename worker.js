@@ -914,12 +914,17 @@ function classifyResultKind(item, classification, flags) {
   flags = flags || {};
   const host = hostOf(item && item.url);
   const title = String(item && item.title || '').trim();
+  const hasVisual = flags.hasVisual || !!(item && (item.image || (item.images && item.images.length)));
   if (NAV_TITLE_RE.test(title) || SEO_JUNK_RE.test(host) || SEO_JUNK_RE.test(String(item && item.url || ''))) return 'JUNK';
   if (isAggregatorPage(item)) return 'AGGREGATOR';
-  if (flags.intersection) return 'INTERSECTION_MATCH';
+  if (flags.intersection) {
+    if (/\b(interview|podcast|transcript)\b/i.test(title)) return 'INTERVIEW_MATCH';
+    return 'INTERSECTION_MATCH';
+  }
   if (flags.relationship) return 'RELATIONSHIP_MATCH';
   if (item && (item.imageOrigin === 'image-index' || item.mediaKind === 'video') && flags.hasContext) return 'MEDIA_MATCH';
   if (GENERIC_BIO_HOST_RE.test(host)) return extraContext(classification) ? 'GENERIC_BACKGROUND' : 'ENTITY_MATCH';
+  if ((classification && classification.type === 'person') && flags.hasEntity && hasVisual && !GENERIC_BIO_HOST_RE.test(host)) return 'VISUAL_ENTITY_MATCH';
   if (flags.hasContext && !flags.hasEntity) return 'CONTEXT_MATCH';
   if (flags.hasEntity && extraContext(classification) && !flags.hasContext) return 'GENERIC_BACKGROUND';
   if (flags.hasEntity) return 'ENTITY_MATCH';
@@ -1514,7 +1519,9 @@ function inferPathsFromQuestion(question, allPaths) {
     [/timeline|history|when|chronolog|date/, ['timeline', 'history']],
     [/identity|alias|who is|real name|handle/, ['identity']],
     [/presence|website|profile|social|official/, ['presence', 'official']],
-    [/related|other people|connected|associated/, ['related', 'entities']],
+    [/related|other people|connected|associated|connecting|collaborat/, ['related', 'entities']],
+    [/interview|podcast|discuss|talks about|q\s*&\s*a/, ['interviews', 'videos']],
+    [/credit|filmography|production|photoset|scene/, ['projects', 'career']],
     [/tutorial|how to|learn|teach|instruct|procedure|steps/, ['tutorials', 'steps']],
     [/tool|material|part|supply/, ['tools', 'materials']],
     [/safety|hazard|ppe/, ['safety']],
@@ -1533,6 +1540,134 @@ function inferPathsFromQuestion(question, allPaths) {
     for (const id of ids) if (available.has(id) && !out.includes(id)) out.push(id);
   }
   return out;
+}
+
+function parseInvestigativeQuestion(question, classification) {
+  const raw = String(question || '').trim();
+  const out = { topic: '', intent: '', paths: [], variants: [], why: '' };
+  if (!raw) return out;
+  const subject = String((classification && classification.subject) || '').trim();
+  const t = raw.toLowerCase();
+  let topic = '';
+  const quoted = raw.match(/[“"]([^"”]{2,80})[”"]/);
+  if (quoted) topic = quoted[1].trim();
+  const extractors = [
+    /(?:discuss(?:es|ed)?|talks?\s+about|speaking about|mentions?)\s+(.+)$/i,
+    /(?:connecting(?:\s+this person|\s+them|\s+him|\s+her)?\s+to|connection to|involving|related to)\s+(.+)$/i,
+    /(?:sources?\s+(?:on|about|involving|for)|everything\s+(?:on|about|connecting)|find\s+(?:everything|all|sources?))\s+(?:on |about |involving |connecting(?:\s+this person)?\s+to )?(.+)$/i,
+    /(?:interviews?\s+(?:where|about|on|with))\s+(.+)$/i,
+    /(?:show|find)\s+sources?\s+(?:involving|about|on)\s+(.+)$/i,
+  ];
+  if (!topic) {
+    for (const re of extractors) {
+      const m = raw.match(re);
+      if (m && m[1]) {
+        topic = m[1].replace(/[.?!]+$/, '').replace(/^["“]|["”]$/g, '').trim();
+        break;
+      }
+    }
+  }
+  if (subject && topic) {
+    const esc = subject.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    topic = topic.replace(new RegExp(esc, 'ig'), ' ').replace(/\b(she|he|they|her|him|them|this person)\b/ig, ' ').replace(/\s+/g, ' ').trim();
+  }
+  if (topic.length > 72) topic = topic.slice(0, 72).trim();
+  if (/interview|podcast|discuss|q\s*&\s*a|talks?\b/.test(t)) {
+    out.intent = 'interviews';
+    out.paths.push('interviews', 'videos');
+  } else if (/photo|image|visual|picture|gallery|portrait/.test(t)) {
+    out.intent = 'images';
+    out.paths.push('images');
+  } else if (/video|clip|watch|footage/.test(t)) {
+    out.intent = 'videos';
+    out.paths.push('videos');
+  } else if (/connect|related|people|collaborat|network|who (?:else|worked)/.test(t)) {
+    out.intent = 'relationships';
+    out.paths.push('related', 'entities', 'organizations');
+  } else if (/source|citation|evidence|document/.test(t)) {
+    out.intent = 'sources';
+    out.paths.push('sources', 'evidence');
+  } else if (/credit|filmography|production|work|title/.test(t)) {
+    out.intent = 'work';
+    out.paths.push('projects', 'career');
+  } else {
+    out.intent = 'directed';
+    out.paths.push('context', 'sources');
+  }
+  out.topic = topic;
+  const sub = subject.replace(/"/g, '');
+  const quotedSub = sub ? '"' + sub + '"' : '';
+  const add = (q, why) => { if (q && !out.variants.some(v => v.q === q)) out.variants.push({ q, why }); };
+  if (quotedSub && topic) {
+    if (out.intent === 'interviews') {
+      add(quotedSub + ' interview "' + topic + '"', 'interviews about the requested topic');
+      add(quotedSub + ' "' + topic + '" (interview OR podcast OR feature)', 'features discussing the topic');
+    } else if (out.intent === 'relationships') {
+      add(quotedSub + ' "' + topic + '" (with OR and OR collaboration)', 'connection to the requested topic');
+    } else if (out.intent === 'images') {
+      add(quotedSub + ' "' + topic + '" (photo OR image OR gallery)', 'visuals for the requested topic');
+    } else if (out.intent === 'videos') {
+      add(quotedSub + ' "' + topic + '" (video OR clip)', 'videos for the requested topic');
+    } else {
+      add(quotedSub + ' "' + topic + '"', 'directed research on the requested topic');
+      add(quotedSub + ' ' + topic + ' (source OR article OR feature)', 'sources involving the topic');
+    }
+  } else if (quotedSub && out.intent === 'interviews') {
+    add(quotedSub + ' interview OR podcast OR feature', 'interview sources');
+  } else if (quotedSub && topic) {
+    add(quotedSub + ' "' + topic + '"', 'directed research on the requested topic');
+  }
+  out.why = out.intent + (topic ? (': ' + topic) : '');
+  return out;
+}
+
+function visualCandidatesFor(ranked, classification) {
+  if (!classification || classification.type !== 'person') return [];
+  const pri = (k) => ({ VISUAL_ENTITY_MATCH: 6, ENTITY_MATCH: 5, INTERSECTION_MATCH: 4, INTERVIEW_MATCH: 4, MEDIA_MATCH: 3, RELATIONSHIP_MATCH: 2 }[k] || 0);
+  const out = [];
+  const seen = new Set();
+  for (const r of ranked || []) {
+    if (!r) continue;
+    if (r.resultKind === 'AGGREGATOR' || r.resultKind === 'JUNK' || r.resultKind === 'WEAK_MATCH') continue;
+    if (GENERIC_BIO_HOST_RE.test(hostOf(r.url))) continue;
+    const imgs = [...new Set([r.image, ...(r.images || [])].filter(Boolean))];
+    if (!imgs.length) continue;
+    const key = (r.domain || '') + '|' + imgs[0];
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  out.sort((a, b) => pri(b.resultKind) - pri(a.resultKind) || (b.score || 0) - (a.score || 0));
+  return out.slice(0, 6);
+}
+
+function buildSelectedEntity(classification, candidate, identity, extras) {
+  extras = extras || {};
+  const c = classification || {};
+  const r = candidate || {};
+  const id = identity || {};
+  const name = String(extras.canonicalName || id.canonicalName || c.subject || '').trim();
+  return {
+    canonicalName: name,
+    type: c.type || r.entityType || '',
+    url: r.url || '',
+    image: r.image || ((r.images || [])[0]) || '',
+    images: [...new Set([r.image, ...(r.images || [])].filter(Boolean))].slice(0, 8),
+    provenance: r.provenance || 'DISCOVERED',
+    confidence: r.confidence || 'low',
+    reason: r.reason || '',
+    sourceUrls: [r.url].filter(Boolean),
+    aliases: id.aliases || r.aliases || [],
+    handles: id.handles || [],
+    domains: id.domains || (r.domain ? [r.domain] : []),
+    originalQuery: extras.originalQuery || '',
+    context: extraContext(c) || extras.context || '',
+    adultContent: c.adultContent || extras.adultContent || 'off',
+    lens: extras.lens || '',
+    depth: extras.depth || c.researchDepth || '',
+    selectedAt: new Date().toISOString(),
+    visualLikenessIsNotIdentityProof: true,
+  };
 }
 
 function resolveDivePaths(type, body = {}, classification) {
@@ -1881,7 +2016,11 @@ function scoreResult(query, item, classification) {
   }
   if (PROFILE_HOST_RE.test(host)) { score += 14; bits.push('public profile host'); }
   if (host === 'reddit.com' || host.endsWith('.reddit.com')) { score += 12; bits.push('Reddit thread'); }
-  if (item.image || (item.images && item.images.length)) { score += 6; bits.push('has visual evidence'); }
+  const hasVisual = !!(item.image || (item.images && item.images.length));
+  if (hasVisual) { score += 6; bits.push('has visual evidence'); }
+  if (classification.type === 'person' && hasVisual && !aggregator && nameTokens.length && nameTokens.every(t => title.includes(t) || url.includes(t) || snip.includes(t))) {
+    score += 14; bits.push('public visual reference for the person');
+  }
   if ((classification.type === 'technique' || classification.type === 'skill') && INSTRUCTIONAL_HOST_RE.test(host)) {
     score += 16; bits.push('instructional source');
   }
@@ -1961,6 +2100,7 @@ function scoreResult(query, item, classification) {
     intersection,
     hasEntity: hasEntityFlag,
     hasContext: hasContextFlag,
+    hasVisual,
     relationship: /follow-|production|title/.test(String(item.discoveryLane || '')),
   });
   if (resultKind === 'AGGREGATOR' && /Strong match/.test(reason)) {
@@ -2396,6 +2536,8 @@ async function runDiscovery(query, opts = {}) {
     graphLeads,
     intersectionCount,
     lenses: interestLenses(classification.type, classification),
+    visualCandidates: visualCandidatesFor(ranked, classification),
+    selectedEntity: buildSelectedEntity(classification, ranked[0], identity, { originalQuery: q, depth, adultContent: adult }),
   };
 }
 
@@ -2681,17 +2823,27 @@ async function deepDiveHandler(req, env) {
     if (!query && !(candidate && candidate.url)) {
       return json({ error: 'Select a candidate or enter a subject before running Deep Dive.' }, 400, req);
     }
-    const seed = query || String(candidate.title || '').trim();
-    const adult = normalizeAdult(b.adult || b.adultContent);
-    const classification = applyResearchFilter(classifyQuery(seed, hint), adult, seed);
+    const selectedEntityIn = (b.selectedEntity && typeof b.selectedEntity === 'object') ? b.selectedEntity : null;
+    const originalQuery = String(b.originalQuery || (selectedEntityIn && selectedEntityIn.originalQuery) || query || '').trim();
+    const canonical = String((selectedEntityIn && selectedEntityIn.canonicalName) || '').trim();
+    const seed = originalQuery || query || canonical || String(candidate.title || '').trim();
+    const adult = normalizeAdult(b.adult || b.adultContent || (selectedEntityIn && selectedEntityIn.adultContent));
+    const typeHint = hint || (selectedEntityIn && selectedEntityIn.type) || '';
+    const classification = applyResearchFilter(classifyQuery(seed, typeHint), adult, seed);
+    if (canonical) classification.subject = canonical;
+    const carriedCtx = String((selectedEntityIn && selectedEntityIn.context) || b.context || '').trim();
+    if (carriedCtx && !extraContext(classification)) classification.context = carriedCtx;
     const expanded = b.expanded === true || b.expanded === 'true' || b.expanded === 1;
-    const depth = normalizeDepth(b.all === true || b.all === 'true' || b.depth === 'deep' ? 'deep' : (b.depth || 'contextual'), classification);
+    const depth = normalizeDepth(b.all === true || b.all === 'true' || b.depth === 'deep' ? 'deep' : (b.depth || (selectedEntityIn && selectedEntityIn.depth) || 'contextual'), classification);
     classification.researchDepth = depth;
     const resolved = resolveDivePaths(classification.type, b, classification);
     const selectedPaths = resolved.selected;
     const selectedIds = new Set(selectedPaths.map(p => p.id));
     const customQuestion = resolved.custom || String(b.customQuestion || b.instructions || '').trim();
+    const instruction = parseInvestigativeQuestion(customQuestion, classification);
+    for (const id of instruction.paths) selectedIds.add(id);
     const extra = [];
+    for (const v of instruction.variants) extra.push(v.q);
     const retrieved = [];
     const seenUrl = new Set();
     const retrieveCap = expanded || resolved.all || depth === 'deep' ? 10 : 6;
@@ -2734,9 +2886,11 @@ async function deepDiveHandler(req, env) {
     }
     const focusBlocked = !!(focus && focus.status !== 'RETRIEVED');
     const plan = {
-      subject: seed,
+      subject: classification.subject || seed,
       type: classification.type,
       why: classification.reason,
+      selectedEntity: selectedEntityIn || null,
+      instruction,
       focusUrl: candidate?.url || '',
       all: resolved.all,
       selectedPaths: selectedPaths.map(p => p.id),
@@ -2749,7 +2903,7 @@ async function deepDiveHandler(req, env) {
       lanes: graph.lanes.map(l => l.id),
       investigating: [
         resolved.all ? 'Investigate ALL research paths for this entity type, active context, and question — including paths discovered for this investigation' : ('Investigate selected paths: ' + selectedPaths.map(p => p.label).join(', ')),
-        customQuestion ? ('User question: ' + customQuestion.slice(0, 180)) : 'No custom question — follow the selected paths',
+        customQuestion ? ('Investigative instruction (' + (instruction.intent || 'directed') + (instruction.topic ? ': ' + instruction.topic : '') + '): ' + customQuestion.slice(0, 180)) : 'No custom question — follow the selected paths',
         'Research depth: ' + depth + (depth === 'deep' ? ' — follow productions, people, organizations, and references discovered in the intersection' : (depth === 'contextual' ? ' — find material about the entity ∩ requested context, not name-only hits' : ' — identify the entity/domain')),
         adult === 'off' ? 'Adult content filter is OFF — general public research' : (adult === 'on' ? 'Adult content filter is ON — keep adult-industry public context through retrieval, media, and synthesis' : 'Adult content filter is BOTH — keep general and adult-context lanes distinguishable'),
         classification.context ? ('Requested context: ' + (classification.subject || seed) + ' in relation to “' + classification.context + '” (' + (classification.relation || 'context') + ')') : 'Subject-only research (no extra visual/contextual relation requested)',
@@ -2997,7 +3151,7 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '44',
+        version: '45',
         build: 'workspace',
         schemaVersion: 2,
         provider: ai.provider,
@@ -3006,7 +3160,7 @@ export default {
         routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'visual-identity', 'selected-entity', 'dive-workspace'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -3309,4 +3463,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, visualCandidatesFor, buildSelectedEntity };

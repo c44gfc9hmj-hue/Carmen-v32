@@ -104,6 +104,19 @@ details.adv summary::-webkit-details-marker{display:none}
 .result .racts{display:flex;gap:6px;margin-top:10px}
 .result .racts button{flex:1;min-height:40px;font-size:12px;font-weight:600;border-radius:var(--radius-sm);border:1px solid var(--line);background:#1a1e25;color:var(--fg)}
 .result .racts button.primary{background:var(--accent);color:var(--accent-fg);border-color:transparent}
+.person-rail{display:flex;gap:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 2px 14px;scroll-snap-type:x mandatory}
+.person-tile{flex:0 0 82%;max-width:340px;border:1px solid var(--line);border-radius:var(--radius-xl);overflow:hidden;background:var(--card2);scroll-snap-align:start;min-height:44px}
+.person-tile img.hero{width:100%;height:min(62vw,300px);object-fit:cover;display:block;background:#050607}
+.person-tile .rbody{padding:12px}
+.person-tile.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.person-tile .pname{font-size:20px;letter-spacing:-.03em;font-weight:620;margin:0 0 4px}
+.result.person .hero{height:min(58vw,280px)}
+.dive-id{display:flex;gap:14px;align-items:stretch}
+.dive-id img{width:104px;height:104px;object-fit:cover;border-radius:var(--radius-md);background:#050607;flex:0 0 auto}
+.dive-id .body{min-width:0;flex:1}
+.dive-id h2{margin:0 0 4px;font-size:24px;letter-spacing:-.03em;font-weight:600}
+.sel-cta{margin-top:10px}
+.bottomnav button{flex:1;background:transparent;border:0;color:var(--subtle);font-size:9px;font-weight:600;padding:6px 1px;display:flex;flex-direction:column;align-items:center;gap:3px}
 .thumbs{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;padding-bottom:2px}
 .thumbs img{width:88px;height:88px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#000;flex:0 0 auto}
 .gallery{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
@@ -132,7 +145,7 @@ details.adv summary::-webkit-details-marker{display:none}
 .pathchips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 0 10px}
 .pathchips .chip{flex:0 0 auto}
 .bottomnav{position:fixed;bottom:0;left:0;right:0;display:flex;background:color-mix(in oklab, var(--bg) 90%, transparent);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-top:1px solid var(--line);padding:6px 4px calc(8px + env(safe-area-inset-bottom));z-index:12}
-.bottomnav button{flex:1;background:transparent;border:0;color:var(--subtle);font-size:10px;font-weight:600;padding:6px 2px;display:flex;flex-direction:column;align-items:center;gap:3px}
+.bottomnav button{flex:1;background:transparent;border:0;color:var(--subtle);font-size:9px;font-weight:600;padding:6px 1px;display:flex;flex-direction:column;align-items:center;gap:3px}
 .bottomnav button.active{color:var(--fg)}
 .bottomnav svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .toast{position:fixed;bottom:92px;left:16px;right:16px;background:#1a1e25;border:1px solid var(--line);border-radius:14px;padding:12px 14px;z-index:30;font-size:13px}
@@ -271,32 +284,41 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     </div>
   </div>
   <div class="card">
-    <h3>Evidence <span id="resultCount" class="badge"></span></h3>
+    <h3>Who is this? <span id="resultCount" class="badge"></span></h3>
+    <p class="hint" id="identifyHint">For a person, tap the face that matches. Visual resemblance is not identity proof.</p>
     <div id="selectedBanner"></div>
     <div id="graphTrail" class="graph-trail"></div>
-    <div id="divePlanner" class="hidden">
+    <div id="personRail"></div>
+    <div id="results"></div>
+    <p id="resultsEmpty" class="muted">Direct contextual evidence, background, related sources, media, and indexes will appear here after Discover — not a dump of name hits.</p>
+  </div>
+</section>
+
+<section id="diveView" class="view hidden">
+  <div class="card" id="diveIdentityCard">
+    <p class="kicker">Deep Dive</p>
+    <div id="diveIdentity"><p class="muted">Select a person on Search first. Deep Dive investigates that resolved entity — not the original search string alone.</p></div>
+  </div>
+  <div class="card" id="diveStartCard">
+    <h3>What should Carmen investigate?</h3>
+    <p class="muted">ALL is the default. A custom question is an investigative instruction — Carmen chooses lanes from it instead of dumping your sentence into a search box.</p>
+    <div id="divePlanner">
       <p id="divePlannerLead" class="muted"></p>
       <div class="pathpick" id="diveSelectChips"></div>
-      <label class="hint">Custom question — Carmen will choose useful paths from this</label>
-      <textarea id="diveCustom" placeholder="Focus on public interviews and videos…"></textarea>
+      <label class="hint">Investigative question</label>
+      <textarea id="diveCustom" placeholder="Find interviews where they discuss…  ·  Find everything connecting this person to…  ·  Show sources involving…"></textarea>
       <label class="hint" style="display:flex;gap:8px;align-items:center;margin-top:8px">
         <input id="diveExpanded" type="checkbox" style="width:auto;flex:0 0 auto"> Expanded Research (public alternatives for restricted/incomplete sources)
       </label>
       <div class="row" style="margin-top:8px">
         <button class="btn primary" id="startDiveBtn">Start Deep Dive</button>
-        <button class="btn ghost" id="cancelDiveBtn">Not now</button>
+        <button class="btn ghost" id="cancelDiveBtn">Back to Search</button>
       </div>
     </div>
-    <div id="results"></div>
-    <p id="resultsEmpty" class="muted">Direct contextual evidence, background, related sources, media, and indexes will appear here after Discover — not a dump of name hits.</p>
   </div>
-  <div class="card">
-    <h3>Deep dive</h3>
-    <p class="muted">A workspace, not a one-shot report. Findings, images, videos, sources, leads, and related aspects. Visual likeness is not identity proof.</p>
-    <div id="divePaths" class="pathchips"></div>
-    <div id="deepDiveProgress"></div>
-    <div id="deepDiveResult"></div>
-  </div>
+  <div id="divePaths" class="pathchips"></div>
+  <div id="deepDiveProgress"></div>
+  <div id="deepDiveResult"></div>
 </section>
 
 <section id="collectionsView" class="view hidden">
@@ -489,6 +511,10 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <button id="navSearch">
     <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 5 5"/></svg>
     Search
+  </button>
+  <button id="navDive">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+    Dive
   </button>
   <button id="navCollections">
     <svg viewBox="0 0 24 24"><path d="M6 7h12v12H6z"/><path d="M8 7V5h8v2"/></svg>

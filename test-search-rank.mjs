@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -504,6 +504,61 @@ console.log('--- vehicle + towing result kinds still generalize ---');
   assert(ranked[0].resultKind === 'INTERSECTION_MATCH' || ranked[0].intersection === true, 'vehicle contextual hit is intersection, not a dump');
   const idx = ranked.find(r => /\/search\?/i.test(r.url));
   assert(!idx || idx.resultKind === 'AGGREGATOR' || idx.score < ranked[0].score, 'generic search index does not beat towing evidence');
+}
+
+console.log('--- visual entity match is identification, not identity proof ---');
+{
+  const c = applyResearchFilter(classifyQuery('Jordan Hale'), 'on', 'Jordan Hale');
+  const visual = { title: 'Jordan Hale - Official Site', url: 'https://jordanhale.example/models/JordanHale', snippet: 'photoset performer official site', image: 'https://jordanhale.example/photo.jpg', images: ['https://jordanhale.example/photo.jpg'] };
+  const wiki = { title: 'Jordan Hale', url: 'https://en.wikipedia.org/wiki/Jordan_Hale', snippet: 'American person, biography' };
+  const tube = { title: 'Jordan Hale Porn Videos', url: 'https://www.pornhub.com/video/search?search=jordan+hale', snippet: 'watch videos' };
+  const kindV = classifyResultKind(visual, c, { hasEntity: true, hasVisual: true });
+  assert(kindV === 'VISUAL_ENTITY_MATCH', 'person + public image is VISUAL_ENTITY_MATCH');
+  const kindW = classifyResultKind(wiki, c, { hasEntity: true, hasVisual: false });
+  assert(kindW === 'GENERIC_BACKGROUND' || kindW === 'ENTITY_MATCH', 'encyclopedia is not a visual identity card');
+  assert(classifyResultKind(tube, c, { hasEntity: true, hasVisual: false }) === 'AGGREGATOR', 'tube index stays aggregator');
+  const ranked = rankResults('Jordan Hale', [wiki, visual, tube], c);
+  const vis = ranked.find(r => /jordanhale\.example/.test(r.url));
+  const wikiR = ranked.find(r => /wikipedia/i.test(r.url));
+  assert(vis && (vis.resultKind === 'VISUAL_ENTITY_MATCH' || vis.resultKind === 'INTERSECTION_MATCH'), 'ranked visual candidate is a visual/entity match, not an index');
+  assert(vis && (!wikiR || vis.score >= wikiR.score), 'visual public profile is not below generic biography for adult ON identity');
+  const rail = visualCandidatesFor(ranked, c);
+  assert(rail.length >= 1 && rail[0].url.includes('jordanhale.example'), 'visual rail leads with the public visual candidate');
+  assert(rail.every(r => r.resultKind !== 'AGGREGATOR'), 'visual rail excludes aggregators');
+  assert(rail.every(r => !/wikipedia/i.test(r.url || '')), 'visual rail excludes encyclopedia biography hosts');
+  const ent = buildSelectedEntity(c, visual, { canonicalName: 'Jordan Hale', aliases: ['J Hale'] }, { originalQuery: 'Jordan Hale', context: '', adultContent: 'on' });
+  assert(ent.canonicalName === 'Jordan Hale', 'selected entity uses canonical name, not a page title dump');
+  assert(ent.visualLikenessIsNotIdentityProof === true, 'selected entity records that visual likeness is not identity proof');
+  assert(ent.originalQuery === 'Jordan Hale', 'selected entity keeps the original query');
+}
+
+console.log('--- investigative instruction is not keyword concatenation ---');
+{
+  const c = applyResearchFilter(classifyQuery('Jordan Hale bondage'), 'on', 'Jordan Hale bondage');
+  const ins = parseInvestigativeQuestion('Find interviews where she discusses rope', c);
+  assert(ins.intent === 'interviews', 'interview instruction is classified as interviews');
+  assert(/rope/i.test(ins.topic), 'topic extracted from the instruction');
+  assert(ins.variants.some(v => /interview/i.test(v.q) && /rope/i.test(v.q) && /Jordan Hale/i.test(v.q)), 'variants search entity + topic + interview');
+  assert(ins.variants.every(v => !/where she discusses/i.test(v.q)), 'does not concatenate the raw sentence onto a query');
+  assert(ins.paths.includes('interviews'), 'instruction infers interviews path');
+  const conn = parseInvestigativeQuestion('Find everything connecting this person to studio X', { subject: 'Jordan Hale', type: 'person' });
+  assert(conn.intent === 'relationships' || conn.intent === 'directed', 'connection instruction is relationship or directed');
+  assert(conn.variants.some(v => /Jordan Hale/i.test(v.q) && /studio X/i.test(v.q)), 'connection variants keep entity and topic');
+  assert(conn.variants.every(v => !/find everything connecting/i.test(v.q)), 'does not dump the instruction sentence as the query');
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert(!/\briley reid\b/i.test(src), 'v45 worker still does not hardcode Riley Reid');
+}
+
+console.log('--- selected entity carries context into dive seed ---');
+{
+  const raw = 'Jordan Hale bondage';
+  const c = applyResearchFilter(classifyQuery(raw), 'on', raw);
+  const cand = { title: 'Jordan Hale in Rope Session (2014)', url: 'https://www.iafd.com/title.rme/title=ropesession', snippet: 'bondage scene', image: 'https://iafd.example/p.jpg' };
+  const ent = buildSelectedEntity(c, cand, { canonicalName: 'Jordan Hale' }, { originalQuery: raw, context: 'bondage', adultContent: 'on', depth: 'contextual' });
+  assert(ent.canonicalName === 'Jordan Hale', 'canonical name is the person');
+  assert(/bondage/i.test(ent.context), 'bondage context is stored on the selected entity');
+  assert(ent.originalQuery === raw, 'original search is stored');
+  assert(ent.url.includes('iafd'), 'selected source URL is stored');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
