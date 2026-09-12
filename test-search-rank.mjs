@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -723,6 +723,139 @@ console.log('--- v46 dive seed never uses the identifying URL or page title ---'
   assert(diveSeedQuery(c, 'Jordan Hale', 'Jordan Hale', 'https://source-a.example/j') === 'Jordan Hale', 'original name query wins over URL fallback');
   assert(diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', 'Page Title | Source A') === 'Jordan Hale rope' || diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', '') === 'Jordan Hale', 'URL original query falls back to canonical name, not page title');
   assert(!/^https?:/i.test(diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', '')), 'seed is never the identifying URL');
+}
+
+console.log('--- v47 semantic concept layer (CONCEPT × ENTITY × LENS) ---');
+{
+  const personRopeOn = applyResearchFilter(classifyQuery('Jordan Hale rope'), 'on', 'Jordan Hale rope');
+  assert(/rope/i.test(personRopeOn.context || ''), 'person + rope keeps rope as context');
+  const ropeOn = interpretConcept('rope', 'person', 'on');
+  assert(ropeOn.family !== 'bondage' && ropeOn.family !== 'restraint', 'rope is not remapped to a bondage family');
+  assert(!(ropeOn.related || []).some(x => /bondage|shibari|kinbaku|bdsm/i.test(x)), 'unknown object does not dump adult-practice synonyms');
+  assert((ropeOn.interview || []).length >= 1, 'person + adult + concept still plans interview sources');
+  assert((ropeOn.media || []).length >= 1, 'person + adult + concept still plans media sources');
+  const ropeLanes = discoveryLanes(personRopeOn, 'contextual');
+  const ropeIds = ropeLanes.lanes.map(l => l.id);
+  assert(ropeIds.includes('intersection'), 'person+rope has an intersection lane');
+  assert(ropeIds.includes('identity'), 'person+rope has an identity lane');
+  assert(ropeLanes.lanes.length >= 3, 'person+rope adult ON produces multiple independent lanes');
+  const ropeQs = ropeLanes.lanes.flatMap(l => l.queries);
+  assert(ropeQs.some(q => /rope/i.test(q) && /Jordan Hale/i.test(q)), 'intersection query is entity + rope');
+  assert(!ropeQs.some(q => /bdsm/i.test(q) && /shibari/i.test(q) && /bondage/i.test(q)), 'does not dump every related term into one query');
+  assert(ropeLanes.lanes.some(l => l.id === 'interviews' || l.id === 'images' || l.id === 'concept-sense' || l.id === 'productions'), 'has interview, media, production, or concept-sense lane');
+  assert(ropeLanes.lanes.filter(l => /^term-/.test(l.id) || l.id === 'intersection' || l.id === 'interviews').length >= 2, 'lanes are independent, not one concatenated query');
+
+  const personRopeOff = applyResearchFilter(classifyQuery('Jordan Hale rope'), 'off', 'Jordan Hale rope');
+  const ropeOff = interpretConcept('rope', 'person', 'off');
+  assert(!(ropeOff.related || []).some(x => /bondage|shibari|photoset|pornstar/i.test(x)), 'adult OFF does not dump adult-industry terms onto rope');
+  const offQs = discoveryLanes(personRopeOff, 'contextual').lanes.flatMap(l => l.queries).join(' ');
+  assert(!/photoset|pornstar|shibari|kinbaku/i.test(offQs), 'adult OFF person+rope queries are not an adult dump');
+
+  const bondageOn = interpretConcept('bondage', 'person', 'on');
+  assert((bondageOn.related || []).length >= 1, 'typed bondage still expands related terminology from the seed pack');
+  const bondageLanes = discoveryLanes(applyResearchFilter(classifyQuery('Jordan Hale bondage'), 'on', 'Jordan Hale bondage'), 'contextual');
+  assert(bondageLanes.lanes.some(l => l.id === 'intersection'), 'person+bondage intersection lane');
+  assert(bondageLanes.lanes.some(l => /^term-/.test(l.id)), 'person+bondage related terminology is its own lane');
+  assert(bondageLanes.lanes.some(l => l.id === 'interviews'), 'person+bondage interview lane');
+
+  const photo = interpretConcept('photography', 'person', 'off');
+  assert(photo.family === 'visual' || (photo.related || []).some(x => /photo|gallery|image/i.test(x)), 'person + photography is a visual/media concept');
+  const interview = interpretConcept('interview', 'person', 'off');
+  assert(interview.family === 'interview' || (interview.interview || []).length >= 1, 'person + interview is an interview concept');
+
+  const tow = interpretConcept('towing', 'vehicle', 'off');
+  assert(tow.related.some(x => /hitch|payload|capacity/i.test(x)), 'vehicle + towing expands hitch/payload/capacity');
+  const towLanes = discoveryLanes(applyResearchFilter(classifyQuery('Lincoln Aviator towing'), 'off', 'Lincoln Aviator towing'), 'contextual');
+  assert(towLanes.lanes.some(l => l.id === 'intersection'), 'vehicle+towing intersection');
+  const towQs = towLanes.lanes.flatMap(l => l.queries).join(' ');
+  assert(/hitch|payload|capacity/i.test(towQs + ' ' + tow.related.join(' ')), 'vehicle towing research includes hitch/payload/capacity');
+
+  const hitchSkill = interpretConcept('hitch', 'skill', 'off');
+  assert(hitchSkill.family === 'practice', 'skill + hitch is practice, not vehicle towing');
+  assert(hitchSkill.related.some(x => /fabricat|install|procedure|safety|tutorial/i.test(x)), 'skill + hitch expands fabrication/install/safety');
+  assert(!hitchSkill.related.some(x => /payload|tow rating/i.test(x)), 'skill + hitch does not inherit the vehicle towing pack');
+  const weldClass = applyResearchFilter(classifyQuery('welding a trailer hitch'), 'off', 'welding a trailer hitch');
+  const weldLanes = discoveryLanes(weldClass, 'contextual');
+  assert(weldClass.type === 'skill', 'welding a trailer hitch classifies as skill');
+  assert(!weldLanes.lanes.some(l => /tow-capacity|payload/i.test(l.id)), 'skill+hitch discovery lanes are not vehicle towing terms');
+  assert(weldLanes.lanes.some(l => /fabricat|install|procedure|safety|tutorial|intersection|concept-sense/i.test(l.id + (l.queries || []).join(' '))), 'skill+hitch still has practice/intersection lanes');
+
+  const joinery = interpretConcept('joinery', 'skill', 'off');
+  assert(joinery.family === 'practice' || joinery.related.some(x => /tutorial|procedure/i.test(x)), 'woodworking joinery is a practice/skill concept');
+
+  const hist = interpretConcept('history', 'topic', 'off');
+  assert(hist.family === 'history' || hist.related.some(x => /terminology|overview|timeline/i.test(x)), 'topic + history has context-family related terms');
+
+  const unknown = interpretConcept('zorbith', 'topic', 'off');
+  assert(unknown.term === 'zorbith', 'unknown term is still a concept');
+  assert(unknown.family === 'open' || unknown.provenance === 'INFERRED', 'unknown term is inferred, not a failure');
+  const unknownLanes = discoveryLanes(applyResearchFilter(classifyQuery('Jordan Hale zorbith'), 'off', 'Jordan Hale zorbith'), 'contextual');
+  assert(unknownLanes.lanes.length >= 2, 'unknown concept still produces research lanes');
+  assert(unknownLanes.lanes.some(l => l.id === 'concept-sense' || l.id === 'intersection'), 'unknown concept still has a sense or intersection lane');
+  const histTopic = applyResearchFilter(classifyQuery('zorbith history'), 'off', 'zorbith history');
+  assert(/history/i.test(histTopic.context || ''), 'unknown subject + history still splits out the concept');
+  const histConcept = interpretRequest(histTopic).concepts;
+  assert(histConcept.some(c => /history|zorbith/i.test(c.term)), 'topic + unknown still yields a concept');
+
+  const trans = interpretConcept('transmission', 'vehicle', 'off');
+  assert(trans.family === 'documentation' || trans.related.some(x => /spec|manual|capacity|review/i.test(x)), 'vehicle + unknown component still gets documentation lanes');
+
+  const req = interpretRequest({ type: 'person', subject: 'Jordan Hale', context: 'rope', adultContent: 'on', relation: 'context' }, 'Find interviews where she discusses rope');
+  assert(req.concepts.some(c => /rope|interview/i.test(c.term)), 'custom question contributes concepts');
+  assert(req.instruction && req.instruction.intent, 'custom question is parsed as an instruction, not concatenated');
+}
+
+console.log('--- v47 CONCEPT × ENTITY: same term, different lanes ---');
+{
+  const ropePerson = interpretConcept('rope', 'person', 'on');
+  const ropeVehicle = interpretConcept('rope', 'vehicle', 'off');
+  const ropeSkill = interpretConcept('rope', 'skill', 'off');
+  assert((ropePerson.interview || []).length > (ropeVehicle.interview || []).length, 'person+rope interviews more than vehicle+rope');
+  assert(ropeVehicle.sourceTypes.some(s => /manufacturer|spec|review/i.test(s)), 'vehicle+rope uses product/vehicle source types');
+  assert(ropeSkill.sourceTypes.some(s => /tutorial|manual/i.test(s)), 'skill+rope uses instructional source types');
+}
+
+console.log('--- v47 no hardcoded test subjects; adult ontology is axes not tags ---');
+{
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert(!/\bdrea morgan\b/i.test(src), 'worker does not hardcode Drea Morgan');
+  assert(!/\briley reid\b/i.test(src), 'worker does not hardcode Riley Reid');
+  assert(!/\babella danger\b/i.test(src), 'worker does not hardcode Abella Danger');
+  assert(!/\bangela white\b/i.test(src), 'worker does not hardcode Angela White');
+  assert(!/\bfrogtie\b/i.test(src), 'worker does not hardcode Frogtie');
+  assert(!/restraint_object/.test(src), 'no special-case restraint_object family');
+  assert(/PLATFORM_IA/.test(src), 'adult platform IA is recorded');
+  assert(!/pornhub\.com\/categories/.test(src), 'does not copy raw platform category URLs into the engine');
+}
+
+console.log('--- v47 source independence still holds ---');
+{
+  const extras = diveExpansionQueries({
+    classification: { subject: 'Jordan Hale', type: 'person', context: 'rope', adultContent: 'on' },
+    seed: 'Jordan Hale rope',
+    evidenceHost: 'source-a.example',
+    customQuestion: 'Find interviews where she discusses rope',
+    depth: 'contextual',
+  });
+  assert(!extras.some(q => /site:source-a\.example/i.test(q)), 'identifying host is not a site: restriction');
+  assert(extras.some(q => /interview/i.test(q) && /rope/i.test(q)), 'custom interview+rope instruction influences lanes');
+}
+
+console.log('--- v47 fetch budget and staged continue ---');
+{
+  assert(typeof FETCH_HARD_CAP === 'number' && FETCH_HARD_CAP <= 50 && FETCH_HARD_CAP >= 20, 'hard cap sits under typical Worker subrequest limits');
+  resetFetchBudget();
+  assert(remainingFetches() === FETCH_HARD_CAP, 'reset restores remaining fetches');
+  assert(budgetReport().used === 0 && budgetReport().max === FETCH_HARD_CAP, 'budget report starts at zero');
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert(/continueFrom/.test(src), 'Deep Dive accepts continueFrom');
+  assert(/pendingUrls/.test(src), 'research state keeps pending URLs');
+  assert(/Research paused/.test(src), 'honest pause copy exists');
+  assert(/Analysis unavailable/.test(readFileSync(new URL('./public/app.js', import.meta.url), 'utf8')) === true, 'analysis-unavailable copy remains only for genuine AI failure');
+  const app = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8');
+  assert(/more evidence available to continue/i.test(app), 'UI distinguishes paused research from failed analysis');
+  assert(/continueDiveBtn/.test(app), 'Continue research control is wired');
+  assert(/continueFrom/.test(app), 'client posts continueFrom on resume');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

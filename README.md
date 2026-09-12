@@ -10,6 +10,66 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
+## Investigation workspace (v47)
+
+v47 adds a general semantic concept layer and bounded staged research. It does not replace the v38 engine, v40 planner, v42 adult filter, v43 discovery graph, v44 interest lenses, v45 visual identification, or v46 entity/source separation.
+
+### Semantic concepts
+
+Carmen interprets **entity + concept + lens**, not keyword synonyms dumped into one query.
+
+1. Identify the subject/entity.
+2. Identify concepts in the request (including unknown terms).
+3. Infer a **structural family** (interview, documentation, capability, practice, visual, history, …) from morphology, entity type, and existing relation packs.
+4. Adapt terminology and source types to **CONCEPT × ENTITY TYPE × LENS**.
+5. Open independent research lanes (intersection, related terminology, interviews, media, concept-sense).
+6. Retrieve evidence across independent public sources.
+7. Mark relationships OBSERVED / INFERRED / UNKNOWN. Co-occurring terms found in titles/snippets can upgrade INFERRED → OBSERVED.
+
+Unknown terms do not fail. They become an `open` family with provenance INFERRED, still produce lanes, and can later pick up observed related terms from evidence.
+
+Adult is a **research lens of this same architecture**, not a parallel engine and not a flattened tag list.
+
+### Adult taxonomy research (August 2026) → Carmen ontology
+
+Traffic (Similarweb Adult, August 2026): Pornhub, xHamster, XVideos, Stripchat, Eporner, XNXX, Chaturbate, OnlyFans, Erome, DMM, plus live/creator/gallery mirrors. US mix weights OnlyFans higher.
+
+What those platforms actually organize:
+
+| IA type | Examples | How they classify | Maps to Carmen |
+|---|---|---|---|
+| Tube / VOD index | Pornhub, xHamster, XVideos, XNXX, Eporner, YouPorn, SpankBang | Curated **categories** (performer/production style) + community **tags** (acts, settings, objects). Academic scrape of PH: ~136 categories vs a much larger folksonomy. | `kind: tube`. Categories ≠ tags. Do not copy tag lists. |
+| Livestream | Stripchat, Chaturbate, LiveJasmin | Room/performer tags, not retrievable productions | `kind: livestream` |
+| Creator subscription | OnlyFans, FapHouse | People/posts, not VOD categories | `kind: creator` |
+| Gallery | Erome, RedGIFs | Album tags | `kind: gallery` |
+| Studio catalog | DMM | Maker / series / genre codes | `kind: studio-catalog` |
+| Aggregator | NoodleMagazine | Scraped tags — not evidence (v44 rule) | ignored as investigation universe |
+
+Pornhub Insights 2025: Podcast +327% (a first-class **interview** family, not an act tag). SFW/creator-adjacent categories exist on tubes. Carmen does **not** encode explicit act lists.
+
+Normalized axes (architecture, not a dump): **format, presentation, dynamic, equipment, context, people/creator, geography**. Platform vocab is `USED_BY_PLATFORM` metadata. Carmen concept → normalized family → entity-adapted lanes → optional platform-kind aliases.
+
+Same concept, different entity:
+
+- Person + object + Adult ON → interviews, productions, media, concept-sense. Not a bondage synonym dump unless the user typed that family or evidence observes it.
+- Person + object + Adult OFF → general public research, no adult-industry dump.
+- Vehicle + capability → manufacturer, spec, hitch/payload/capacity when the towing relation is present.
+- Skill + equipment → fabrication, installation, safety, tutorial — never the vehicle towing pack.
+
+### Staged research (Cloudflare subrequest budget)
+
+Deep Dive ALL was able to exceed the Worker subrequest cap and 500. v47 does not research less by deleting sources. It:
+
+1. Plans concepts and lanes (no fetch).
+2. Runs a bounded retrieval batch (hard cap 45 outbound requests, counted by kind: search / retrieve / image / video / graph / AI).
+3. Persists research state (pending URLs, seen URLs, concepts, seed).
+4. Returns **Research paused — more evidence available to continue** instead of a 500 or “Analysis unavailable”.
+5. Continue research posts `continueFrom` + prior results and runs the next batch.
+
+### Persistence
+
+Save/resume keeps entityId, canonical entity, original query, concepts, concept graph, research state / continuation, sources, media, custom question, adult lens, and depth.
+
 ## Investigation workspace (v46)
 
 v46 is a correctness pass on live v45. It does not replace the v38 engine, v40 planner, v42 adult filter, v43 discovery graph, v44 interest lenses / result kinds, or v45 visual identification.

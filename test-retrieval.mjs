@@ -16,7 +16,7 @@ function assert(cond, msg) {
 console.log('--- /health ---');
 { const { status, body } = await call('/health');
   assert(status === 200, 'health 200');
-  assert(body.version === '46', 'version 46');
+  assert(body.version === '47', 'version 47');
   assert(body.routes.includes('/retrieve'), 'routes include /retrieve');
   assert(body.routes.includes('/dive'), 'routes include /dive');
   assert(body.routes.includes('/learn'), 'routes include /learn');
@@ -36,6 +36,8 @@ console.log('--- /health ---');
   assert(body.features.includes('selected-entity'), 'features include selected-entity');
   assert(body.features.includes('dive-workspace'), 'features include dive-workspace');
   assert(body.features.includes('entity-source-separation'), 'features include entity-source-separation');
+  assert(body.features.includes('semantic-concepts'), 'features include semantic-concepts');
+  assert(body.features.includes('staged-research'), 'features include staged-research');
   assert(body.provider === 'openrouter', 'provider openrouter');
   assert(body.model === 'openrouter/free', 'model openrouter/free');
   assert(body.configured === false, 'configured false without key'); }
@@ -46,7 +48,9 @@ console.log('--- /classify ---');
   assert(body.classification.adultContent === 'on', 'classify honors adult ON');
   assert(Array.isArray(body.lenses) && body.lenses.some(l => l.id === 'everything'), 'classify returns interest lenses');
   assert(body.lenses.some(l => l.id === 'credits'), 'adult ON person lenses include credits');
-  assert(Array.isArray(body.paths), 'classify returns paths'); }
+  assert(Array.isArray(body.paths), 'classify returns paths');
+  assert(Array.isArray(body.concepts), 'classify returns concepts');
+  assert(Array.isArray(body.lanes), 'classify returns discovery lanes'); }
 console.log('--- /retrieve success ---');
 { const { status, body } = await call('/retrieve?url=' + encodeURIComponent('https://example.com'));
   assert(status === 200, 'retrieve 200');

@@ -7,12 +7,12 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '46';
+const VERSION = '47';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
 const DB_VERSION = 3;
-const SESSION_KEY = 'carmen_session_v46';
+const SESSION_KEY = 'carmen_session_v47';
 const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).length) ? window.CARMEN_BACKEND : location.origin;
 
 let db = null, stream = null, current = null, historyStack = [], historyIndex = -1, currentProjectId = null;
@@ -44,6 +44,8 @@ let classifyTimer = 0;
 let selectedEntity = null;
 let originalQuery = '';
 let lastVisualCandidates = [];
+let lastConcepts = [];
+let lastResearchState = null;
 
 const ACCESS_LABELS = {
   DIRECTLY_RETRIEVED: 'DIRECTLY RETRIEVED',
@@ -597,6 +599,7 @@ async function classifySubject(opts = {}) {
     lastClassification = data.classification || lastClassification;
     lastLenses = Array.isArray(data.lenses) ? data.lenses : lastLenses;
     lastPaths = Array.isArray(data.paths) && data.paths.length ? data.paths : lastPaths;
+    lastConcepts = Array.isArray(data.concepts) ? data.concepts : lastConcepts;
     if (lastClassification && lastClassification.subject) researchSubject = lastClassification.subject;
     matchLensToClassification(lastClassification);
     const extra = extraContextText(lastClassification);
@@ -634,6 +637,8 @@ function persistSession() {
       researchSubject,
       lensId: currentLensId,
       lenses: lastLenses,
+      concepts: lastConcepts,
+      researchState: lastResearchState,
     }));
   } catch {}
 }
@@ -654,6 +659,8 @@ async function persistDiscoveryIfKept() {
   disc.selectedEntity = selectedEntity;
   disc.originalQuery = originalQuery;
   disc.visualCandidates = lastVisualCandidates;
+  disc.concepts = lastConcepts;
+  disc.researchState = lastResearchState;
   disc.at = new Date().toISOString();
   disc.status = 'DISCOVERED';
   await put('discoveries', disc);
@@ -728,6 +735,8 @@ function restoreSession() {
     lastDivePayload = s.dive || null;
     originalQuery = s.originalQuery || s.query || '';
     lastVisualCandidates = Array.isArray(s.visualCandidates) ? s.visualCandidates : [];
+    lastConcepts = Array.isArray(s.concepts) ? s.concepts : lastConcepts;
+    lastResearchState = s.researchState || lastResearchState;
     selectedEntity = s.selectedEntity || null;
     if (s.diveCustom && $('diveCustom')) $('diveCustom').value = s.diveCustom;
     if (s.adult) setAdult(s.adult, { silent: true });
@@ -792,6 +801,7 @@ async function discover(opts = {}) {
     lastDiscoveryMeta = data;
     lastPaths = Array.isArray(data.paths) ? data.paths : lastPaths;
     lastVisualCandidates = Array.isArray(data.visualCandidates) ? data.visualCandidates : [];
+    lastConcepts = Array.isArray(data.concepts) ? data.concepts : lastConcepts;
     originalQuery = data.query || q;
     if (data.classification && data.classification.subject) researchSubject = data.classification.subject;
     if (Array.isArray(data.lenses) && data.lenses.length) lastLenses = data.lenses;
@@ -859,7 +869,16 @@ function renderClassification(data) {
     </div>
     <p class="hint" style="margin:8px 0 0">${esc(found)}</p>
     <p class="hint" style="margin:6px 0 0">${esc(c.reason)}${c.isUrl ? ' · treating this as a page to inspect' : ''}${lanes ? '<br>Discovery lanes: ' + lanes : ''}</p>
+    ${conceptChipsHtml(data.concepts || c.concepts || lastConcepts)}
   </div>${warn}`;
+}
+function conceptChipsHtml(concepts) {
+  const list = Array.isArray(concepts) ? concepts.filter(x => x && x.term) : [];
+  if (!list.length) return '';
+  return '<div class="rowbits" style="margin-top:8px">' + list.map(x => {
+    const rel = (x.related || []).slice(0, 3).join(', ');
+    return `<span class="badge access-ok">${esc(x.term)}${x.family && x.family !== 'open' ? ' · ' + esc(x.family) : ''}${x.provenance ? ' · ' + esc(x.provenance) : ''}</span>` + (rel ? `<span class="badge">related: ${esc(rel)}</span>` : '');
+  }).join('') + '</div><p class="hint" style="margin:6px 0 0">Carmen is researching these concepts across independent public sources — not concatenating every synonym into one query.</p>';
 }
 function entityIdFor(type, name) {
   const t = String(type || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -908,6 +927,7 @@ function resolveSelectedEntity(r) {
     depth: currentDepth,
     selectedAt: new Date().toISOString(),
     visualLikenessIsNotIdentityProof: true,
+    concepts: lastConcepts,
   };
 }
 function renderSelectedBanner() {
@@ -1007,6 +1027,7 @@ function renderDiveIdentity() {
       <div class="rmeta"><span class="badge">${esc(type)}</span> ${isPerson ? '<span class="badge access-ok">selected visual match</span> ' : ''}${adultBadge(ent?.adultContent || currentAdult)} <span class="badge">${esc(depthLabel(ent?.depth || currentDepth))}</span>${ctx ? ' <span class="badge access-ok">context: ' + esc(ctx) + '</span>' : ''}</div>
       <p class="hint" style="margin:8px 0 0">${isPerson ? 'Visual resemblance is not identity proof. Carmen is investigating this person across public sources — not only the page that identified them.' : 'Investigating the selected entity across public sources. The identifying page is provenance, not a boundary.'} ${esc(why)}</p>
       ${ent?.originalQuery ? '<p class="subtle">Original search: ' + esc(ent.originalQuery) + '</p>' : ''}
+      ${conceptChipsHtml(ent?.concepts || lastConcepts)}
       ${(ent?.discoveryEvidence?.url || ent?.url) ? '<p class="subtle">Identified from <a href="' + esc(ent.discoveryEvidence?.url || ent.url) + '" target="_blank" rel="noopener noreferrer">' + esc(ent.discoveryEvidence?.domain || hostOf(ent.discoveryEvidence?.url || ent.url)) + '</a> · ' + provenanceBadge(ent.provenance) + ' · evidence, not a research boundary</p>' : ''}
     </div>
   </div>`;
@@ -1277,7 +1298,8 @@ async function deepDive(focusResult) {
   }
   openPlannerFromButton();
 }
-async function runDeepDive() {
+async function runDeepDive(opts = {}) {
+  const continueFrom = opts.continueFrom || null;
   const base = backendUrl();
   if (!base) return toast('Set the Carmen Worker URL in Capture → Connection.');
   const subject = selectedEntity?.canonicalName || $('searchQuery').value.trim() || $('projectQuestion').value.trim();
@@ -1291,6 +1313,7 @@ async function runDeepDive() {
   localStorage.setItem(BACKEND_KEY, base);
   const btn = $('startDiveBtn');
   if (btn) btn.disabled = true;
+  if ($('continueDiveBtn')) $('continueDiveBtn').disabled = true;
   $('deepDiveBtn').disabled = true;
   if (candidate) selectCandidateKeepPlanner(candidate);
   setTab('dive');
@@ -1299,7 +1322,10 @@ async function runDeepDive() {
   const pathIds = diveAll ? ['all'] : selectedDivePathIds.slice();
   const useExpanded = expandedMode || !!$('diveExpanded')?.checked;
   const ctx = selectedEntity?.context || extraContextText(lastClassification) || '';
-  $('deepDiveProgress').innerHTML = '<p class="dive-step on">Investigating ' + esc(selectedEntity?.canonicalName || subject) + (ctx ? ' · context: ' + esc(ctx) : '') + '</p><p class="dive-step on">Selected: ' + esc(diveAll ? 'ALL' : selectedDivePathIds.join(', ')) + (useExpanded ? ' · Expanded Research' : '') + (customQuestion ? ' · instruction' : '') + '</p><p class="dive-step">Retrieving public sources…</p><p class="dive-step">Collecting images and videos…</p><p class="dive-step">Analyzing OBSERVED / INFERRED / UNKNOWN…</p>';
+  const waitSteps = continueFrom
+    ? ['Continuing research…', 'Retrieving the next evidence batch…', 'Comparing accumulated sources…', 'Synthesizing findings…']
+    : ['Planning research…', 'Understanding concepts…', 'Finding independent sources…', 'Checking interviews…', 'Checking media…', 'Expanding related concepts…', 'Comparing evidence…', 'Synthesizing findings…'];
+  $('deepDiveProgress').innerHTML = waitSteps.map((s, i) => '<p class="dive-step' + (i < 2 ? ' on' : '') + '">' + esc(s) + '</p>').join('');
   $('deepDiveResult').innerHTML = '<p class="muted">Deep Dive is a read-only research workspace. Carmen will not contact anyone or take external actions.</p>';
   let instructions = '';
   try {
@@ -1307,25 +1333,31 @@ async function runDeepDive() {
     instructions = (p && p.instructions) || ($('projectInstructions') && $('projectInstructions').value.trim()) || '';
   } catch {}
   try {
+    const body = {
+      query: seed,
+      originalQuery: seed,
+      subject: selectedEntity?.type || currentSubject || lastClassification?.type || '',
+      candidate,
+      selectedEntity,
+      context: ctx,
+      instructions,
+      customQuestion,
+      all: diveAll,
+      paths: pathIds,
+      expanded: useExpanded,
+      adult: currentAdult,
+      adultContent: currentAdult,
+      depth: currentDepth,
+      lens: currentLensId,
+    };
+    if (continueFrom) {
+      body.continueFrom = continueFrom;
+      body.priorResults = lastDivePayload?.results || lastResults || [];
+      body.priorRetrieved = lastDivePayload?.retrieved || [];
+    }
     const r = await fetch(base + '/dive', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        query: seed,
-        originalQuery: seed,
-        subject: selectedEntity?.type || currentSubject || lastClassification?.type || '',
-        candidate,
-        selectedEntity,
-        context: ctx,
-        instructions,
-        customQuestion,
-        all: diveAll,
-        paths: pathIds,
-        expanded: useExpanded,
-        adult: currentAdult,
-        adultContent: currentAdult,
-        depth: currentDepth,
-        lens: currentLensId,
-      }),
+      body: JSON.stringify(body),
     });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
@@ -1355,6 +1387,9 @@ async function runDeepDive() {
     disc.results = lastResults;
     disc.classification = data.classification || lastClassification;
     disc.graphLeads = data.graphLeads || [];
+    disc.concepts = data.concepts || lastConcepts;
+    disc.researchState = data.researchState || lastResearchState;
+    disc.conceptGraph = data.conceptGraph || null;
     await put('discoveries', disc);
     const proj = (await all('projects')).find(x => x.id === currentProjectId);
     if (proj) {
@@ -1370,7 +1405,7 @@ async function runDeepDive() {
       if (t) await put('leads', { id: 'lead_' + crypto.randomUUID(), projectId: currentProjectId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), text: t, url: raw.url || '', status: 'new', refIds: [] });
     }
     await refresh();
-    toast('Deep dive complete.');
+    toast(data.paused ? 'Research paused — more evidence available to continue.' : 'Deep dive complete.');
   } catch (e) {
     const msg = String(e.message || e);
     const isConfig = /API_KEY|not configured|provider is not configured/i.test(msg);
@@ -1378,6 +1413,7 @@ async function runDeepDive() {
     toast(isConfig ? 'AI not configured — search & evidence still work' : 'Deep dive failed: ' + msg);
   } finally {
     if (btn) btn.disabled = false;
+    if ($('continueDiveBtn')) $('continueDiveBtn').disabled = false;
     updateDeepDiveState();
   }
 }
@@ -1393,10 +1429,19 @@ function renderDeepDivePayload(data, subject) {
   const plan = data.plan || {};
   lastDivePayload = data;
   lastPaths = data.availablePaths || data.paths || lastPaths;
+  if (Array.isArray(data.concepts)) lastConcepts = data.concepts;
+  lastResearchState = data.researchState || lastResearchState;
+  if (data.paused) lastResearchState = data.researchState || lastResearchState;
   renderPathChips(data.paths || lastPaths, 'divePaths');
   persistSession();
-  const steps = (plan.investigating || []).map(s => `<p class="dive-step on">${esc(s)}</p>`).join('');
+  const progress = (plan.progress || []).filter(Boolean);
+  const steps = (progress.length ? progress : (plan.investigating || [])).map(s => `<p class="dive-step on">${esc(s)}</p>`).join('');
   $('deepDiveProgress').innerHTML = steps || '<p class="dive-step on">Deep dive finished.</p>';
+  const contBtn = $('continueDiveBtn');
+  if (contBtn) {
+    const paused = !!(data.paused || (data.researchState && data.researchState.stage === 'paused'));
+    contBtn.classList.toggle('hidden', !paused);
+  }
   diveWorkspaceTab = 'overview';
   renderDiveIdentity();
   renderDiveWorkspace(data, subject);
@@ -1505,7 +1550,9 @@ function renderDiveWorkspace(data, subject) {
   } else {
     let analysisHtml = '';
     if (writeup) analysisHtml = renderAdaptiveWriteup(writeup, data.paths || lastPaths, subject);
-    else if (data.analysisError) analysisHtml = `<div class="claim unknown"><b>Analysis unavailable</b><br>${esc(data.analysisError)}</div>`;
+    else if (data.paused || data.analysisSkipped || (data.researchState && data.researchState.stage === 'paused')) {
+      analysisHtml = `<div class="claim inferred"><b>Research paused — more evidence available to continue</b><br>Carmen reached the per-request research budget. Findings so far are kept. Continue research to retrieve the next batch. This is not a failed analysis.</div>`;
+    } else if (data.analysisError) analysisHtml = `<div class="claim unknown"><b>Analysis unavailable</b><br>${esc(data.analysisError)}</div>`;
     const ins = instruction.intent ? `<p class="hint">Investigative instruction: ${esc(instruction.intent)}${instruction.topic ? ' · ' + esc(instruction.topic) : ''}. Carmen chose research lanes from this — it did not dump the sentence into a search box.</p>` : '';
     body = (ins + (analysisHtml || '<p class="muted">Findings will appear here after Deep Dive finishes.</p>'));
   }
@@ -1964,7 +2011,12 @@ function wire() {
   });
   if ($('expandedBtn')) $('expandedBtn').onclick = () => discover({ expanded: true });
   $('deepDiveBtn').onclick = () => goToDive();
-  if ($('startDiveBtn')) $('startDiveBtn').onclick = runDeepDive;
+  if ($('startDiveBtn')) $('startDiveBtn').onclick = () => runDeepDive();
+  if ($('continueDiveBtn')) $('continueDiveBtn').onclick = () => {
+    const state = lastResearchState || lastDivePayload?.researchState;
+    if (!state) return toast('Nothing to continue yet.');
+    runDeepDive({ continueFrom: state });
+  };
   if ($('cancelDiveBtn')) $('cancelDiveBtn').onclick = () => setTab('search');
   if ($('diveCustom')) $('diveCustom').addEventListener('input', persistSession);
   if ($('diveSelectChips')) $('diveSelectChips').onclick = e => {
