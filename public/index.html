@@ -166,6 +166,13 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <input id="homeQuery" placeholder="Person, product, URL, technique, skill…" enterkeyhint="search">
       <button class="btn primary" id="homeSearchBtn">Search</button>
     </div>
+    <div class="chips" id="homeAdultChips" style="margin-top:10px">
+      <span class="hint" style="align-self:center">Adult content</span>
+      <button type="button" class="chip active" data-adult="off">Off</button>
+      <button type="button" class="chip" data-adult="on">On</button>
+      <button type="button" class="chip" data-adult="both">Both</button>
+    </div>
+    <p class="hint">A research context, not a type. It stays with the investigation until you change it.</p>
     <div class="row" style="margin-top:8px">
       <button class="btn ghost" id="homeImageBtn" style="flex:0 0 auto">Inspect image</button>
       <input id="homeImage" type="file" accept="image/*" class="hidden">
@@ -195,6 +202,13 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <button class="chip" data-subject="topic">Topic</button>
       <button class="chip" data-subject="website">URL</button>
     </div>
+    <div class="chips" id="adultChips" style="margin-top:4px">
+      <span class="hint" style="align-self:center">Adult content</span>
+      <button type="button" class="chip active" data-adult="off">Off</button>
+      <button type="button" class="chip" data-adult="on">On</button>
+      <button type="button" class="chip" data-adult="both">Both</button>
+    </div>
+    <p class="hint">Filter applies to ranking, images, videos, Deep Dive, and branches. Off / On / Both.</p>
     <textarea id="searchQuery" placeholder="A name, domain, Reddit URL, product, technique, or skill."></textarea>
     <div class="row" style="margin-top:8px">
       <button class="btn primary" id="discoverBtn">Discover</button>
@@ -207,7 +221,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <div id="searchDiagnostics" class="diags"></div>
     <div id="expandedResearch" class="expanded-card hidden">
       <h3 style="margin:0 0 6px">Expanded Research</h3>
-      <p class="muted" id="expandedLead">Try harder across the public web. One blocked website is not the end of the investigation.</p>
+      <p class="muted" id="expandedLead">Use this when sources are paywalled, login-gated, blocked, or incomplete. Carmen looks for legitimate public alternatives — it does not bypass the restriction or retry the same wall.</p>
       <button class="btn primary" id="expandedBtn">Expanded Research</button>
     </div>
   </div>
@@ -220,7 +234,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <label class="hint">Custom question — Carmen will choose useful paths from this</label>
       <textarea id="diveCustom" placeholder="Focus on public interviews and videos…"></textarea>
       <label class="hint" style="display:flex;gap:8px;align-items:center;margin-top:8px">
-        <input id="diveExpanded" type="checkbox" style="width:auto;flex:0 0 auto"> Use Expanded Research (try harder across the public web)
+        <input id="diveExpanded" type="checkbox" style="width:auto;flex:0 0 auto"> Expanded Research (public alternatives for restricted/incomplete sources)
       </label>
       <div class="row" style="margin-top:8px">
         <button class="btn primary" id="startDiveBtn">Start Deep Dive</button>

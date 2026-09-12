@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -213,6 +213,126 @@ console.log('--- no hardcoded test subjects in production worker ---');
   assert(!/dreamorgan/i.test(src), 'worker does not hardcode the person-search test domain');
   assert(!/\bdrea morgan\b/i.test(src), 'worker does not hardcode Drea Morgan');
   assert(!/\briley reid\b/i.test(src), 'worker does not hardcode Riley Reid');
+}
+
+console.log('--- adult content is a research filter, not an entity type ---');
+{
+  assert(normalizeAdult('ON') === 'on', 'normalizeAdult on');
+  assert(normalizeAdult('both') === 'both', 'normalizeAdult both');
+  assert(normalizeAdult('') === 'off', 'normalizeAdult default off');
+  const q = 'Jordan Hale';
+  const off = applyResearchFilter(classifyQuery(q), 'off', q);
+  const on = applyResearchFilter(classifyQuery(q), 'on', q);
+  const both = applyResearchFilter(classifyQuery(q), 'both', q);
+  assert(off.type === 'person' && on.type === 'person' && both.type === 'person', 'adult filter does not change entity type');
+  assert(off.adultContent === 'off' && on.adultContent === 'on' && both.adultContent === 'both', 'adultContent persisted on classification');
+  assert(on.context === 'adult content', 'adult ON with no extra words implies adult-content context');
+  assert(Array.isArray(both.contextLanes) && both.contextLanes.includes('general') && both.contextLanes.includes('adult'), 'BOTH keeps distinguishable lanes');
+  const vsOn = adultSemanticVariants('Jordan Hale');
+  assert(vsOn.every(v => !/\bJordan Hale adult\b/i.test(v.q)), 'does not blindly append the word adult');
+  assert(vsOn.some(v => /performer|photoset|"official site"|models/i.test(v.q)), 'uses adult-industry public semantics');
+  const imgOn = imageSearchQuery(q, on);
+  assert(!/\badult\b/i.test(imgOn), 'image query does not blindly append adult');
+  assert(/photoset|scene|models|gallery/i.test(imgOn), 'adult ON image query is semantic');
+}
+
+console.log('--- adult ON ranking is not generic biography ---');
+{
+  const q = 'Jordan Hale';
+  const on = applyResearchFilter(classifyQuery(q), 'on', q);
+  const off = applyResearchFilter(classifyQuery(q), 'off', q);
+  const both = applyResearchFilter(classifyQuery(q), 'both', q);
+  const items = [
+    { title: 'Jordan Hale', url: 'https://en.wikipedia.org/wiki/Jordan_Hale', source: 'Bing', snippet: 'American person, biography' },
+    { title: 'Jordan Hale - Official Site', url: 'https://jordanhale.example/models/JordanHale', source: 'Bing', snippet: 'photoset performer official site models' },
+    { title: 'Jordan Hale - IAFD', url: 'https://www.iafd.com/person.rme/perfid=jordanhale', source: 'Bing', snippet: 'performer filmography' },
+  ];
+  const rankedOn = rankResults(q, items, on);
+  assert(!rankedOn[0].url.includes('wikipedia'), 'adult ON does not rank generic biography first');
+  assert(rankedOn[0].url.includes('iafd') || /\/models\//.test(rankedOn[0].url), 'adult ON prefers adult-industry public sources');
+  assert(rankedOn[0].contextLane === 'adult', 'top adult-ON result is labeled adult-context');
+  const wikiOn = rankedOn.find(r => r.url.includes('wikipedia'));
+  const iafdOn = rankedOn.find(r => r.url.includes('iafd'));
+  assert(iafdOn && wikiOn && iafdOn.score > wikiOn.score, 'adult-industry source outranks wikipedia when ON');
+  const rankedOff = rankResults(q, items, off);
+  const wikiOff = rankedOff.find(r => r.url.includes('wikipedia'));
+  assert(wikiOff, 'adult OFF still surfaces general biography');
+  assert(!wikiOff.signals.includes('generic biography, weak for adult-context research'), 'adult OFF does not penalize encyclopedia as adult-weak');
+  const rankedBoth = rankResults(q, items, both);
+  assert(rankedBoth.some(r => r.contextLane === 'adult'), 'BOTH keeps adult-context lane');
+  assert(rankedBoth.some(r => r.url.includes('wikipedia') || r.contextLane === 'general'), 'BOTH keeps general lane');
+  const bothPornSnippet = rankResults(q, [
+    { title: 'Jordan Hale', url: 'https://en.wikipedia.org/wiki/Jordan_Hale', source: 'Bing', snippet: 'American pornographic actress' },
+    { title: 'Jordan Hale - IAFD', url: 'https://www.iafd.com/person.rme/perfid=jordanhale', source: 'Bing', snippet: 'performer filmography' },
+  ], both);
+  assert(!bothPornSnippet[0].url.includes('wikipedia'), 'BOTH does not let an encyclopedia beat industry sources just because the bio mentions the profession');
+  assert(bothPornSnippet.find(r => r.url.includes('wikipedia'))?.contextLane === 'general', 'encyclopedia stays in the general lane even if the snippet mentions adult work');
+  const vOff = buildSearchVariants(q, off);
+  const vOn = buildSearchVariants(q, on);
+  assert(vOn.some(v => /performer|photoset|official site|models/i.test(v.q)), 'ON expands with adult-industry semantics');
+  assert(!vOff.some(v => /photoset/i.test(v.q)), 'OFF does not inject adult-industry variants');
+  assert(JSON.stringify(vOn) !== JSON.stringify(vOff), 'ON and OFF produce different variant sets');
+}
+
+console.log('--- person + extra context is a different research problem ---');
+{
+  const raw = 'Jordan Hale bondage';
+  const c = applyResearchFilter(classifyQuery(raw), 'on', raw);
+  assert(c.type === 'person', 'person + context still classifies as person');
+  assert(c.subject === 'Jordan Hale', 'entity is the person');
+  assert(/bondage/i.test(c.context), 'bondage is requested context, not discarded');
+  const v = buildSearchVariants(raw, c);
+  assert(v.some(x => /bondage/i.test(x.q)), 'variants keep the requested context');
+  assert(v.some(x => /photoset|performer|scene|gallery/i.test(x.q)), 'adult ON adds industry semantics on top of the extra context');
+  const ranked = rankResults(raw, [
+    { title: 'Jordan Hale', url: 'https://en.wikipedia.org/wiki/Jordan_Hale', source: 'Bing', snippet: 'biography' },
+    { title: 'Jordan Hale bondage photoset', url: 'https://www.babepedia.com/babe/Jordan_Hale', source: 'Bing', snippet: 'bondage photoset performer' },
+  ], c);
+  assert(ranked[0].url.includes('babepedia'), 'person + bondage ranks contextual adult source above biography');
+  assert(/requested context/i.test(ranked[0].reason) || (ranked[0].signals || []).includes('requested context present'), 'reason cites the requested context');
+}
+
+console.log('--- entity + technical context generalizes ---');
+{
+  const apple = classifyQuery('Apple repair');
+  assert(apple.type === 'product', 'Apple + repair is a product with technical context');
+  assert(/repair/i.test(apple.context), 'repair is the context');
+  const av = classifyQuery('Lincoln Aviator towing');
+  assert(av.type === 'vehicle', 'Lincoln Aviator + towing is a vehicle with technical context');
+  assert(av.subject === 'Lincoln Aviator', 'entity is the vehicle');
+  assert(/towing/i.test(av.context), 'towing is the context');
+  const ranked = rankResults('Lincoln Aviator towing', [
+    { title: 'Lincoln Aviator', url: 'https://en.wikipedia.org/wiki/Lincoln_Aviator', source: 'Bing', snippet: 'luxury SUV' },
+    { title: 'Lincoln Aviator towing capacity', url: 'https://www.lincoln.com/suvs/aviator/towing/', source: 'Bing', snippet: 'towing payload hitch' },
+  ], av);
+  assert(ranked[0].url.includes('lincoln.com') || /towing/i.test(ranked[0].title), 'vehicle + towing ranks the contextual source first');
+}
+
+console.log('--- ALL still means ALL with adult context ---');
+{
+  const personAll = resolveDivePaths('person', { all: true });
+  assert(personAll.all === true && personAll.selected.length === researchPaths('person').length, 'ALL still selects every person path');
+  const onClass = applyResearchFilter(classifyQuery('Jordan Hale'), 'on', 'Jordan Hale');
+  const vars = pathSearchVariants('Jordan Hale', personAll.selected, onClass);
+  assert(vars.some(v => /photoset|scene|models|gallery/i.test(v.q)), 'ALL + adult ON generates contextual visual variants');
+  assert(vars.length >= 4, 'ALL still generates multiple path-specific search variants');
+  const subset = resolveDivePaths('person', { all: false, paths: ['images', 'videos'] });
+  assert(subset.all === false && subset.selected.length === 2, 'subset is still not ALL');
+}
+
+console.log('--- adult ON visual collection rejects generic portraits ---');
+{
+  const on = applyResearchFilter(classifyQuery('Jordan Hale'), 'on', 'Jordan Hale');
+  const imgs = collectDiveImages([], [
+    { image: 'https://upload.wikimedia.org/wikipedia/commons/jordan.jpg', url: 'https://en.wikipedia.org/wiki/Jordan_Hale', title: 'Jordan Hale' },
+    { image: 'https://www.babepedia.com/content/jordan.jpg', url: 'https://www.babepedia.com/babe/Jordan_Hale', title: 'Jordan Hale photoset' },
+  ], on);
+  assert(imgs.length >= 1, 'images were collected');
+  assert(imgs[0].url.includes('babepedia'), 'adult ON image collection prefers adult-context visuals over wiki portraits');
+  assert(/not identity proof/i.test(imgs[0].reason || imgs[0].caption || ''), 'visual likeness is not identity proof');
+  assert(isAdultishSource({ url: 'https://www.iafd.com/person.rme/perfid=x', title: 'performer', snippet: '' }), 'industry database is adult-context');
+  assert(!isAdultishSource({ url: 'https://en.wikipedia.org/wiki/Jordan_Hale', title: 'Jordan Hale', snippet: 'biography' }), 'wikipedia biography is not adult-context');
+  assert(!isAdultishSource({ url: 'https://www.apple.com/store', title: 'Apple Store Online', snippet: 'Shop the latest iPhone models' }), 'product “models” language is not adult-context');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

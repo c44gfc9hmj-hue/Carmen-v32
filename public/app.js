@@ -7,12 +7,12 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '41';
+const VERSION = '42';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
 const DB_VERSION = 3;
-const SESSION_KEY = 'carmen_session_v41';
+const SESSION_KEY = 'carmen_session_v42';
 const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).length) ? window.CARMEN_BACKEND : location.origin;
 
 let db = null, stream = null, current = null, historyStack = [], historyIndex = -1, currentProjectId = null;
@@ -35,6 +35,7 @@ let lightboxIndex = 0;
 let lightboxSourceUrl = '';
 let currentLearnType = '';
 let expandedMode = false;
+let currentAdult = 'off';
 
 const ACCESS_LABELS = {
   DIRECTLY_RETRIEVED: 'DIRECTLY RETRIEVED',
@@ -405,6 +406,28 @@ function accessBadge(state) {
   const cls = ok ? 'access-ok' : warn ? 'access-warn' : 'access-bad';
   return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
+function adultLabel(v) {
+  const a = String(v || 'off').toLowerCase();
+  if (a === 'on') return 'Adult content: ON';
+  if (a === 'both') return 'Adult content: BOTH';
+  return 'Adult content: OFF';
+}
+function setAdult(mode, opts = {}) {
+  currentAdult = (mode === 'on' || mode === 'both') ? mode : 'off';
+  document.querySelectorAll('#adultChips .chip, #homeAdultChips .chip').forEach(x => {
+    x.classList.toggle('active', x.dataset.adult === currentAdult);
+  });
+  persistSession();
+  if (!opts.silent) {
+    const el = $('appSub');
+    if (el && currentAdult !== 'off') el.textContent = adultLabel(currentAdult) + ' · public research only';
+  }
+}
+function adultBadge(v) {
+  const a = String(v || currentAdult || 'off').toLowerCase();
+  const cls = a === 'on' ? 'access-warn' : a === 'both' ? 'inferred' : '';
+  return `<span class="badge ${cls}">${esc(adultLabel(a))}</span>`;
+}
 function persistSession() {
   try {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({
@@ -416,6 +439,7 @@ function persistSession() {
       paths: lastPaths,
       meta: lastDiscoveryMeta,
       dive: lastDivePayload,
+      adult: currentAdult,
     }));
   } catch {}
 }
@@ -431,12 +455,14 @@ async function persistDiscoveryIfKept() {
   disc.paths = lastPaths;
   disc.providers = lastDiscoveryMeta?.providers;
   disc.variants = lastDiscoveryMeta?.variants;
+  disc.adultContent = currentAdult;
   disc.at = new Date().toISOString();
   disc.status = 'DISCOVERED';
   await put('discoveries', disc);
   p.lastActivityAt = disc.at;
   p.entityType = lastClassification?.type || p.entityType;
   p.query = disc.query;
+  p.adultContent = currentAdult;
   p.thumbnail = selectedCandidate?.image || lastResults[0]?.image || p.thumbnail;
   p.updatedAt = disc.at;
   await put('projects', p);
@@ -456,6 +482,7 @@ async function keepInvestigation(nameHint) {
       instructions: $('projectInstructions')?.value.trim() || '',
       status: 'active',
       entityType: lastClassification?.type || currentSubject || '',
+      adultContent: currentAdult,
       thumbnail: selectedCandidate?.image || lastResults[0]?.image || '',
       query: q,
       createdAt: now,
@@ -472,6 +499,7 @@ async function keepInvestigation(nameHint) {
     p.updatedAt = now;
     p.query = q;
     p.entityType = lastClassification?.type || p.entityType;
+    p.adultContent = currentAdult;
     p.thumbnail = selectedCandidate?.image || p.thumbnail;
     await put('projects', p);
   }
@@ -497,6 +525,7 @@ function restoreSession() {
     lastPaths = s.paths || [];
     lastDiscoveryMeta = s.meta || null;
     lastDivePayload = s.dive || null;
+    if (s.adult) setAdult(s.adult, { silent: true });
     if (s.selectedUrl) selectedCandidate = lastResults.find(r => r.url === s.selectedUrl) || null;
     if (lastResults.length) {
       renderClassification(lastDiscoveryMeta || { classification: lastClassification, variants: [] });
@@ -532,7 +561,7 @@ async function discover(opts = {}) {
   $('selectedBanner').innerHTML = '';
   updateDeepDiveState();
   try {
-    const r = await fetch(base + '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(currentSubject) + (expanded ? '&expanded=1' : ''), { headers: { accept: 'application/json' } });
+    const r = await fetch(base + '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(currentSubject) + '&adult=' + encodeURIComponent(currentAdult) + (expanded ? '&expanded=1' : ''), { headers: { accept: 'application/json' } });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
     if (!r.ok || data.error) throw Error(data.error || `HTTP ${r.status}`);
@@ -584,7 +613,7 @@ function renderClassification(data) {
   if (!c) { $('classBar').innerHTML = ''; return; }
   const variants = (data.variants || []).map(v => esc(v.q) + (v.why ? ` <span class="muted">(${esc(v.why)})</span>` : '')).join(' · ');
   const warn = data.warning ? `<p class="warning">${esc(data.warning)}</p>` : '';
-  $('classBar').innerHTML = `<p class="hint" style="margin-top:8px"><span class="badge">${esc(c.type)}</span> <span class="confidence ${esc(c.confidence)}">${esc(c.confidence)}</span> — ${esc(c.reason)}${c.context ? ' · context: ' + esc(c.context) : ''}${c.isUrl ? ' · treating this as a page to inspect' : ''}${data.expanded ? ' · <span class="badge access-ok">Expanded Research</span>' : ''}${variants ? '<br>Search variants: ' + variants : ''}</p>${warn}`;
+  $('classBar').innerHTML = `<p class="hint" style="margin-top:8px"><span class="badge">${esc(c.type)}</span> ${adultBadge(data.adultContent || currentAdult)} <span class="confidence ${esc(c.confidence)}">${esc(c.confidence)}</span> — ${esc(c.reason)}${c.context ? ' · context: ' + esc(c.context) : ''}${c.isUrl ? ' · treating this as a page to inspect' : ''}${data.expanded ? ' · <span class="badge access-ok">Expanded Research</span>' : ''}${variants ? '<br>Search variants: ' + variants : ''}</p>${warn}`;
 }
 function selectCandidate(r, i, opts = {}) {
   selectedCandidate = r;
@@ -706,7 +735,7 @@ function renderResults(results, providers) {
           ${!hero && r.image ? `<img class="rthumb" data-full="${esc(imgSrc(r.image))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(r.image))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
           <div class="rmeta">
             <div class="rtitle">${esc(r.title)}</div>
-            <div class="rmeta"><span class="badge">${esc(subjectLabel(r.entityType || lastClassification?.type || currentSubject || 'web'))}</span> <span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')}${r.accessState ? ' · ' + accessBadge(r.accessState) : ''} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
+            <div class="rmeta"><span class="badge">${esc(subjectLabel(r.entityType || lastClassification?.type || currentSubject || 'web'))}</span>${r.contextLane === 'adult' ? ' <span class="badge access-warn">adult-context</span>' : ''} <span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')}${r.accessState ? ' · ' + accessBadge(r.accessState) : ''} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
           </div>
         </div>
         ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
@@ -848,6 +877,8 @@ async function runDeepDive() {
         all: diveAll,
         paths: pathIds,
         expanded: useExpanded,
+        adult: currentAdult,
+        adultContent: currentAdult,
       }),
     });
     const text = await r.text();
@@ -871,6 +902,7 @@ async function runDeepDive() {
     disc.deepDiveRelated = data.related;
     disc.selectedPathIds = data.selectedPathIds || pathIds;
     disc.customQuestion = customQuestion;
+    disc.adultContent = currentAdult;
     disc.paths = data.paths || lastPaths;
     disc.results = lastResults;
     disc.classification = data.classification || lastClassification;
@@ -940,7 +972,7 @@ function renderDiveWorkspace(data, subject) {
   const accessHtml = access.headline ? `<div class="access-banner"><b>${esc(access.headline)}</b>${access.paywalled ? '<span class="hint">Paywalled material was not converted into retrieved evidence.</span>' : ''}${!data.expanded && (access.paywalled || access.authenticationRequired || (access.inaccessible || []).length) ? '<div class="row" style="margin-top:8px"><button class="btn" data-expand-dive="1">Expanded Research</button></div>' : ''}</div>` : '';
   let body = '';
   if (diveWorkspaceTab === 'images') {
-    const gallery = imgs.map(im => ({ src: imgSrc(im.url || im), cap: (im.domain || '') + ' · ' + (im.pageUrl || im.url || ''), pageUrl: im.pageUrl || im.url || '' }));
+    const gallery = imgs.map(im => ({ src: imgSrc(im.url || im), cap: [im.reason || im.caption, im.domain, im.pageUrl || im.url].filter(Boolean).join(' · '), pageUrl: im.pageUrl || im.url || '' }));
     body = imgs.length ? `<div class="gallery">${imgs.map((im, i) => `<img src="${esc(imgSrc(im.url || im))}" data-g="${i}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>
       <p class="hint">Images keep page provenance. Visual consistency across sources is not identity proof.</p>
       <button class="btn" data-save-images="1">Save images to a collection</button>` : '<p class="hint">No reliable images were retrieved for this candidate.</p>';
@@ -949,7 +981,7 @@ function renderDiveWorkspace(data, subject) {
   } else if (diveWorkspaceTab === 'videos') {
     body = videos.length ? videos.map(v => {
       if (v.playable && v.embedUrl) {
-        return `<div class="video-card"><iframe src="${esc(v.embedUrl)}" allow="encrypted-media; picture-in-picture" allowfullscreen title="${esc(v.title || 'Video')}"></iframe><div class="vmeta"><b>${esc(v.title || v.domain)}</b><br><small>${esc(v.domain)} · playable public embed</small><br><a href="${esc(v.pageUrl || v.url)}" target="_blank" rel="noopener noreferrer">Open source</a> · <button class="btn" data-save-video="${esc(v.url)}" data-title="${esc(v.title || '')}" data-thumb="${esc(v.thumbnail || '')}" style="margin-top:6px">Save</button></div></div>`;
+        return `<div class="video-card"><iframe src="${esc(v.embedUrl)}" allow="encrypted-media; picture-in-picture" allowfullscreen title="${esc(v.title || 'Video')}"></iframe><div class="vmeta"><b>${esc(v.title || v.domain)}</b>${v.contextLane === 'adult' ? ' <span class="badge access-warn">adult-context</span>' : ''}<br><small>${esc(v.domain)} · playable public embed${v.reason ? ' · ' + esc(v.reason) : ''}</small><br><a href="${esc(v.pageUrl || v.url)}" target="_blank" rel="noopener noreferrer">Open source</a> · <button class="btn" data-save-video="${esc(v.url)}" data-title="${esc(v.title || '')}" data-thumb="${esc(v.thumbnail || '')}" style="margin-top:6px">Save</button></div></div>`;
       }
       const thumb = v.thumbnail ? `<img src="${esc(imgSrc(v.thumbnail))}" alt="" style="width:100%;aspect-ratio:16/9;object-fit:cover;background:#000" referrerpolicy="no-referrer">` : '';
       const note = v.accessNote || 'Embedding is blocked here. Open the source to watch. Carmen does not invent playback.';
@@ -975,7 +1007,7 @@ function renderDiveWorkspace(data, subject) {
     body = analysisHtml || '<p class="muted">Findings will appear here after Deep Dive finishes.</p>';
   }
   $('deepDiveResult').innerHTML = `
-    <div class="selbar"><b>${esc(plan.subject || subject)}</b> <span class="badge">${esc(subjectLabel(plan.type || currentSubject))}</span> ${plan.all ? '<span class="badge">ALL</span>' : ''}${plan.expanded ? '<span class="badge access-ok">Expanded Research</span>' : ''}${plan.context ? '<span class="badge">context: ' + esc(plan.context) + '</span>' : ''}<br><small>${esc(plan.why || '')}</small>${plan.customQuestion ? '<br><small>Question: ' + esc(plan.customQuestion) + '</small>' : ''}<br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
+    <div class="selbar"><b>${esc(plan.subject || subject)}</b> <span class="badge">${esc(subjectLabel(plan.type || currentSubject))}</span> ${plan.all ? '<span class="badge">ALL</span>' : ''}${adultBadge(plan.adultContent || data.adultContent || currentAdult)}${plan.expanded ? '<span class="badge access-ok">Expanded Research</span>' : ''}${plan.context ? '<span class="badge">context: ' + esc(plan.context) + '</span>' : ''}<br><small>${esc(plan.why || '')}</small>${plan.customQuestion ? '<br><small>Question: ' + esc(plan.customQuestion) + '</small>' : ''}<br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
     ${accessHtml}${suggestHtml}${tabHtml}${body}`;
 }
 function renderAdaptiveWriteup(text, paths, subject) {
@@ -1110,7 +1142,7 @@ async function renderHome() {
   ps.sort((a, b) => String(b.lastActivityAt || b.updatedAt || '').localeCompare(String(a.lastActivityAt || a.updatedAt || '')));
   const resume = ps.find(p => p.status === 'active') || ps[0];
   if ($('homeResume')) {
-    $('homeResume').innerHTML = resume ? `<div class="card"><h3>Resume</h3><div class="inv-card" data-resume="${esc(resume.id)}">${resume.thumbnail ? `<img src="${esc(imgSrc(resume.thumbnail))}" alt="">` : ''}<div class="body"><b>${esc(resume.name)}</b><div class="subtle">${esc(subjectLabel(resume.entityType))} · ${esc(resume.status || 'active')} · ${esc(resume.lastActivityAt ? new Date(resume.lastActivityAt).toLocaleString() : '')}</div><button class="btn primary" data-resume="${esc(resume.id)}" style="margin-top:8px">Resume investigation</button></div></div></div>` : '';
+    $('homeResume').innerHTML = resume ? `<div class="card"><h3>Resume</h3><div class="inv-card" data-resume="${esc(resume.id)}">${resume.thumbnail ? `<img src="${esc(imgSrc(resume.thumbnail))}" alt="">` : ''}<div class="body"><b>${esc(resume.name)}</b><div class="subtle">${esc(subjectLabel(resume.entityType))} · ${esc(adultLabel(resume.adultContent || 'off'))} · ${esc(resume.status || 'active')} · ${esc(resume.lastActivityAt ? new Date(resume.lastActivityAt).toLocaleString() : '')}</div><button class="btn primary" data-resume="${esc(resume.id)}" style="margin-top:8px">Resume investigation</button></div></div></div>` : '';
   }
   $('homeRecent').innerHTML = ps.slice(0, 4).map(p => `<div class="inv-card" data-resume="${esc(p.id)}">${p.thumbnail ? `<img src="${esc(imgSrc(p.thumbnail))}" alt="">` : ''}<div class="body"><b>${esc(p.name)}</b><div class="subtle">${esc(subjectLabel(p.entityType))} · ${esc(p.status || 'active')}</div></div></div>`).join('') || '<p class="empty">No saved investigations yet. Search, then Deep Dive or Keep to persist one.</p>';
 }
@@ -1124,7 +1156,7 @@ async function renderInvestigations() {
     ${p.thumbnail ? `<img src="${esc(imgSrc(p.thumbnail))}" alt="">` : ''}
     <div class="body">
       <b>${esc(p.name)}</b>
-      <div class="subtle">${esc(subjectLabel(p.entityType))} · ${esc(p.status || 'active')} · ${esc(p.lastActivityAt ? new Date(p.lastActivityAt).toLocaleString() : '')}${p.parentId ? ' · branched' : ''}${p.relation ? ' · ' + esc(p.relation) : ''}</div>
+      <div class="subtle">${esc(subjectLabel(p.entityType))} · ${esc(adultLabel(p.adultContent || 'off'))} · ${esc(p.status || 'active')} · ${esc(p.lastActivityAt ? new Date(p.lastActivityAt).toLocaleString() : '')}${p.parentId ? ' · branched' : ''}${p.relation ? ' · ' + esc(p.relation) : ''}</div>
       <div class="row" style="margin-top:8px">
         <button class="btn primary" data-resume="${esc(p.id)}">Resume</button>
         <button class="btn" data-invstat="paused" data-id="${esc(p.id)}">Pause</button>
@@ -1144,6 +1176,7 @@ async function resumeInvestigation(id) {
   const p = (await all('projects')).find(x => x.id === id);
   if (p && $('projectInstructions')) $('projectInstructions').value = p.instructions || '';
   if (p && $('projectQuestion')) $('projectQuestion').value = p.question || p.query || '';
+  if (p && p.adultContent) setAdult(p.adultContent, { silent: true });
   await loadDiscovery();
   setTab('search');
   toast('Resumed ' + (p?.name || 'investigation'));
@@ -1165,6 +1198,7 @@ async function branchInvestigation(rel) {
   p.relation = rel.kind || 'related';
   p.relatedFrom = parentName;
   p.query = rel.label;
+  p.adultContent = currentAdult;
   await put('projects', p);
   await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: p.id, type: 'branched', at: new Date().toISOString(), parentId, label: rel.label, kind: rel.kind || '' });
   setTab('search');
@@ -1260,7 +1294,7 @@ async function runLearn() {
   try {
     const r = await fetch(base + '/learn', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: q, type: currentLearnType }),
+      body: JSON.stringify({ query: q, type: currentLearnType, adult: currentAdult, adultContent: currentAdult }),
     });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
@@ -1268,12 +1302,12 @@ async function runLearn() {
     lastPaths = data.paths || [];
     renderPathChips(lastPaths, 'learnPaths');
     const imgs = (data.images || []).slice(0, 12);
-    const imgHtml = imgs.length ? `<div class="gallery">${imgs.map(im => `<img src="${esc(imgSrc(im.url || im))}" data-full="${esc(imgSrc(im.url || im))}" data-cap="${esc((im.domain || '') + ' · ' + (im.pageUrl || ''))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>` : '';
+    const imgHtml = imgs.length ? `<div class="gallery">${imgs.map(im => `<img src="${esc(imgSrc(im.url || im))}" data-full="${esc(imgSrc(im.url || im))}" data-cap="${esc([im.reason || im.caption, im.domain, im.pageUrl || ''].filter(Boolean).join(' · '))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>` : '';
     const sources = (data.retrieved || []).map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> ${provenanceBadge(x.status)}<br><small>${esc(x.finalUrl || x.url || '')}${x.error ? ' · ' + esc(x.error) : ''}</small></div>`).join('');
     const lesson = data.lesson || data.analysis || '';
     $('learnResult').innerHTML = `<div class="card">
-      <span class="badge">${esc(subjectLabel(data.classification?.type))}</span>
-      <p class="hint">${esc(data.classification?.reason || '')}</p>
+      <span class="badge">${esc(subjectLabel(data.classification?.type))}</span> ${adultBadge(data.adultContent || currentAdult)}
+      <p class="hint">${esc(data.classification?.reason || '')}${data.classification?.context ? ' · context: ' + esc(data.classification.context) : ''}</p>
       ${imgHtml}
       ${lesson ? renderAdaptiveWriteup(lesson, lastPaths, q) : (data.analysisError ? `<div class="claim unknown">${esc(data.analysisError)}</div>` : '')}
       <h4>Sources</h4>${sources || '<p class="muted">No retrieved pages.</p>'}
@@ -1363,6 +1397,17 @@ function wire() {
     currentSubject = c.dataset.subject;
     const q = $('searchQuery'); q.placeholder = subjectQueryHint(currentSubject) || 'Describe what to investigate.';
   };
+  const wireAdult = id => {
+    const el = $(id);
+    if (!el) return;
+    el.onclick = e => {
+      const c = e.target.closest('[data-adult]');
+      if (!c) return;
+      setAdult(c.dataset.adult);
+    };
+  };
+  wireAdult('adultChips');
+  wireAdult('homeAdultChips');
 
   // discovery
   $('searchQuery').addEventListener('input', updateDeepDiveState);
@@ -1528,7 +1573,7 @@ function wire() {
     }
     const g = e.target.closest('img[data-g]');
     if (g) {
-      const gallery = lastDivePayload?._gallery || (lastDivePayload?.images || []).map(im => ({ src: imgSrc(im.url || im), cap: (im.domain || '') + ' · ' + (im.pageUrl || im.url || ''), pageUrl: im.pageUrl || im.url || '' }));
+      const gallery = lastDivePayload?._gallery || (lastDivePayload?.images || []).map(im => ({ src: imgSrc(im.url || im), cap: [im.reason || im.caption, im.domain, im.pageUrl || im.url].filter(Boolean).join(' · '), pageUrl: im.pageUrl || im.url || '' }));
       openLightbox(g.src, g.dataset.cap || '', gallery, Number(g.dataset.g) || 0);
       return;
     }
@@ -1821,6 +1866,8 @@ async function loadDiscovery() {
     document.querySelectorAll('#subjectChips .chip').forEach(x => x.classList.toggle('active', x.dataset.subject === disc.subject));
   }
   lastPaths = disc.paths || lastPaths;
+  if (disc.adultContent) setAdult(disc.adultContent, { silent: true });
+  else if (disc.classification && disc.classification.adultContent) setAdult(disc.classification.adultContent, { silent: true });
   if (disc.query) $('searchQuery').value = disc.query;
   renderClassification(disc);
   renderPathChips(lastPaths, 'divePaths');

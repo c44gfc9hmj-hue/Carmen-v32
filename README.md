@@ -10,6 +10,18 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
+## Investigation workspace (v42)
+
+v42 hardens the live v41 workspace. It does not replace the v38 engine, v39 shell, v40 Deep Dive planner, or v41 Expanded Research / access states.
+
+- **Adult Content research filter** — investigation-level OFF / ON / BOTH. It is a research context, not an entity type. The setting persists through search, ranking, images, videos, Deep Dive, and branches.
+- When Adult Content is **ON**, Carmen keeps adult-industry public context through query planning, retrieval, ranking, and media. It does not silently fall back to generic biography, and it does not blindly append the word “adult” to every query.
+- **BOTH** retrieves general and adult-context material and keeps the two lanes distinguishable.
+- **ENTITY → CONTEXT → QUESTION** — a person + requested context (interview, clothing, bondage, etc.) is a different research problem from identity-only search. The same architecture applies to products, vehicles, techniques, and skills.
+- **Default research already works hard** — multiple providers, useful variants, contextual image/video indexes, continue-when-blocked. Expanded Research is *not* “finally start researching.”
+- **Expanded Research** = restricted/incomplete-source escalation: legitimate public alternatives, not a bypass and not a retry of the same wall.
+- **Honest access boundary** — Carmen does not bypass paywalls, logins, age gates, CAPTCHAs, DRM, or private APIs. Inaccessible sources are labeled. Public alternatives are labeled as alternatives.
+
 ## Investigation workspace (v41)
 
 v41 hardens the v40 workspace and v38 engine without replacing them:

@@ -623,7 +623,7 @@ async function wikipedia(q, results, seen, diagnostics, classification) {
 }
 
 const SEO_JUNK_RE = /(nameberry|howmanyofme|houseofnames|behindthename|urbandictionary|quizlet\.com|coursehero|chegg\.com|slideplayer|scribd\.com|pinterest\.com|fandom\.com\/wiki\/Special)/i;
-const TUBE_INDEX_RE = /(nudevista|xvideos|pornhub|xnxx|spankbang|xhamster|redtube|youporn|alohatube|tubepornstars|heavyfetish|bdsmx\.tube|thothub|fapello|erome)\./i;
+const TUBE_INDEX_RE = /(nudevista|xvideos|pornhub|xnxx|spankbang|xhamster|redtube|youporn|alohatube|tubepornstars|heavyfetish|bdsmx\.tube|thothub|fapello|erome|tnaflix|hdzog|xgroovy)\./i;
 const RETAILER_RE = /(bestbuy|walmart|amazon|ebay|target|newegg|bhphotovideo|costco)\./i;
 const NAV_TITLE_RE = /^(blog|community|newsletter|home|login|sign in|search|menu)$/i;
 const SKIP_IMAGE_RE = /(favicon|sprite|1x1|pixel|tracking|badge\.svg|logo\.(png|svg|jpg|gif)|icon-?\d+|apple-touch-icon|join\.(jpg|png|gif)|play\.(png|gif|jpg)|spinner|placeholder|blank\.(gif|png)|custom_assets|\/icons?\/)/i;
@@ -635,6 +635,11 @@ const INSTRUCTIONAL_HOST_RE = /(youtube\.com|youtu\.be|wikihow\.com|instructable
 const TECHNIQUE_HINTS = new Set(['technique', 'position', 'instruction']);
 const SKILL_HINTS = new Set(['skill', 'project']);
 const STOCK_IMAGE_RE = /(shutterstock|gettyimages|istockphoto|adobestock|unsplash\.com|pexels\.com|pixabay\.com|depositphotos)/i;
+const ADULT_HOST_RE = /(^|\.)(onlyfans|manyvids|clips4sale|iwantclips|iafd|adultfilmdatabase|adultdvdtalk|babepedia|boobpedia|indexxx|data18|thenude|freeones)\./i;
+const ADULT_PATH_RE = /\/(models?|performers?|pornstar|photoset|scene|xxx|galleries)(\/|$)/i;
+const GENERIC_BIO_HOST_RE = /(wikipedia\.org|britannica\.com|biography\.com)/i;
+const ADULT_LANG_RE = /\b(adult(?:[- ]content)?|nsfw|xxx|porn(?:star)?|onlyfans|bdsm|bondage|fetish|kink|performer|photoset)\b/i;
+const ADULT_EVIDENCE_RE = /\b(performer|photoset|adult film|pornstar|xxx|onlyfans|bdsm|bondage|fetish|iafd)\b/i;
 const MEMBER_HOST_RE = /(^|\.)(onlyfans|patreon)\.com$/i;
 const AUTH_HOST_RE = /(^|\.)(onlyfans|patreon|linkedin|facebook|instagram)\.com$/i;
 const ACCESS_LABELS = {
@@ -721,17 +726,39 @@ function classifyAccess({ httpStatus, html, url, host, error } = {}) {
 }
 
 const CONTEXT_RELATIONS = [
+  { id: 'adult', re: /\b(adult(?:[- ]content)?|nsfw|pornstar|performer)\b/i, synonyms: 'performer OR photoset OR "official site" OR models' },
+  { id: 'bondage', re: /\b(bondage|bdsm|shibari|kinbaku|restraint|self[- ]bondage)\b/i, synonyms: 'bondage OR bdsm OR shibari OR rope' },
   { id: 'interview', re: /\b(interview|interviews|podcast|talk show|q\s*&\s*a|qanda)\b/i, synonyms: 'interview OR podcast OR talk OR q&a' },
   { id: 'visual', re: /\b(photos?|images?|pics?|gallery|portrait|headshot)\b/i, synonyms: 'photos OR images OR gallery OR portrait' },
   { id: 'video', re: /\b(videos?|youtube|clip|footage|watch)\b/i, synonyms: 'video OR youtube OR clip OR footage' },
   { id: 'clothing', re: /\b(wearing|outfit|dress|clothing|clothes|costume|wardrobe)\b/i, synonyms: 'wearing OR outfit OR dress OR photos' },
   { id: 'vehicle', re: /\b(car|truck|vehicle|motorcycle|bike)\b/i, synonyms: 'car OR vehicle OR photos' },
+  { id: 'towing', re: /\b(tow|towing|payload|hitch)\b/i, synonyms: 'towing OR tow capacity OR payload' },
+  { id: 'repair', re: /\b(repair|repairs|fix|service|maintenance)\b/i, synonyms: 'repair OR service OR maintenance' },
+  { id: 'skill', re: /\b(weld(?:ing|er)?|woodwork(?:ing)?|fabricat(?:e|ion)|soldering)\b/i, synonyms: 'tutorial OR procedure OR how to OR guide' },
   { id: 'performance', re: /\b(concert|performance|show|tour|stage|set)\b/i, synonyms: 'performance OR concert OR live OR show' },
   { id: 'hobby', re: /\b(hobby|hobbies)\b/i, synonyms: 'hobby OR photos' },
   { id: 'location', re: /\b(in|at|near)\s+[A-Z][A-Za-z.-]+/i, synonyms: 'photos OR event OR location' },
   { id: 'technique', re: /\b(technique|position|pose|poses)\b/i, synonyms: 'photos OR video OR reference' },
   { id: 'object', re: /\b(with|holding|using)\b/i, synonyms: 'photos OR images' },
 ];
+
+const TRAILING_CONTEXT_RE = /\s+((?:adult(?:\s+content)?)|nsfw|bondage|bdsm|shibari|kinbaku|interview|interviews|photos?|images?|videos?|repair|towing|maintenance|welding)$/i;
+
+function normalizeAdult(v) {
+  const s = String(v || '').toLowerCase().trim();
+  if (s === 'on' || s === 'true' || s === '1' || s === 'yes') return 'on';
+  if (s === 'both') return 'both';
+  return 'off';
+}
+
+function detectRelation(text) {
+  const t = String(text || '');
+  for (const rel of CONTEXT_RELATIONS) {
+    if (rel.re.test(t)) return rel.id;
+  }
+  return '';
+}
 
 function parseQueryContext(q, classification) {
   const raw = String(q || '').trim().replace(/\s+/g, ' ');
@@ -740,20 +767,24 @@ function parseQueryContext(q, classification) {
   const type = classification && classification.type;
   const words = raw.split(/\s+/);
   let subject = raw, context = '';
-  if (type === 'person' && words.length >= 3 && words.slice(0, 2).every(w => /^[A-Za-z][A-Za-z.'’-]*$/.test(w))) {
+  const trail = raw.match(TRAILING_CONTEXT_RE);
+  if (trail && words.length >= 2) {
+    subject = raw.slice(0, raw.length - trail[0].length).trim();
+    context = trail[1].trim();
+  } else if (type === 'person' && words.length >= 3 && words.slice(0, 2).every(w => /^[A-Za-z][A-Za-z.'’-]*$/.test(w))) {
     subject = words.slice(0, 2).join(' ');
     context = words.slice(2).join(' ');
   } else if (type === 'person' && words.length >= 4) {
     subject = words.slice(0, 2).join(' ');
     context = words.slice(2).join(' ');
-  }
-  let relation = '';
-  for (const rel of CONTEXT_RELATIONS) {
-    if (rel.re.test(raw) || (context && rel.re.test(context))) {
-      relation = rel.id;
-      break;
+  } else if ((type === 'product' || type === 'vehicle' || type === 'organization') && words.length >= 2) {
+    const last = words[words.length - 1];
+    if (detectRelation(last) && words.length >= 2) {
+      subject = words.slice(0, -1).join(' ');
+      context = last;
     }
   }
+  let relation = detectRelation(context) || detectRelation(raw);
   if (context && !relation) relation = 'context';
   return { subject, context, relation, full: raw };
 }
@@ -765,6 +796,32 @@ function attachContext(q, classification) {
     out.subject = ctx.subject;
     out.context = ctx.context;
     out.relation = ctx.relation;
+  } else if (ctx.subject) {
+    out.subject = out.subject || ctx.subject;
+  }
+  return out;
+}
+
+function applyResearchFilter(classification, adultMode, q) {
+  const out = (classification && typeof classification === 'object') ? classification : classifyQuery(q);
+  const adult = normalizeAdult(adultMode);
+  out.adultContent = adult;
+  const raw = String(q || '').trim();
+  if (!out.subject) out.subject = out.context ? String(raw).replace(TRAILING_CONTEXT_RE, '').trim() : raw;
+  if ((adult === 'on' || adult === 'both') && !out.context) {
+    if (adult === 'on') {
+      out.context = 'adult content';
+      out.relation = out.relation || 'adult';
+    } else {
+      out.contextLanes = ['general', 'adult'];
+      out.relation = out.relation || 'adult';
+    }
+  }
+  if (adult === 'on' && out.context && out.relation !== 'adult') {
+    out.adultContext = true;
+  }
+  if (adult === 'off' && ADULT_LANG_RE.test(out.context || '')) {
+    out.adultFromQuery = true;
   }
   return out;
 }
@@ -772,12 +829,51 @@ function attachContext(q, classification) {
 function contextualSynonyms(context, relation) {
   const rel = CONTEXT_RELATIONS.find(r => r.id === relation);
   if (rel && rel.synonyms) {
-    if (relation === 'clothing' || relation === 'technique' || relation === 'object' || relation === 'location') {
+    if (relation === 'clothing' || relation === 'technique' || relation === 'object' || relation === 'location' || relation === 'bondage' || relation === 'repair' || relation === 'towing' || relation === 'skill') {
       return String(context || '') + ' OR ' + rel.synonyms;
     }
     return rel.synonyms;
   }
   return context ? (context + ' photos OR images OR video') : '';
+}
+
+function adultSemanticVariants(subject, extraContext) {
+  const sub = String(subject || '').replace(/"/g, '').trim();
+  const extra = String(extraContext || '').replace(/adult content/i, '').trim();
+  const out = [];
+  const add = (q, why) => {
+    const t = String(q || '').trim();
+    if (!t) return;
+    if (!out.some(x => x.q === t)) out.push({ q: t, why });
+  };
+  add('"' + sub + '" (performer OR photoset OR "official site" OR models)', 'adult-industry public sources');
+  if (extra) {
+    add('"' + sub + '" ' + extra + ' (photoset OR scene OR gallery OR video)', 'requested adult visual context');
+    const syn = contextualSynonyms(extra, detectRelation(extra));
+    if (syn) add('"' + sub + '" ' + syn, 'adult-context synonyms');
+  } else {
+    add('"' + sub + '" (interview OR feature) (performer OR "official site")', 'adult-context interviews/features');
+  }
+  return out.slice(0, 3);
+}
+
+function imageSearchQuery(q, classification) {
+  const subject = (classification && classification.subject) || q;
+  const adult = (classification && classification.adultContent) || 'off';
+  const ctx = (classification && classification.context) || '';
+  const extra = /adult content/i.test(ctx) ? '' : ctx;
+  if ((adult === 'on' || adult === 'both') && extra) return '"' + subject + '" ' + extra;
+  if (adult === 'on') return '"' + subject + '" (photoset OR scene OR models OR gallery)';
+  if (adult === 'both') return '"' + subject + '" (photoset OR scene OR models OR gallery OR portrait)';
+  if (extra) return '"' + subject + '" ' + extra;
+  return subject;
+}
+
+function isAdultishSource(item) {
+  const url = String(item && item.url || '');
+  const host = hostOf(url);
+  const blob = (String(item && item.title || '') + ' ' + String(item && item.snippet || '') + ' ' + url).toLowerCase();
+  return ADULT_HOST_RE.test(host) || ADULT_PATH_RE.test(url) || ADULT_EVIDENCE_RE.test(blob);
 }
 
 function isStockImage(url) {
@@ -805,10 +901,21 @@ function classifyQuery(q, hint = '') {
     }
     return done({ type: 'website', confidence: 'high', reason: 'Direct URL', isUrl: true, url, isImage });
   }
+  const trailEarly = raw.match(TRAILING_CONTEXT_RE);
+  if (trailEarly && !hinted) {
+    const rel = detectRelation(trailEarly[1]) || detectRelation(raw);
+    const head = raw.slice(0, raw.length - trailEarly[0].length).trim();
+    if (head && (rel === 'towing' || rel === 'vehicle')) {
+      return done({ type: 'vehicle', confidence: 'medium', reason: 'Vehicle-like subject with a technical context', isUrl: false });
+    }
+    if (head && rel === 'repair' && !/\b(weld|welding|woodwork|solder|plumbing|electrical|diy)\b/i.test(head)) {
+      return done({ type: 'product', confidence: 'medium', reason: 'Product-like subject with a repair/service context', isUrl: false });
+    }
+  }
   if (TECHNIQUE_HINTS.has(hinted) || (TECHNIQUE_WORD_RE.test(raw) && !SKILL_WORD_RE.test(raw))) {
     return done({ type: 'technique', confidence: hinted ? 'medium' : 'medium', reason: 'Looks like a technique, position, or instructional form', isUrl: false });
   }
-  if (SKILL_HINTS.has(hinted) || SKILL_WORD_RE.test(raw) || /\bhow to\b/i.test(raw)) {
+  if (SKILL_HINTS.has(hinted) || ((SKILL_WORD_RE.test(raw) || /\bhow to\b/i.test(raw)) && !['person', 'product', 'vehicle', 'organization'].includes(hinted))) {
     return done({ type: hinted === 'project' ? 'project' : 'skill', confidence: 'medium', reason: 'Looks like a skill, craft, or project to learn', isUrl: false });
   }
   if (/^@[\w.]+/.test(raw) || /\b(instagram|tiktok|onlyfans|twitter|linkedin)\b/i.test(raw)) {
@@ -1036,7 +1143,7 @@ function resolveDivePaths(type, body = {}) {
   return { all: extras.length ? false : selected.length === all.length, selected, inferred, custom };
 }
 
-function pathSearchVariants(seed, selectedPaths) {
+function pathSearchVariants(seed, selectedPaths, classification) {
   const extra = [];
   const ids = new Set((selectedPaths || []).map(p => p.id));
   const add = (q, why) => {
@@ -1044,13 +1151,26 @@ function pathSearchVariants(seed, selectedPaths) {
     if (!t || extra.some(x => x.q === t)) return;
     extra.push({ q: t, why });
   };
-  if (ids.has('images') || ids.has('visuals')) add(seed + ' photos OR images OR gallery OR portrait', 'visual evidence');
-  if (ids.has('videos')) add(seed + ' video OR youtube OR interview', 'video sources');
+  const subject = (classification && classification.subject) || seed;
+  const adult = (classification && classification.adultContent) || 'off';
+  const ctx = (classification && classification.context) || '';
+  if (ids.has('images') || ids.has('visuals')) {
+    if (adult === 'on' || adult === 'both') add(imageSearchQuery(subject, classification || {}), 'contextual visual evidence');
+    else add(seed + ' photos OR images OR gallery OR portrait', 'visual evidence');
+  }
+  if (ids.has('videos')) {
+    if (adult === 'on' || adult === 'both' || (ctx && (detectRelation(ctx) === 'bondage' || detectRelation(ctx) === 'video'))) {
+      add('"' + subject.replace(/"/g, '') + '" ' + (ctx && !/adult content/i.test(ctx) ? ctx + ' ' : '') + 'video OR scene OR clip', 'contextual video sources');
+    } else add(seed + ' video OR youtube OR interview', 'video sources');
+  }
   if (ids.has('timeline') || ids.has('history')) add(seed + ' timeline OR history', 'chronology');
   if (ids.has('presence') || ids.has('official')) add(seed + ' official OR profile OR website', 'public presence');
   if (ids.has('tutorials') || ids.has('steps')) add(seed + ' tutorial OR procedure OR how to', 'instructional sources');
   if (ids.has('safety')) add(seed + ' safety', 'safety context');
-  if (ids.has('identity')) add(seed + ' biography OR profile OR "who is"', 'identity sources');
+  if (ids.has('identity')) {
+    if (adult === 'on') add('"' + subject.replace(/"/g, '') + '" (performer OR profile OR "official site" OR models)', 'identity in the active research context');
+    else add(seed + ' biography OR profile OR "who is"', 'identity sources');
+  }
   if (ids.has('reviews')) add(seed + ' review OR reviews', 'reviews');
   if (ids.has('pricing')) add(seed + ' price OR pricing OR history', 'pricing history');
   if (ids.has('issues') || ids.has('trouble')) add(seed + ' problems OR issues OR common problems', 'known issues');
@@ -1059,6 +1179,9 @@ function pathSearchVariants(seed, selectedPaths) {
   if (ids.has('concepts')) add(seed + ' explained OR concept OR overview', 'concepts');
   if (ids.has('variations') || ids.has('variants')) add(seed + ' variants OR generations OR versions', 'variants');
   if (ids.has('alternatives')) add(seed + ' alternative OR vs OR compared', 'alternatives');
+  if ((adult === 'on' || adult === 'both') && (ids.has('presence') || ids.has('identity') || ids.has('images') || ids.has('videos'))) {
+    for (const v of adultSemanticVariants(subject, /adult content/i.test(ctx) ? '' : ctx)) add(v.q, v.why);
+  }
   return extra.slice(0, 12);
 }
 
@@ -1090,9 +1213,11 @@ function isVideoHost(url) {
   return /youtube\.com|youtu\.be|vimeo\.com|reddit\.com/i.test(h) || /\.(mp4|webm|mov)(\?|$)/i.test(String(url || ''));
 }
 
-function collectDiveVideos(retrieved, results) {
+function collectDiveVideos(retrieved, results, classification) {
   const out = [];
   const seen = new Set();
+  const adult = (classification && classification.adultContent) || 'off';
+  const extraCtx = String((classification && classification.context) || '').replace(/adult content/i, '').trim().toLowerCase();
   const add = (url, pageUrl, title, thumb) => {
     if (!url || seen.has(url)) return;
     seen.add(url);
@@ -1102,6 +1227,27 @@ function collectDiveVideos(retrieved, results) {
     const embedUrl = yt ? ('https://www.youtube.com/embed/' + yt) : (vim ? ('https://player.vimeo.com/video/' + vim) : '');
     const restrictedHost = /(onlyfans|patreon|substack)\.com/i.test(host);
     const playable = !!embedUrl && !restrictedHost;
+    const blob = (String(title || '') + ' ' + url + ' ' + host + ' ' + String(pageUrl || '')).toLowerCase();
+    let relevance = playable ? 3 : 1;
+    let reason = playable ? 'Playable public embed. Not identity proof.' : 'Public video reference. Open the source to watch — Carmen does not invent playback.';
+    let confidence = playable ? 'medium' : 'low';
+    if (adult === 'on' || adult === 'both') {
+      if (ADULT_HOST_RE.test(host) || ADULT_PATH_RE.test(url) || ADULT_EVIDENCE_RE.test(blob)) {
+        relevance += 5;
+        reason = 'Public adult-context video from ' + host + '. Visual likeness is not identity proof.';
+        confidence = 'medium';
+      }
+      if (GENERIC_BIO_HOST_RE.test(host) || /biography|wikipedia|interview highlight/i.test(blob)) {
+        relevance -= 3;
+      }
+    }
+    if (extraCtx && extraCtx.split(/\s+/).filter(t => t.length > 2).some(t => blob.includes(t))) {
+      relevance += 5;
+      reason = 'Video context matches “' + extraCtx + '”. Visual likeness is not identity proof.';
+      confidence = 'medium';
+    } else if (extraCtx && adult === 'on') {
+      relevance -= 2;
+    }
     out.push({
       url,
       pageUrl: pageUrl || url,
@@ -1115,6 +1261,10 @@ function collectDiveVideos(retrieved, results) {
         ? 'Playback requires a paid or logged-in account. Carmen cannot retrieve it.'
         : (playable ? '' : 'No public embed is available. Open the source to watch — Carmen does not invent playback.'),
       retrievedAt: new Date().toISOString(),
+      relevance,
+      reason,
+      confidence,
+      contextLane: (ADULT_HOST_RE.test(host) || ADULT_EVIDENCE_RE.test(blob)) ? 'adult' : 'general',
     });
   };
   for (const r of results || []) {
@@ -1128,6 +1278,11 @@ function collectDiveVideos(retrieved, results) {
     const re = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=[\w-]{6,}|youtu\.be\/[\w-]{6,}|vimeo\.com\/\d+)/gi;
     let m;
     while ((m = re.exec(text)) && out.length < 12) add(m[0], page.finalUrl || page.url, page.title, page.ogImage);
+  }
+  out.sort((a, b) => (b.relevance || 0) - (a.relevance || 0));
+  if (adult === 'on') {
+    const contextual = out.filter(x => (x.relevance || 0) >= 5);
+    if (contextual.length) return contextual.slice(0, 12);
   }
   return out.slice(0, 12);
 }
@@ -1192,14 +1347,18 @@ function buildSearchVariants(q, classification) {
   add(clean, 'primary query');
   const subject = classification.subject || clean;
   const context = classification.context || '';
-  if (context && classification.type === 'person') {
-    add('"' + subject.replace(/"/g, '') + '" ' + context, 'person + requested context');
-    const syn = contextualSynonyms(context, classification.relation);
+  const extraCtx = /adult content/i.test(context) ? '' : context;
+  const adult = classification.adultContent || 'off';
+  if (extraCtx && classification.type === 'person') {
+    add('"' + subject.replace(/"/g, '') + '" ' + extraCtx, 'person + requested context');
+    const syn = contextualSynonyms(extraCtx, classification.relation);
     if (syn) add('"' + subject.replace(/"/g, '') + '" ' + syn, 'contextual visual/source synonyms');
     add(subject + ' official OR website OR profile', 'official/profile pages for the person');
-    return out.slice(0, 5);
-  }
-  if (classification.type === 'person' && /\s/.test(clean)) {
+  } else if (extraCtx) {
+    add('"' + subject.replace(/"/g, '') + '" ' + extraCtx, 'entity + requested context');
+    const syn = contextualSynonyms(extraCtx, classification.relation);
+    if (syn) add('"' + subject.replace(/"/g, '') + '" ' + syn, 'contextual synonyms');
+  } else if (classification.type === 'person' && /\s/.test(clean)) {
     add('"' + clean.replace(/"/g, '') + '"', 'exact name');
     add(clean + ' official OR website OR profile', 'official/profile pages');
   } else if (classification.type === 'website') {
@@ -1219,7 +1378,13 @@ function buildSearchVariants(q, classification) {
   } else if (/\s/.test(clean) && !/^".*"$/.test(clean)) {
     add('"' + clean.replace(/"/g, '') + '"', 'exact phrase');
   }
-  return out.slice(0, 3);
+  if (adult === 'on' || adult === 'both') {
+    for (const v of adultSemanticVariants(subject, extraCtx)) add(v.q, v.why);
+  }
+  if (adult === 'both' && extraCtx) {
+    add('"' + subject.replace(/"/g, '') + '" biography OR profile OR interview', 'general-context lane');
+  }
+  return out.slice(0, adult === 'off' ? 5 : 6);
 }
 
 function buildExpandedVariants(q, classification) {
@@ -1232,20 +1397,23 @@ function buildExpandedVariants(q, classification) {
   };
   const subject = (classification && classification.subject) || clean;
   const context = (classification && classification.context) || '';
-  add(subject + ' official OR website OR homepage OR profile', 'official / public profile pages');
-  add(clean + ' interview OR biography OR feature', 'interviews and features');
-  add(clean + ' photos OR images OR gallery OR portrait', 'image indexes');
-  add(clean + ' youtube OR video OR vimeo OR interview', 'video indexes');
-  add(clean + ' reddit OR forum OR discussion', 'public discussion');
-  add('"' + subject.replace(/"/g, '') + '"', 'exact subject');
-  if (context) {
-    add('"' + subject.replace(/"/g, '') + '" ' + context, 'subject + requested context');
-    const syn = contextualSynonyms(context, classification && classification.relation);
+  const extraCtx = /adult content/i.test(context) ? '' : context;
+  add('"' + subject.replace(/"/g, '') + '" interview OR feature OR "press"', 'public interviews and features as alternatives');
+  add(clean + ' site:.org OR wikipedia OR "official site"', 'public indexes and official pages');
+  add('"' + subject.replace(/"/g, '') + '" (cited OR according OR reported)', 'public citations and reporting');
+  add('"' + subject.replace(/"/g, '') + '" photos OR images OR gallery', 'public image indexes as alternatives');
+  add(clean + ' youtube OR video OR interview', 'public video indexes as alternatives');
+  if (extraCtx) {
+    add('"' + subject.replace(/"/g, '') + '" ' + extraCtx + ' interview OR feature OR review', 'contextual public alternatives');
+    const syn = contextualSynonyms(extraCtx, classification && classification.relation);
     if (syn) add('"' + subject.replace(/"/g, '') + '" ' + syn, 'contextual synonyms');
   }
-  add(clean + ' site:.org OR wikipedia', 'public indexes');
+  if (classification && (classification.adultContent === 'on' || classification.adultContent === 'both')) {
+    for (const v of adultSemanticVariants(subject, extraCtx)) add(v.q, v.why);
+  }
+  add(clean + ' reddit OR forum OR discussion', 'public discussion alternatives');
   if (classification && classification.type === 'person') {
-    add(subject + ' news OR press OR "official site"', 'editorial and official coverage');
+    add(subject + ' news OR press OR homepage', 'editorial and official coverage');
   }
   if (classification && (classification.type === 'technique' || classification.type === 'skill')) {
     add(clean + ' diagram OR tutorial OR demonstrated', 'instructional visual sources');
@@ -1298,19 +1466,35 @@ function scoreResult(query, item, classification) {
     score += 8; bits.push('visual reference');
   }
   if (classification.context) {
-    const ctxTokens = String(classification.context).toLowerCase().split(/\s+/).filter(t => t.length > 2 && !/^(and|the|for|with)$/i.test(t));
+    const ctxTokens = String(classification.context).toLowerCase().split(/\s+/).filter(t => t.length > 2 && !/^(and|the|for|with|adult|content)$/i.test(t));
     const blob = title + ' ' + snip + ' ' + url;
     if (ctxTokens.length && ctxTokens.every(t => blob.includes(t))) {
-      score += 18; bits.push('requested context present');
+      score += 22; bits.push('requested context present');
     } else if (ctxTokens.some(t => blob.includes(t))) {
-      score += 8; bits.push('partial context match');
+      score += 10; bits.push('partial context match');
+    } else if (ctxTokens.length && classification.adultContent !== 'both') {
+      score -= 10; bits.push('name match without requested context');
+    }
+  }
+  const adult = (classification && classification.adultContent) || 'off';
+  const adultish = isAdultishSource(item);
+  const genericBio = GENERIC_BIO_HOST_RE.test(host);
+  let contextLane = (adultish && !genericBio) ? 'adult' : 'general';
+  if (adult === 'on' || adult === 'both') {
+    if (adultish && !genericBio) { score += 24; bits.push('adult-context source'); }
+    if (genericBio && adult === 'on') {
+      score -= 24; bits.push('generic biography, weak for adult-context research');
+    } else if (genericBio && adult === 'both') {
+      score -= 6; bits.push('general biography lane');
     }
   }
   if (NAV_TITLE_RE.test(String(item.title || '').trim())) { score -= 45; bits.push('generic nav title'); }
   if (SEO_JUNK_RE.test(host) || SEO_JUNK_RE.test(url)) { score -= 30; bits.push('SEO/name-mill site'); }
-  if (TUBE_INDEX_RE.test(host) || /\/(top|playlists?|pornstar|search)\//i.test(url)) {
-    score -= 22; bits.push('aggregator/index, not a primary source');
+  if (TUBE_INDEX_RE.test(host) || (adult === 'off' && /\/pornstar\//i.test(url))) {
+    score -= (adult === 'on' || adult === 'both') ? 8 : 22;
+    bits.push('aggregator/index, not a primary source');
   }
+  if (/\/(top|playlists?|search)\//i.test(url)) { score -= 14; bits.push('search/index page'); }
   if (classification.type === 'product' && RETAILER_RE.test(host)) {
     score -= 18; bits.push('retailer listing, not manufacturer');
   }
@@ -1329,7 +1513,7 @@ function scoreResult(query, item, classification) {
   else if (score >= 32) reason = 'Possible match — ' + (bits[0] || 'name overlap') + ', limited corroborating evidence';
   else if (classification.type === 'person' && tokens.some(t => title.includes(t))) reason = 'Low confidence — name collision or thin context';
   else reason = 'Low confidence — weak overlap with the query';
-  return { score, confidence, reason, signals: bits };
+  return { score, confidence, reason, signals: bits, contextLane };
 }
 
 function aliasesFor(item, query) {
@@ -1362,6 +1546,8 @@ function rankResults(query, results, classification) {
       signals: s.signals,
       aliases: aliasesFor(item, query),
       entityType: classification.type,
+      contextLane: s.contextLane || 'general',
+      adultContent: classification.adultContent || 'off',
     };
   }).filter(r => r.score > 10 && (r.signals || []).length);
   ranked.sort((a, b) => b.score - a.score || String(a.domain).localeCompare(String(b.domain)));
@@ -1414,7 +1600,7 @@ async function enrichTopResults(results, classification) {
   for (const r of results.slice(take, 14)) {
     if (picked.length >= take + 3) break;
     const host = (r.domain || hostOf(r.url)).replace(/^www\./, '');
-    if ((PROFILE_HOST_RE.test(host) || r.image) && !picked.includes(r)) picked.push(r);
+    if ((PROFILE_HOST_RE.test(host) || r.image || ((classification.adultContent === 'on' || classification.adultContent === 'both') && isAdultishSource(r))) && !picked.includes(r)) picked.push(r);
   }
   const galleryExtra = [];
   await Promise.all(picked.map(async (item) => {
@@ -1543,9 +1729,10 @@ function humanizePath(url) {
 
 async function runDiscovery(query, opts = {}) {
   const expanded = opts.expanded === true || opts.expanded === 'true' || opts.expanded === 1;
-  SEARCH_BUDGET = { used: 0, max: opts.budget || (expanded ? 56 : 36) };
+  const adult = normalizeAdult(opts.adult || opts.adultContent);
+  SEARCH_BUDGET = { used: 0, max: opts.budget || (expanded ? 56 : 48) };
   const q = String(query || '').trim().slice(0, 500);
-  const classification = classifyQuery(q, opts.hint);
+  const classification = applyResearchFilter(classifyQuery(q, opts.hint), adult, q);
   const variants = buildSearchVariants(classification.isUrl ? (opts.displayQuery || q) : q, classification);
   if (expanded) {
     for (const v of buildExpandedVariants(q, classification)) variants.push(v);
@@ -1557,7 +1744,7 @@ async function runDiscovery(query, opts = {}) {
     }
   }
   const results = [], seen = new Set(), diagnostics = {};
-  if (!q) return { query: q, classification, variants, results, providers: diagnostics, count: 0, expanded };
+  if (!q) return { query: q, classification, variants, results, providers: diagnostics, count: 0, expanded, adultContent: adult };
 
   async function runVariant(variant, includeSocial) {
     const jobs = [
@@ -1566,14 +1753,14 @@ async function runDiscovery(query, opts = {}) {
     ];
     if (includeSocial) {
       jobs.push(reddit(variant.q, results, seen, diagnostics));
-      jobs.push(wikipedia(variant.q, results, seen, diagnostics, classification));
+      if (adult !== 'on') jobs.push(wikipedia(variant.q, results, seen, diagnostics, classification));
     }
     await Promise.all(jobs);
   }
 
   if (classification.isUrl) {
     const direct = await inspectDirectUrl(classification, results, seen, diagnostics);
-    const follow = variants.filter(v => v.q && v.q !== classification.url).slice(0, expanded ? 3 : 1);
+    const follow = variants.filter(v => v.q && v.q !== classification.url).slice(0, expanded ? 3 : 2);
     if (!follow.length) {
       const host = hostOf(classification.url).replace(/^www\./, '');
       const pathName = humanizePath(classification.url);
@@ -1591,7 +1778,7 @@ async function runDiscovery(query, opts = {}) {
       ]);
     }
   } else {
-    const webVariants = variants.slice(0, expanded ? 6 : 3);
+    const webVariants = variants.slice(0, expanded ? 6 : 5);
     for (let i = 0; i < webVariants.length; i++) {
       await runVariant(webVariants[i], i === 0);
       if (!expanded && results.length >= MAX_RESULTS) break;
@@ -1601,28 +1788,37 @@ async function runDiscovery(query, opts = {}) {
     }
   }
 
+  const imgQ = imageSearchQuery(q, classification);
   if (expanded) {
     const jobs = [];
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(q, results, seen, diagnostics));
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingVideos(q, results, seen, diagnostics));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(imgQ, results, seen, diagnostics));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingVideos(imgQ, results, seen, diagnostics));
     if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(google(q, results, seen, diagnostics));
     if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(mojeek(q, results, seen, diagnostics));
     if (jobs.length) await Promise.all(jobs);
     if (classification.context && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
-      await bingImages('"' + (classification.subject || q) + '" ' + classification.context, results, seen, diagnostics);
+      const extraCtx = /adult content/i.test(classification.context) ? '' : classification.context;
+      if (extraCtx) await bingImages('"' + (classification.subject || q) + '" ' + extraCtx, results, seen, diagnostics);
     }
-  } else if (classification.type === 'person' && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 2) {
-    await bingImages(classification.subject || q, results, seen, diagnostics);
+  } else if ((classification.type === 'person' || classification.type === 'technique' || classification.context) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 2) {
+    await bingImages(imgQ, results, seen, diagnostics);
+    if (adult === 'both' && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
+      await bingImages('"' + String(classification.subject || q).replace(/"/g, '') + '" (portrait OR headshot OR official)', results, seen, diagnostics);
+    }
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && (adult === 'on' || adult === 'both' || classification.relation === 'video' || classification.relation === 'interview')) {
+      await bingVideos(imgQ, results, seen, diagnostics);
+    }
   }
 
   let ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
   if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
 
   const retrievedN = ranked.filter(r => r.retrievalStatus === 'RETRIEVED' || r.provenance === 'RETRIEVED').length;
-  if (!expanded && (ranked.length < 3 || retrievedN === 0) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+  const restricted = ranked.filter(r => r.accessState === 'PAYWALLED' || r.accessState === 'AUTHENTICATION_REQUIRED' || r.accessState === 'AGE_RESTRICTED' || r.accessState === 'BLOCKED').length;
+  if (!expanded && (ranked.length < 3 || retrievedN === 0 || restricted >= Math.max(2, ranked.length - 1)) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
     diagnostics.ContinuedSearch = {
-      reason: ranked.length < 3 ? 'few public results on the first pass' : 'obvious sources were not retrievable',
-      philosophy: 'One blocked website is not the end of the investigation.',
+      reason: ranked.length < 3 ? 'few public results on the first pass' : (restricted ? 'obvious sources were restricted' : 'obvious sources were not retrievable'),
+      philosophy: 'Escalating to public alternatives — not retrying the same wall.',
     };
     const more = buildExpandedVariants(q, classification).slice(0, 3);
     for (const v of more) {
@@ -1630,7 +1826,7 @@ async function runDiscovery(query, opts = {}) {
       if (!variants.some(x => x.q === v.q)) variants.push(v);
       await Promise.all([ddg(v.q, results, seen, diagnostics), bing(v.q, results, seen, diagnostics)]);
     }
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages(q, results, seen, diagnostics);
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages(imgQ, results, seen, diagnostics);
     ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
     if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
   }
@@ -1642,6 +1838,7 @@ async function runDiscovery(query, opts = {}) {
     }
     if (!r.images) r.images = r.image ? [r.image] : [];
     r.observedAt = r.observedAt || new Date().toISOString();
+    r.adultContent = adult;
   }
 
   let warning = ranked.length ? undefined : 'No public-web results were returned. Provider diagnostics are included for troubleshooting.';
@@ -1650,7 +1847,7 @@ async function runDiscovery(query, opts = {}) {
     warning = warning ? fail + ' ' + warning : fail;
   }
   if (diagnostics.ContinuedSearch && !expanded) {
-    const note = 'Carmen kept searching after the obvious path failed.';
+    const note = 'Restricted or incomplete sources triggered a public-alternative search. Carmen does not bypass paywalls or logins.';
     warning = warning ? warning + ' ' + note : note;
   }
 
@@ -1665,6 +1862,7 @@ async function runDiscovery(query, opts = {}) {
     warning,
     expanded,
     continued: !!diagnostics.ContinuedSearch,
+    adultContent: adult,
   };
 }
 
@@ -1673,8 +1871,9 @@ async function searchWeb(req) {
   const q = (u.searchParams.get('q') || '').trim().slice(0, 500);
   const hint = (u.searchParams.get('type') || u.searchParams.get('subject') || '').trim();
   const expanded = u.searchParams.get('expanded') === '1' || u.searchParams.get('expanded') === 'true';
-  if (!q) return json({ results: [], query: '', count: 0, providers: {}, classification: classifyQuery(''), expanded: false }, 200, req);
-  const discovery = await runDiscovery(q, { hint, enrich: true, expanded });
+  const adult = normalizeAdult(u.searchParams.get('adult') || u.searchParams.get('adultContent'));
+  if (!q) return json({ results: [], query: '', count: 0, providers: {}, classification: applyResearchFilter(classifyQuery(''), adult, ''), expanded: false, adultContent: adult }, 200, req);
+  const discovery = await runDiscovery(q, { hint, enrich: true, expanded, adult });
   return json(discovery, 200, req);
 }
 
@@ -1755,7 +1954,7 @@ async function provider(env, messages, temperature = 0.2) {
   } finally { clearTimeout(timer); }
 }
 
-const CARMEN_SYSTEM = 'You are Carmen, a conservative AI research assistant for adult users. Be concise and useful. Clearly distinguish OBSERVED (directly stated/visible), INFERRED (labeled interpretation), and UNKNOWN. Never invent facts, sources, URLs, dates, or evidence. Never claim something was saved or sent unless the user explicitly requested it. Never autonomously contact people, send messages, post, comment, submit forms, make purchases, create accounts, perform transactions, or take any external action. You may research, analyze, organize, and prepare information only. Never claim you retrieved paywalled, login-gated, age-gated, or blocked content. Public titles, search snippets, and thumbnails are not the protected content — label them as referenced public evidence only. If the only remaining relevant source is paywalled, say clearly: Absolutely cannot retrieve due to paywall. For sexual or self-bondage topics, do not provide explicit step-by-step sexual or self-bondage instructions; you may organize public sources, terminology, visual references, and research questions. For general skills and crafts you may outline procedures only when they are grounded in retrieved sources. Visual likeness is not identity proof.';
+const CARMEN_SYSTEM = 'You are Carmen, a conservative AI research assistant for adult users. Be concise and useful. Clearly distinguish OBSERVED (directly stated/visible), INFERRED (labeled interpretation), and UNKNOWN. Never invent facts, sources, URLs, dates, or evidence. Never claim something was saved or sent unless the user explicitly requested it. Never autonomously contact people, send messages, post, comment, submit forms, make purchases, create accounts, perform transactions, or take any external action. You may research, analyze, organize, and prepare information only. Never bypass, evade, or circumvent paywalls, logins, age gates, CAPTCHAs, DRM, robots, or other access controls. Never claim you retrieved paywalled, login-gated, age-gated, or blocked content. Public titles, search snippets, and thumbnails are not the protected content — label them as referenced public evidence only. If the original source cannot be accessed, say so honestly and look for legitimate public alternatives. If the only remaining relevant source is paywalled, say clearly: Absolutely cannot retrieve due to paywall. Adult Content is a research-context filter, not an entity type — when it is ON, do not silently fall back to generic biography. Adult context does not lower evidence discipline. For sexual or self-bondage topics, do not provide explicit step-by-step sexual or self-bondage instructions; you may organize public sources, terminology, visual references, and research questions. For general skills and crafts you may outline procedures only when they are grounded in retrieved sources. Visual likeness is not identity proof.';
 
 async function chat(req, env) {
   try {
@@ -1850,8 +2049,10 @@ async function imageProxy(req) {
   }
 }
 
-function collectDiveImages(retrieved, results) {
+function collectDiveImages(retrieved, results, classification) {
   const out = [], seen = new Set();
+  const adult = (classification && classification.adultContent) || 'off';
+  const extraCtx = String((classification && classification.context) || '').replace(/adult content/i, '').trim().toLowerCase();
   const add = (url, pageUrl, source, extra = {}) => {
     const u = usableImage(url);
     if (!u) return;
@@ -1859,30 +2060,60 @@ function collectDiveImages(retrieved, results) {
     if (seen.has(key)) return;
     seen.add(key);
     const stock = isStockImage(u);
+    const domain = hostOf(pageUrl || u).replace(/^www\./, '');
+    const blob = ((pageUrl || '') + ' ' + domain + ' ' + (source || '')).toLowerCase();
+    let relevance = stock ? 0 : extra.kind === 'og' ? 4 : extra.kind === 'page' ? 3 : extra.kind === 'index' ? 2 : 1;
+    let reason = extra.caption || (stock ? 'Possible stock/generic image — not identity proof' : 'Image keeps page provenance. Visual likeness is not identity proof.');
+    let confidence = 'medium';
+    if (adult === 'on' || adult === 'both') {
+      if (ADULT_HOST_RE.test(domain) || ADULT_PATH_RE.test(pageUrl || '') || ADULT_EVIDENCE_RE.test(blob)) {
+        relevance += 5;
+        reason = 'Public adult-context visual from ' + domain + '. Visual likeness is not identity proof.';
+        confidence = 'medium';
+      }
+      if (GENERIC_BIO_HOST_RE.test(domain) || /portrait|headshot|wiki/i.test(blob)) {
+        relevance -= 4;
+        reason = 'Generic/biographical image — weak for the requested adult context. Not identity proof.';
+        confidence = 'low';
+      }
+    }
+    if (extraCtx && blob.includes(extraCtx.split(/\s+/)[0])) {
+      relevance += 5;
+      reason = 'Page context matches “' + extraCtx + '”. Visual likeness is not identity proof.';
+      confidence = 'medium';
+    } else if (extraCtx && (adult === 'on')) {
+      relevance -= 2;
+    }
     out.push({
       url: u,
       sourceUrl: u,
       pageUrl: pageUrl || '',
-      domain: hostOf(pageUrl || u).replace(/^www\./, ''),
+      domain,
       source: source || 'retrieved page',
       kind: extra.kind || (stock ? 'stock' : source === 'og:image' ? 'og' : 'page'),
       stock,
-      caption: extra.caption || (stock ? 'Possible stock/generic image — not identity proof' : 'Image keeps page provenance. Visual likeness is not identity proof.'),
+      caption: reason,
+      reason,
+      confidence,
+      relevance,
+      accessState: extra.accessState || 'DISCOVERED',
+      provenance: extra.provenance || (extra.kind === 'page' ? 'RETRIEVED' : 'DISCOVERED'),
       retrievedAt: new Date().toISOString(),
     });
   };
   for (const page of retrieved || []) {
-    if (page.ogImage) add(page.ogImage, page.finalUrl || page.url, 'og:image', { kind: 'og' });
-    for (const img of page.images || []) add(img, page.finalUrl || page.url, page.accessState === 'DIRECTLY_RETRIEVED' ? 'retrieved page' : 'public preview', { kind: 'page' });
+    if (page.ogImage) add(page.ogImage, page.finalUrl || page.url, 'og:image', { kind: 'og', accessState: page.accessState, provenance: page.status });
+    for (const img of page.images || []) add(img, page.finalUrl || page.url, page.accessState === 'DIRECTLY_RETRIEVED' ? 'retrieved page' : 'public preview', { kind: 'page', accessState: page.accessState, provenance: page.status });
   }
   for (const r of results || []) {
-    if (r.image) add(r.image, r.url, r.source || 'search', { kind: r.imageOrigin === 'image-index' ? 'index' : 'search' });
-    for (const img of r.images || []) add(img, r.url, r.source || 'search', { kind: r.imageOrigin === 'image-index' ? 'index' : 'search' });
+    if (r.image) add(r.image, r.url, r.source || 'search', { kind: r.imageOrigin === 'image-index' ? 'index' : 'search', accessState: r.accessState, provenance: r.provenance });
+    for (const img of r.images || []) add(img, r.url, r.source || 'search', { kind: r.imageOrigin === 'image-index' ? 'index' : 'search', accessState: r.accessState, provenance: r.provenance });
   }
-  out.sort((a, b) => {
-    const rank = (x) => x.stock ? 0 : x.kind === 'og' ? 4 : x.kind === 'page' ? 3 : x.kind === 'index' ? 2 : 1;
-    return rank(b) - rank(a);
-  });
+  out.sort((a, b) => (b.relevance || 0) - (a.relevance || 0));
+  if (adult === 'on') {
+    const contextual = out.filter(x => x.relevance >= 5);
+    if (contextual.length) return contextual.slice(0, 36);
+  }
   return out.slice(0, 36);
 }
 
@@ -1896,7 +2127,8 @@ async function deepDiveHandler(req, env) {
       return json({ error: 'Select a candidate or enter a subject before running Deep Dive.' }, 400, req);
     }
     const seed = query || String(candidate.title || '').trim();
-    const classification = classifyQuery(seed, hint);
+    const adult = normalizeAdult(b.adult || b.adultContent);
+    const classification = applyResearchFilter(classifyQuery(seed, hint), adult, seed);
     const expanded = b.expanded === true || b.expanded === 'true' || b.expanded === 1;
     const resolved = resolveDivePaths(classification.type, b);
     const selectedPaths = resolved.selected;
@@ -1931,13 +2163,13 @@ async function deepDiveHandler(req, env) {
     }
     if (classification.type === 'technique') extra.push(seed + ' tutorial OR diagram');
     if (classification.type === 'skill' || classification.type === 'project') extra.push(seed + ' procedure OR safety');
-    for (const v of pathSearchVariants(seed, selectedPaths)) extra.push(v.q);
+    for (const v of pathSearchVariants(seed, selectedPaths, classification)) extra.push(v.q);
     extra.push(seed + ' reddit');
     if (expanded || selectedIds.has('images') || selectedIds.has('visuals') || resolved.all) {
-      extra.push((classification.subject || seed) + ' photos OR images OR gallery OR portrait');
+      extra.push(imageSearchQuery(classification.subject || seed, classification));
     }
     if (expanded || selectedIds.has('videos') || resolved.all) {
-      extra.push((classification.subject || seed) + ' youtube OR video OR interview');
+      extra.push((classification.subject || seed) + (adult === 'on' || adult === 'both' ? ' video OR scene OR clip' : ' youtube OR video OR interview'));
     }
     const focusBlocked = !!(focus && focus.status !== 'RETRIEVED');
     const plan = {
@@ -1949,30 +2181,33 @@ async function deepDiveHandler(req, env) {
       selectedPaths: selectedPaths.map(p => p.id),
       customQuestion,
       expanded,
+      adultContent: adult,
       context: classification.context || '',
       relation: classification.relation || '',
       investigating: [
-        resolved.all ? 'Investigate ALL research paths for this entity type — every path listed below' : ('Investigate selected paths: ' + selectedPaths.map(p => p.label).join(', ')),
+        resolved.all ? 'Investigate ALL research paths for this entity type, active context, and question' : ('Investigate selected paths: ' + selectedPaths.map(p => p.label).join(', ')),
         customQuestion ? ('User question: ' + customQuestion.slice(0, 180)) : 'No custom question — follow the selected paths',
-        classification.context ? ('Requested context: ' + classification.subject + ' in relation to “' + classification.context + '” (' + (classification.relation || 'context') + ')') : 'Subject-only research (no extra visual/contextual relation requested)',
-        candidate?.url ? (focusBlocked ? ('Selected source is inaccessible (' + accessLabel(focus.accessState) + '). One blocked website is not the end — searching public alternatives.') : 'Retrieve the selected source page and public identifiers found on it') : 'Retrieve the strongest public sources',
-        selectedIds.has('images') || selectedIds.has('visuals') || resolved.all ? 'Collect images from official pages, features, image indexes, and public thumbnails with provenance' : 'Images collected only when they appear on retrieved pages',
-        selectedIds.has('videos') || resolved.all ? 'Collect playable or openable public videos. No fake playback.' : 'Video collection skipped unless a source page includes one',
-        expanded ? 'Expanded Research is on — broader variants, image/video indexes, public alternatives' : 'Normal research pass. Expanded Research can go further if sources are thin or blocked.',
+        adult === 'off' ? 'Adult content filter is OFF — general public research' : (adult === 'on' ? 'Adult content filter is ON — keep adult-industry public context through retrieval, media, and synthesis' : 'Adult content filter is BOTH — keep general and adult-context lanes distinguishable'),
+        classification.context ? ('Requested context: ' + (classification.subject || seed) + ' in relation to “' + classification.context + '” (' + (classification.relation || 'context') + ')') : 'Subject-only research (no extra visual/contextual relation requested)',
+        candidate?.url ? (focusBlocked ? ('Selected source is inaccessible (' + accessLabel(focus.accessState) + '). Searching public alternatives — not retrying the same restriction.') : 'Retrieve the selected source page and public identifiers found on it') : 'Retrieve the strongest public sources',
+        selectedIds.has('images') || selectedIds.has('visuals') || resolved.all ? 'Collect images relevant to the entity AND the active context, with provenance. Visual likeness is not identity proof.' : 'Images collected only when they appear on retrieved pages',
+        selectedIds.has('videos') || resolved.all ? 'Collect playable or openable public videos relevant to the active context. No fake playback.' : 'Video collection skipped unless a source page includes one',
+        expanded ? 'Expanded Research is on — public alternatives for restricted/incomplete sources, not a bypass' : 'Normal research already searches multiple providers, variants, and public media.',
         'Separate OBSERVED / INFERRED / UNKNOWN — visual likeness is not identity proof',
-        'Never treat paywalled or login-gated content as retrieved evidence',
+        'Never treat paywalled or login-gated content as retrieved evidence. Never bypass access controls.',
       ],
       variants: extra.slice(0, resolved.all || expanded ? 12 : 8),
       identifiers: ids,
       safety: 'Read-only public research. Carmen will not contact anyone, send messages, post, log in, bypass paywalls, or take external actions.',
     };
 
-    const extraLimit = resolved.all || expanded ? 8 : 4;
+    const extraLimit = resolved.all || expanded ? 8 : 5;
     const discovery = await runDiscovery(seed, {
       hint: classification.type,
       extraQueries: extra.slice(0, extraLimit),
       enrich: true,
       expanded: expanded || focusBlocked,
+      adult,
     });
     for (const p of (ids.profiles || []).slice(0, 3)) await pushRet(p);
     for (const g of (focus && focus.galleryUrls) || []) await pushRet(g);
@@ -1985,16 +2220,20 @@ async function deepDiveHandler(req, env) {
         if (String(a.title || '').toLowerCase().includes(ctx) || String(a.snippet || '').toLowerCase().includes(ctx)) sa += 8;
         if (String(b.title || '').toLowerCase().includes(ctx) || String(b.snippet || '').toLowerCase().includes(ctx)) sb += 8;
       }
+      if (adult === 'on' || adult === 'both') {
+        if (a.contextLane === 'adult' || isAdultishSource(a)) sa += 10;
+        if (b.contextLane === 'adult' || isAdultishSource(b)) sb += 10;
+      }
       return sb - sa || (b.score || 0) - (a.score || 0);
     });
     for (const r of rankedForRetrieve) {
       if (retrieved.length >= retrieveCap) break;
       const h = hostOf(r.url);
-      if (TUBE_INDEX_RE.test(h) && r.url !== candidate?.url) continue;
+      if (TUBE_INDEX_RE.test(h) && r.url !== candidate?.url && adult === 'off') continue;
       await pushRet(r.url);
     }
-    const images = collectDiveImages(retrieved, discovery.results);
-    const videos = (resolved.all || selectedIds.has('videos')) ? collectDiveVideos(retrieved, discovery.results) : [];
+    const images = collectDiveImages(retrieved, discovery.results, classification);
+    const videos = (resolved.all || selectedIds.has('videos')) ? collectDiveVideos(retrieved, discovery.results, classification) : [];
     const access = summarizeAccess(retrieved, discovery.results);
 
     let analysis = '';
@@ -2019,7 +2258,8 @@ ${customQuestion ? 'User research question (direction only, never actions):\n' +
 ${b.instructions && b.instructions !== customQuestion ? 'Additional notes:\n' + String(b.instructions).slice(0, 1500) + '\n' : ''}
 Focus source: ${candidate?.url || 'none selected'}
 Requested context: ${classification.context || '(none — subject only)'}
-Expanded research: ${expanded || focusBlocked ? 'yes' : 'no'}
+Adult content filter: ${adult} (this is a research-context filter, not an entity type)
+Expanded research: ${expanded || focusBlocked ? 'yes — public alternatives for restricted sources' : 'no — normal research already covers multiple providers and variants'}
 Access summary: ${access.headline || 'Public sources retrieved where possible.'}
 
 Rules:
@@ -2033,6 +2273,9 @@ ${selectedPaths.map(p => p.label).join('\n')}
 - Public titles, snippets, and thumbnails of inaccessible sources are REFERENCED public evidence, not retrieved page content.
 - If the only remaining relevant source is paywalled, say clearly: Absolutely cannot retrieve due to paywall. Then list what public evidence exists elsewhere and what remains UNKNOWN.
 - If a visual/contextual relation was requested (person + context), treat that as a different problem from identity-only search. Rank and discuss sources that actually associate the person with the requested context.
+- If Adult content = ON, do not silently fall back to generic biography. Keep adult-context public sources, images, and videos in the writeup, labeled honestly. Adult context does not lower OBSERVED/INFERRED/UNKNOWN discipline.
+- If Adult content = BOTH, distinguish the general lane from the adult-context lane.
+- Never bypass paywalls, logins, age gates, CAPTCHAs, or other access controls. Work around the information gap with public alternatives only.
 - Images showing similar appearance across sources are OBSERVED visual consistency, NOT identity proof. Never say they are definitely the same person.
 - List publicly visible handles, domains, and aliases only if they appear in the sources.
 - Suggest research leads as questions/sources to review, never as actions to take.
@@ -2090,6 +2333,7 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
       all: resolved.all,
       customQuestion,
       expanded: expanded || discovery.expanded || false,
+      adultContent: adult,
       providers: discovery.providers,
       query: seed,
     }, 200, req);
@@ -2104,9 +2348,10 @@ async function learnHandler(req, env) {
     const query = String(b.query || b.subject || '').trim().slice(0, 500);
     if (!query) return json({ error: 'Enter something you want to learn or understand.' }, 400, req);
     const hint = String(b.type || b.subject || '').trim();
-    const classification = classifyQuery(query, hint);
+    const adult = normalizeAdult(b.adult || b.adultContent);
+    const classification = applyResearchFilter(classifyQuery(query, hint), adult, query);
     const paths = researchPaths(classification.type);
-    const discovery = await runDiscovery(query, { hint: classification.type, enrich: true });
+    const discovery = await runDiscovery(query, { hint: classification.type, enrich: true, adult });
     const retrieved = [];
     const seen = new Set();
     for (const r of discovery.results) {
@@ -2115,7 +2360,7 @@ async function learnHandler(req, env) {
       seen.add(r.url);
       retrieved.push(await retrieveSource(r.url));
     }
-    const images = collectDiveImages(retrieved, discovery.results);
+    const images = collectDiveImages(retrieved, discovery.results, classification);
     const excerpts = retrieved.filter(x => x.status === 'RETRIEVED').map(x => ({
       title: x.title, url: x.url, provenance: 'RETRIEVED',
       excerpt: String(x.textExcerpt || x.text || '').slice(0, 1600),
@@ -2162,6 +2407,7 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
       analysisError,
       providers: discovery.providers,
       query,
+      adultContent: adult,
       safety: 'Read-only learning from public sources. Carmen will not contact anyone or take external actions.',
     }, 200, req);
   } catch (e) {
@@ -2178,7 +2424,7 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '41',
+        version: '42',
         build: 'workspace',
         schemaVersion: 2,
         provider: ai.provider,
@@ -2187,7 +2433,7 @@ export default {
         routes: ['/health', '/search', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'research-context'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -2489,4 +2735,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, collectDiveVideos, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource };
