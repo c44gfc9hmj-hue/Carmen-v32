@@ -70,12 +70,18 @@ Required config (already in `wrangler.jsonc`):
 
 Required secret (not in code):
 ```bash
-npx wrangler secret put API_KEY
+npx wrangler secret put Api_key
 ```
-Optional: set `MODEL` and `API_URL` to use a non-default OpenAI-compatible model.
+(`API_KEY` is also accepted as a compatibility alias.) Carmen uses OpenRouter's
+free router by default:
 
-Until `API_KEY` is set, `/chat`, `/analyze`, and `/synthesize` return a clear
-"AI provider is not configured" error. `/health` and `/search` work without it.
+- endpoint: `https://openrouter.ai/api/v1/chat/completions`
+- model: `openrouter/free`
+
+Until the runtime secret is set, `/chat`, `/analyze`, and `/synthesize` return a
+clear "AI provider is not configured" error. `/health` and `/search` work without
+it. `/health` reports `provider`, `model`, and `configured` without exposing the
+secret.
 
 ## Local testing
 

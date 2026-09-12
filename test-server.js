@@ -11,6 +11,7 @@ const DIR = resolve(fileURLToPath(new URL('public/', import.meta.url)));
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 const env = {
   API_KEY: process.env.API_KEY || undefined,
+  Api_key: process.env.Api_key || process.env.API_KEY || undefined,
   MODEL: process.env.MODEL,
   API_URL: process.env.API_URL,
   ASSETS: {

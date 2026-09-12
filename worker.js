@@ -362,26 +362,78 @@ async function searchWeb(req) {
 }
 
 // --- AI provider --------------------------------------------------------------
+// Carmen talks to OpenRouter's OpenAI-compatible Chat Completions API.
+// There is no silent fallback to api.openai.com / gpt-4.1-mini.
+
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_MODEL = 'openrouter/free';
+const OPENAI_HOST_RE = /(^|\.)openai\.com$/i;
 
 /** Resolve AI secret: prefer API_KEY, fall back to Api_key (existing CF binding name). */
 function getApiKey(env) {
   return env.API_KEY || env.Api_key || '';
 }
 
-async function provider(env, messages, temperature = 0.2) {
+function trimmedEnv(v) {
+  return typeof v === 'string' ? v.trim() : '';
+}
+
+function getAiConfig(env) {
   const apiKey = getApiKey(env);
-  if (!apiKey) throw Error('AI provider is not configured. Add the API_KEY Worker secret before using Carmen AI.');
+  let apiUrl = trimmedEnv(env.API_URL) || OPENROUTER_URL;
+  let model = trimmedEnv(env.MODEL) || OPENROUTER_MODEL;
+  let host = '';
+  try { host = new URL(apiUrl).hostname.toLowerCase(); } catch {
+    apiUrl = OPENROUTER_URL;
+    host = 'openrouter.ai';
+  }
+  // Leftover OpenAI env vars must not hijack the provider.
+  if (OPENAI_HOST_RE.test(host) || /^gpt-4\.1-mini$/i.test(model)) {
+    apiUrl = OPENROUTER_URL;
+    model = OPENROUTER_MODEL;
+    host = 'openrouter.ai';
+  }
+  const provider = (host === 'openrouter.ai' || host.endsWith('.openrouter.ai')) ? 'openrouter' : (host || 'openrouter');
+  return { apiKey, apiUrl, model, provider, configured: !!apiKey };
+}
+
+function extractMessageContent(j) {
+  const choice = j?.choices?.[0];
+  const raw = choice?.message?.content ?? choice?.text ?? '';
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw)) {
+    return raw.map(part => {
+      if (typeof part === 'string') return part;
+      if (part && typeof part.text === 'string') return part.text;
+      if (part && typeof part.content === 'string') return part.content;
+      return '';
+    }).join('');
+  }
+  return '';
+}
+
+async function provider(env, messages, temperature = 0.2) {
+  const cfg = getAiConfig(env);
+  if (!cfg.apiKey) throw Error('AI provider is not configured. Add the API_KEY Worker secret before using Carmen AI.');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
   try {
-    const r = await fetch(env.API_URL || 'https://api.openai.com/v1/chat/completions', {
+    const r = await fetch(cfg.apiUrl, {
       method: 'POST', signal: controller.signal,
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model: env.MODEL || 'gpt-4.1-mini', temperature, messages }),
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${cfg.apiKey}`,
+        'HTTP-Referer': 'https://carmen-iphone-v25.94bwfd5grv.workers.dev/',
+        'X-Title': 'Carmen',
+      },
+      body: JSON.stringify({ model: cfg.model, temperature, messages }),
     });
     const text = await r.text();
-    let j; try { j = JSON.parse(text); } catch { throw Error(text || `AI provider returned HTTP ${r.status}`); }
-    if (!r.ok) throw Error(j?.error?.message || `AI provider returned HTTP ${r.status}`);
+    let j; try { j = JSON.parse(text); } catch { throw Error(`AI provider returned HTTP ${r.status}`); }
+    if (!r.ok) {
+      const msg = (j && j.error && (j.error.message || j.error)) || `AI provider returned HTTP ${r.status}`;
+      throw Error(typeof msg === 'string' ? msg : `AI provider returned HTTP ${r.status}`);
+    }
     return j;
   } finally { clearTimeout(timer); }
 }
@@ -397,7 +449,7 @@ async function chat(req, env) {
       if (m && typeof m.content === 'string') messages.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content.slice(0, 20000) });
     }
     const j = await provider(env, messages, 0.3);
-    return json({ text: j?.choices?.[0]?.message?.content || '' }, 200, req);
+    return json({ text: extractMessageContent(j) }, 200, req);
   } catch (e) { return json({ error: e?.name === 'AbortError' ? 'AI provider timed out.' : e?.message || String(e) }, 500, req); }
 }
 
@@ -407,10 +459,18 @@ function validateImage(x) {
 }
 
 function parseModelJson(raw) {
-  const clean = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  try { return JSON.parse(clean); } catch {}
-  const a = clean.indexOf('{'), b = clean.lastIndexOf('}');
-  if (a >= 0 && b > a) { try { return JSON.parse(clean.slice(a, b + 1)); } catch {} }
+  const clean = String(raw || '').trim();
+  if (!clean) throw Error('AI provider returned invalid JSON.');
+  const candidates = [clean];
+  const unfenced = clean.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  if (unfenced && unfenced !== clean) candidates.push(unfenced);
+  const fence = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fence && fence[1]) candidates.push(fence[1].trim());
+  for (const c of candidates) {
+    try { return JSON.parse(c); } catch {}
+    const a = c.indexOf('{'), b = c.lastIndexOf('}');
+    if (a >= 0 && b > a) { try { return JSON.parse(c.slice(a, b + 1)); } catch {} }
+  }
   throw Error('AI provider returned invalid JSON.');
 }
 
@@ -434,7 +494,7 @@ async function structuredVision(req, env, body, mode) {
     });
   }
   const j = await provider(env, [{ role: 'user', content }], 0);
-  return parseModelJson(j?.choices?.[0]?.message?.content || '');
+  return parseModelJson(extractMessageContent(j));
 }
 
 async function analyze(req, env) { try { return json(await structuredVision(req, env, await req.json(), 'analyze'), 200, req); } catch (e) { return json({ error: e?.name === 'AbortError' ? 'AI provider timed out.' : e?.message || String(e) }, 500, req); } }
@@ -444,19 +504,23 @@ export default {
   async fetch(req, env) {
     const u = new URL(req.url);
     if (req.method === 'OPTIONS') return new Response('', { headers: cors(req) });
-    if (u.pathname === '/health' && req.method === 'GET') return json({
-      ok: true,
-      worker: 'carmen',
-      version: '37',
-      build: 'phase2-retrieve',
-      schemaVersion: 2,
-      provider: getApiKey(env) ? 'configured' : 'not-configured',
-      model: env.MODEL || 'gpt-4.1-mini',
-      routes: ['/health', '/search', '/retrieve', '/source', '/chat', '/analyze', '/synthesize'],
-      searchProviders: PROVIDERS,
-      assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-      features: ['discovery', 'retrieve', 'provenance', 'instructions', 'timeline', 'evidence', 'leads'],
-    }, 200, req);
+    if (u.pathname === '/health' && req.method === 'GET') {
+      const ai = getAiConfig(env);
+      return json({
+        ok: true,
+        worker: 'carmen',
+        version: '37',
+        build: 'phase2-retrieve',
+        schemaVersion: 2,
+        provider: ai.provider,
+        model: ai.model,
+        configured: ai.configured,
+        routes: ['/health', '/search', '/retrieve', '/source', '/chat', '/analyze', '/synthesize'],
+        searchProviders: PROVIDERS,
+        assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
+        features: ['discovery', 'retrieve', 'provenance', 'instructions', 'timeline', 'evidence', 'leads'],
+      }, 200, req);
+    }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
     if (u.pathname === '/chat' && req.method === 'POST') return chat(req, env);
     if (u.pathname === '/analyze' && req.method === 'POST') return analyze(req, env);
@@ -535,6 +599,7 @@ async function retrieveSource(targetUrl) {
       title: meta.title,
       description: meta.description,
       text,
+      textExcerpt: text,
       images: images.slice(0, MAX_IMAGES),
       fingerprint: simpleFingerprint(text),
       retrievedAt: new Date().toISOString(),

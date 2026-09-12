@@ -18,7 +18,9 @@ console.log('--- /health ---');
   assert(status === 200, 'health 200');
   assert(body.version === '37', 'version 37');
   assert(body.routes.includes('/retrieve'), 'routes include /retrieve');
-  assert(body.provider === 'not-configured', 'provider not-configured without key'); }
+  assert(body.provider === 'openrouter', 'provider openrouter');
+  assert(body.model === 'openrouter/free', 'model openrouter/free');
+  assert(body.configured === false, 'configured false without key'); }
 console.log('--- /retrieve success ---');
 { const { status, body } = await call('/retrieve?url=' + encodeURIComponent('https://example.com'));
   assert(status === 200, 'retrieve 200');

@@ -768,8 +768,9 @@ function wire() {
     try {
       const r = await fetch(u + '/health'); const j = await r.json();
       if (!r.ok || !j.ok) throw Error(j.error || `HTTP ${r.status}`);
-      $('status').textContent = `Connected · ${j.model || 'model'} · ${j.provider === 'configured' ? 'AI configured' : 'AI not configured'} · ${j.searchProviders?.length || 0} search providers`;
-      toast(j.provider === 'configured' ? 'Carmen backend connected (AI ready).' : 'Backend connected, but AI is not configured.');
+      const aiReady = j.configured === true || j.provider === 'configured';
+      $('status').textContent = `Connected · ${j.model || 'model'} · ${aiReady ? 'AI configured' : 'AI not configured'} · ${j.searchProviders?.length || 0} search providers`;
+      toast(aiReady ? 'Carmen backend connected (AI ready).' : 'Backend connected, but AI is not configured.');
     } catch (e) { $('status').textContent = 'Connection failed'; toast('Could not reach Worker: ' + e.message); }
   };
 
