@@ -7,19 +7,26 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '38';
+const VERSION = '39';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
+const SESSION_KEY = 'carmen_session_v39';
 const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).length) ? window.CARMEN_BACKEND : location.origin;
 
 let db = null, stream = null, current = null, historyStack = [], historyIndex = -1, currentProjectId = null;
-let currentSubject = 'person';
+let currentSubject = '';
 let lastResults = [];
 let selectedCandidate = null;
 let lastClassification = null;
 let lastDiscoveryMeta = null;
+let lastPaths = [];
+let pendingSaveItem = null;
+let invFilter = 'all';
+let openCollectionId = null;
+let lastDivePayload = null;
+let sessionBoundProject = false;
 
 $('backend').value = localStorage.getItem(BACKEND_KEY) || SAME_ORIGIN;
 
@@ -59,6 +66,8 @@ function openDB() {
       if (!d.objectStoreNames.contains('queue')) d.createObjectStore('queue', { keyPath: 'id' });
       if (!d.objectStoreNames.contains('sessions')) d.createObjectStore('sessions', { keyPath: 'id' });
       if (!d.objectStoreNames.contains('discoveries')) d.createObjectStore('discoveries', { keyPath: 'id' });
+      if (!d.objectStoreNames.contains('collections')) d.createObjectStore('collections', { keyPath: 'id' });
+      if (!d.objectStoreNames.contains('collectionItems')) d.createObjectStore('collectionItems', { keyPath: 'id' });
     };
     r.onsuccess = () => { db = r.result; res(db); };
     r.onerror = () => rej(r.error);
@@ -129,21 +138,20 @@ async function backfillFingerprints() {
 /* ---------- projects ---------- */
 async function ensureProject() {
   let ps = await all('projects');
-  if (!ps.length) {
-    const p = { id: 'project_' + crypto.randomUUID(), name: 'My first investigation', question: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    await put('projects', p);
-    ps = [p];
-  }
-  currentProjectId = (currentProjectId && ps.some(p => p.id === currentProjectId)) ? currentProjectId : ps[0].id;
+  const last = localStorage.getItem('carmen_current_project_v39');
+  if (last && ps.some(p => p.id === last)) currentProjectId = last;
+  else currentProjectId = (currentProjectId && ps.some(p => p.id === currentProjectId)) ? currentProjectId : (ps[0]?.id || null);
   renderProjects(ps);
   const cur = ps.find(p => p.id === currentProjectId);
-  $('projectQuestion').value = cur?.question || '';
+  if ($('projectQuestion')) $('projectQuestion').value = cur?.question || '';
   if ($('projectInstructions')) $('projectInstructions').value = cur?.instructions || '';
   await refresh();
 }
 function renderProjects(ps) {
-  $('projectSelect').innerHTML = ps.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
-  $('projectSelect').value = currentProjectId;
+  if (!$('projectSelect')) return;
+  const real = (ps || []).filter(p => p.status !== 'scratch');
+  $('projectSelect').innerHTML = real.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('') || '<option value="">None</option>';
+  if (currentProjectId) $('projectSelect').value = currentProjectId;
 }
 
 /* ---------- refresh / dashboard ---------- */
@@ -152,25 +160,28 @@ async function refresh() {
   const projectRefs = refs.filter(r => r.projectId === currentProjectId);
   const projectLeads = allLeads.filter(x => x.projectId === currentProjectId);
   const projectEvents = events.filter(e => e.projectId === currentProjectId);
-  $('refs').textContent = projectRefs.length;
-  $('events').textContent = projectEvents.length;
+  if ($('refs')) $('refs').textContent = projectRefs.length;
+  if ($('events')) $('events').textContent = projectEvents.length;
   const p = buildPatterns(projectRefs);
-  $('patterns').textContent = p.length;
-  renderPatternBoard(projectRefs);
-  renderArchive(projectRefs);
-  renderSourceStats(projectRefs);
-  renderDashboard(projectRefs);
+  if ($('patterns')) $('patterns').textContent = p.length;
+  if ($('patternBoard')) renderPatternBoard(projectRefs);
+  if ($('archive')) renderArchive(projectRefs);
+  if ($('sourceStats')) renderSourceStats(projectRefs);
+  if ($('evidenceHealth')) renderDashboard(projectRefs);
   const q = queue.filter(x => x.projectId === currentProjectId);
-  $('queueCount').textContent = q.filter(x => x.status === 'queued').length;
-  renderQueue(q);
-  $('projectCount').textContent = `${projectRefs.length} evidence item${projectRefs.length === 1 ? '' : 's'}`;
-  renderLeads(projectLeads);
+  if ($('queueCount')) $('queueCount').textContent = q.filter(x => x.status === 'queued').length;
+  if ($('queueList')) renderQueue(q);
+  if ($('projectCount')) $('projectCount').textContent = `${projectRefs.length} evidence item${projectRefs.length === 1 ? '' : 's'}`;
+  if ($('leadList')) renderLeads(projectLeads);
   const next = projectLeads.find(l => l.status === 'new');
-  $('nextMove').textContent = next
+  if ($('nextMove')) $('nextMove').textContent = next
     ? `Review this lead: ${next.text}`
     : q.some(x => x.status === 'queued') ? `Open the next queued source: ${q.find(x => x.status === 'queued')?.label || 'research item'}.`
     : projectRefs.length < 2 ? 'Run a discovery search or capture evidence so Carmen can compare it.'
     : p.length ? 'Compare evidence around one of the recurring patterns.' : 'Analyze more evidence to build recurring patterns.';
+  renderHome();
+  renderInvestigations();
+  renderCollections();
 }
 
 /* ---------- patterns ---------- */
@@ -273,20 +284,50 @@ async function queueFromResult(r) {
 }
 
 /* ---------- tabs ---------- */
-const TABS = [['navInvestigate', 'investigateView'], ['navCapture', 'captureView'], ['navEvidence', 'evidenceView'], ['navLeads', 'leadsView']];
+const TABS = [
+  ['navHome', 'homeView'],
+  ['navSearch', 'searchView'],
+  ['navCollections', 'collectionsView'],
+  ['navInvestigations', 'investigationsView'],
+  ['navLearn', 'learnView'],
+];
 function setTab(name) {
-  const map = { investigate: 'investigateView', capture: 'captureView', evidence: 'evidenceView', leads: 'leadsView' };
-  const view = map[name];
+  const map = {
+    home: 'homeView', search: 'searchView', collections: 'collectionsView',
+    investigations: 'investigationsView', learn: 'learnView',
+    investigate: 'searchView', capture: 'investigationsView', evidence: 'investigationsView', leads: 'investigationsView',
+  };
+  const view = map[name] || 'homeView';
   for (const [nav, v] of TABS) {
-    $(nav).classList.toggle('active', v === view);
-    $(v).classList.toggle('hidden', v !== view);
+    $(nav)?.classList.toggle('active', v === view);
+    $(v)?.classList.toggle('hidden', v !== view);
   }
+  if (view === 'investigationsView') mountTools();
+  if (view === 'homeView') renderHome();
+  if (view === 'collectionsView') renderCollections();
+  if (view === 'investigationsView') renderInvestigations();
 }
 
 /* ---------- discovery / search ---------- */
-function subjectLabel(s) { return ({ person: 'Person', topic: 'Topic', website: 'Website', claim: 'Claim', product: 'Product / Entity', position: 'Position / Instruction', other: 'Other' }[s] || 'Subject'); }
+function subjectLabel(s) {
+  return ({
+    person: 'Person', topic: 'Topic', website: 'Website', product: 'Product',
+    technique: 'Technique', skill: 'Skill / project', organization: 'Organization',
+    vehicle: 'Vehicle', reddit: 'Reddit', social: 'Social', ambiguous: 'Ambiguous',
+    position: 'Technique', project: 'Skill / project',
+  }[s] || (s ? String(s) : 'Auto'));
+}
 function subjectQueryHint(s) {
-  return ({ person: 'Full name and any known context work best.', website: 'Paste a domain or URL.', claim: 'State the claim to verify.', product: 'Product, brand, or entity name.', position: 'Paste the instruction or position to examine.', topic: 'Describe the topic or question.', other: 'Describe what to investigate.' }[s] || '');
+  return ({
+    person: 'Full name and any known context work best.',
+    website: 'Paste a domain or URL.',
+    product: 'Product, brand, or object.',
+    technique: 'A technique, position, or form.',
+    skill: 'A skill, craft, or project to learn.',
+    organization: 'Organization or institution name.',
+    vehicle: 'Vehicle or object.',
+    topic: 'Describe the topic or question.',
+  }[s] || 'A name, URL, product, technique, or skill.');
 }
 function backendUrl() { return $('backend').value.trim().replace(/\/$/, ''); }
 function imgSrc(u) {
@@ -333,6 +374,111 @@ function provenanceBadge(p) {
   const cls = v === 'RETRIEVED' || v === 'OBSERVED' ? 'observed' : v === 'INFERRED' ? 'inferred' : v === 'UNKNOWN' || v === 'RETRIEVAL_FAILED' ? 'unknown' : '';
   return `<span class="badge ${cls}">${esc(v)}</span>`;
 }
+function persistSession() {
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+      query: $('searchQuery')?.value || '',
+      subject: currentSubject,
+      results: lastResults,
+      selectedUrl: selectedCandidate?.url || '',
+      classification: lastClassification,
+      paths: lastPaths,
+      meta: lastDiscoveryMeta,
+      dive: lastDivePayload,
+    }));
+  } catch {}
+}
+async function persistDiscoveryIfKept() {
+  if (!currentProjectId || !sessionBoundProject) return;
+  const p = (await all('projects')).find(x => x.id === currentProjectId);
+  if (!p || p.status === 'scratch') return;
+  const disc = (await all('discoveries')).find(d => d.id === currentProjectId) || { id: currentProjectId, projectId: currentProjectId };
+  disc.query = $('searchQuery')?.value.trim() || disc.query;
+  disc.subject = currentSubject;
+  disc.results = lastResults;
+  disc.classification = lastClassification;
+  disc.paths = lastPaths;
+  disc.providers = lastDiscoveryMeta?.providers;
+  disc.variants = lastDiscoveryMeta?.variants;
+  disc.at = new Date().toISOString();
+  disc.status = 'DISCOVERED';
+  await put('discoveries', disc);
+  p.lastActivityAt = disc.at;
+  p.entityType = lastClassification?.type || p.entityType;
+  p.query = disc.query;
+  p.thumbnail = selectedCandidate?.image || lastResults[0]?.image || p.thumbnail;
+  p.updatedAt = disc.at;
+  await put('projects', p);
+}
+async function keepInvestigation(nameHint) {
+  const now = new Date().toISOString();
+  const q = $('searchQuery')?.value.trim() || nameHint || 'Investigation';
+  let p = (sessionBoundProject && currentProjectId) ? (await all('projects')).find(x => x.id === currentProjectId) : null;
+  const prev = String(p?.query || p?.question || '').trim().toLowerCase();
+  const next = q.trim().toLowerCase();
+  const sameSubject = !prev || !next || prev === next || prev.includes(next) || next.includes(prev);
+  if (!p || p.status === 'scratch' || !sameSubject) {
+    p = {
+      id: 'project_' + crypto.randomUUID(),
+      name: (nameHint || q).slice(0, 80),
+      question: q,
+      instructions: $('projectInstructions')?.value.trim() || '',
+      status: 'active',
+      entityType: lastClassification?.type || currentSubject || '',
+      thumbnail: selectedCandidate?.image || lastResults[0]?.image || '',
+      query: q,
+      createdAt: now,
+      updatedAt: now,
+      lastActivityAt: now,
+    };
+    await put('projects', p);
+    currentProjectId = p.id;
+    sessionBoundProject = true;
+    localStorage.setItem('carmen_current_project_v39', p.id);
+  } else {
+    p.status = p.status === 'completed' ? 'active' : (p.status || 'active');
+    p.lastActivityAt = now;
+    p.updatedAt = now;
+    p.query = q;
+    p.entityType = lastClassification?.type || p.entityType;
+    p.thumbnail = selectedCandidate?.image || p.thumbnail;
+    await put('projects', p);
+  }
+  renderProjects(await all('projects'));
+  await persistDiscoveryIfKept();
+  return p;
+}
+function renderPathChips(paths, elId) {
+  const el = $(elId);
+  if (!el) return;
+  const list = paths || lastPaths || [];
+  el.innerHTML = list.map(p => `<button class="chip" data-path="${esc(p.id)}">${esc(p.label)}</button>`).join('');
+}
+function restoreSession() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (s.query && $('searchQuery')) $('searchQuery').value = s.query;
+    currentSubject = s.subject || '';
+    lastResults = s.results || [];
+    lastClassification = s.classification || null;
+    lastPaths = s.paths || [];
+    lastDiscoveryMeta = s.meta || null;
+    lastDivePayload = s.dive || null;
+    if (s.selectedUrl) selectedCandidate = lastResults.find(r => r.url === s.selectedUrl) || null;
+    if (lastResults.length) {
+      renderClassification(lastDiscoveryMeta || { classification: lastClassification, variants: [] });
+      renderPathChips(lastPaths, 'divePaths');
+      renderResults(lastResults, lastDiscoveryMeta?.providers || {});
+      if (selectedCandidate) {
+        const i = lastResults.findIndex(r => r.url === selectedCandidate.url);
+        if (i >= 0) selectCandidate(selectedCandidate, i);
+      }
+      if (lastDivePayload) renderDeepDivePayload(lastDivePayload, s.query || '');
+    }
+  } catch {}
+}
 
 async function discover() {
   const q = $('searchQuery').value.trim();
@@ -357,14 +503,11 @@ async function discover() {
     lastResults = Array.isArray(data.results) ? data.results : [];
     lastClassification = data.classification || null;
     lastDiscoveryMeta = data;
+    lastPaths = Array.isArray(data.paths) ? data.paths : lastPaths;
     renderClassification(data);
+    renderPathChips(lastPaths, 'divePaths');
     renderResults(lastResults, data.providers || {});
-    await put('discoveries', {
-      id: currentProjectId, projectId: currentProjectId, query: q, subject: currentSubject,
-      results: lastResults, providers: data.providers || {}, classification: data.classification,
-      variants: data.variants, at: new Date().toISOString(), status: 'DISCOVERED',
-    });
-    await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'discovery_saved', at: new Date().toISOString(), query: q, resultCount: lastResults.length });
+    persistSession();
     updateDeepDiveState();
     toast(lastResults.length ? `Ranked ${lastResults.length} public candidate${lastResults.length === 1 ? '' : 's'}.` : 'No public results. See diagnostics.');
   } catch (e) {
@@ -393,7 +536,7 @@ function selectCandidate(r, i) {
   persistSelection(r);
 }
 async function persistSelection(r) {
-  if (!currentProjectId || !r) return;
+  if (!currentProjectId || !sessionBoundProject || !r) return;
   try {
     const disc = (await all('discoveries')).find(d => d.id === currentProjectId) || { id: currentProjectId, projectId: currentProjectId };
     disc.selectedUrl = r.url;
@@ -438,7 +581,7 @@ function renderResults(results, providers) {
           ${!hero && r.image ? `<img class="rthumb" data-full="${esc(imgSrc(r.image))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(r.image))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
           <div class="rmeta">
             <div class="rtitle">${esc(r.title)}</div>
-            <div class="rsrc"><span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
+            <div class="rmeta"><span class="badge">${esc(subjectLabel(r.entityType || lastClassification?.type || currentSubject || 'web'))}</span> <span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
           </div>
         </div>
         ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
@@ -447,9 +590,9 @@ function renderResults(results, providers) {
         ${rest.length ? `<div class="thumbs">${rest.map(u => `<img data-full="${esc(imgSrc(u))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(u))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>` : ''}
         <div class="racts">
           <button data-ract="select" data-i="${i}">${selected ? 'Selected' : 'Select'}</button>
-          <button data-ract="open" data-i="${i}">Open</button>
-          <button data-ract="evidence" data-i="${i}">Save evidence</button>
           <button data-ract="dive" data-i="${i}">Deep dive</button>
+          <button data-ract="save" data-i="${i}">Save</button>
+          <button data-ract="open" data-i="${i}">Open</button>
         </div>
       </div>
     </div>`;
@@ -511,6 +654,7 @@ async function deepDive(focusResult) {
   const subject = $('searchQuery').value.trim() || $('projectQuestion').value.trim();
   const candidate = focusResult || selectedCandidate || lastResults[0] || null;
   if (!subject && !candidate) return toast('Search and select a candidate first.');
+  await keepInvestigation(subject || candidate?.title);
   localStorage.setItem(BACKEND_KEY, base);
   const btn = $('deepDiveBtn');
   btn.disabled = true;
@@ -540,6 +684,7 @@ async function deepDive(focusResult) {
       renderResults(lastResults, data.providers || {});
     }
     renderDeepDivePayload(data, subject);
+    await persistDiscoveryIfKept();
     const disc = (await all('discoveries')).find(d => d.id === currentProjectId) || { id: currentProjectId, projectId: currentProjectId };
     disc.deepDiveText = data.analysis || '';
     disc.deepDiveAt = new Date().toISOString();
@@ -547,7 +692,10 @@ async function deepDive(focusResult) {
     disc.deepDiveFocusUrl = candidate?.url || '';
     disc.deepDivePlan = data.plan;
     disc.deepDiveImages = data.images;
+    disc.deepDiveRetrieved = data.retrieved;
+    disc.paths = data.paths || lastPaths;
     disc.results = lastResults;
+    disc.classification = data.classification || lastClassification;
     await put('discoveries', disc);
     await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'deep_dive', at: new Date().toISOString(), subject, focusUrl: candidate?.url || '' });
     for (const raw of (data.leads || []).slice(0, 8)) {
@@ -565,20 +713,59 @@ async function deepDive(focusResult) {
 }
 function renderDeepDivePayload(data, subject) {
   const plan = data.plan || {};
+  lastDivePayload = data;
+  lastPaths = data.paths || lastPaths;
+  renderPathChips(lastPaths, 'divePaths');
+  persistSession();
   const steps = (plan.investigating || []).map(s => `<p class="dive-step on">${esc(s)}</p>`).join('');
   $('deepDiveProgress').innerHTML = steps || '<p class="dive-step on">Deep dive finished.</p>';
-  const imgs = (data.images || []).slice(0, 12);
-  const imgHtml = imgs.length ? `<div class="thumbs">${imgs.map(im => `<img src="${esc(imgSrc(im.url || im))}" alt="" title="${esc((im.domain || '') + ' · ' + (im.pageUrl || ''))}" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>
-    <p class="hint">Images keep page provenance. Visual consistency across sources is not identity proof.</p>` : '<p class="hint">No reliable images were retrieved for this candidate.</p>';
+  const imgs = (data.images || []).slice(0, 24);
+  const imgHtml = imgs.length ? `<div class="gallery">${imgs.map(im => `<img src="${esc(imgSrc(im.url || im))}" data-full="${esc(imgSrc(im.url || im))}" data-cap="${esc((im.domain || '') + ' · ' + (im.pageUrl || im.url || ''))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>
+    <p class="hint">Images keep page provenance. Visual consistency across sources is not identity proof.</p>
+    <button class="btn" data-save-images="1">Save images to a collection</button>` : '<p class="hint">No reliable images were retrieved for this candidate.</p>';
   const retrieved = (data.retrieved || []).map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> ${provenanceBadge(x.status)}<br><small>${esc(x.finalUrl || x.url || '')}${x.error ? ' · ' + esc(x.error) : ''}</small></div>`).join('');
   let analysisHtml = '';
-  if (data.analysis) analysisHtml = renderDeepDive(data.analysis, subject, true);
+  const writeup = data.analysis || data.lesson || '';
+  if (writeup) analysisHtml = renderAdaptiveWriteup(writeup, lastPaths, subject);
   else if (data.analysisError) analysisHtml = `<div class="claim unknown"><b>Analysis unavailable</b><br>${esc(data.analysisError)}</div>`;
   $('deepDiveResult').innerHTML = `
-    <div class="claim"><b>Investigating</b><br>${esc(plan.subject || subject)} <span class="badge">${esc(plan.type || currentSubject)}</span><br><small>${esc(plan.why || '')}</small><br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
+    <div class="selbar"><b>${esc(plan.subject || subject)}</b> <span class="badge">${esc(subjectLabel(plan.type || currentSubject))}</span><br><small>${esc(plan.why || '')}</small><br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
     ${retrieved ? `<h4>Retrieved sources</h4>${retrieved}` : ''}
     <h4>Visual evidence</h4>${imgHtml}
     ${analysisHtml}`;
+}
+function renderAdaptiveWriteup(text, paths, subject) {
+  const labels = (paths || []).map(p => p.label).filter(Boolean);
+  const pathRe = labels.length
+    ? new RegExp('(?:^|\\n)\\s*(?:#+\\s*)?(' + labels.map(l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\s*[:\\-]?\\s*(?=\\n|$)', 'i')
+    : null;
+  const chunks = [];
+  if (pathRe) {
+    const parts = String(text || '').split(pathRe);
+    if (parts.length >= 3) {
+      if (parts[0].trim()) chunks.push({ title: subject || 'Brief', body: parts[0], id: 'path-overview' });
+      for (let i = 1; i < parts.length; i += 2) {
+        const title = parts[i];
+        const body = parts[i + 1] || '';
+        const match = (paths || []).find(p => p.label.toLowerCase() === String(title).toLowerCase());
+        chunks.push({ title, body, id: 'path-' + (match?.id || title.toLowerCase().replace(/[^a-z0-9]+/g, '-')) });
+      }
+    }
+  }
+  if (!chunks.length) return renderDeepDive(text, subject, true);
+  const html = chunks.map(c => {
+    const inner = String(c.body || '').split(/\n(?=#+\s*(?:OBSERVED|INFERRED|UNKNOWN)|\b(OBSERVED|INFERRED|UNKNOWN)\b\s*[:\-])/i).filter(Boolean).map(s => {
+      const m = s.match(/^(?:#+\s*)?(OBSERVED|INFERRED|UNKNOWN)\b\s*[:\-]?\s*([\s\S]*)/i);
+      if (m) {
+        const kind = m[1].toLowerCase();
+        const cls = kind === 'observed' ? '' : kind === 'unknown' ? 'unknown' : 'inferred';
+        return `<div class="claim ${cls}"><b>${esc(m[1])}</b><br>${esc(m[2]).replace(/\n/g, '<br>')}</div>`;
+      }
+      return `<p>${esc(s).replace(/\n/g, '<br>')}</p>`;
+    }).join('');
+    return `<div class="card" id="${esc(c.id)}"><h3>${esc(c.title)}</h3>${inner}</div>`;
+  }).join('');
+  return html + '<p class="hint">Distinguish OBSERVED (in sources), INFERRED (Carmen\'s interpretation), and UNKNOWN (gaps). Visual consistency is not identity proof.</p>';
 }
 function renderDeepDive(text, subject, asFragment) {
   // Lightly structure the model's OBSERVED / INFERRED / UNKNOWN sections if present.
@@ -639,6 +826,10 @@ function showCurrent() {
 function currentUrl() { return normalizeUrl($('url').value); }
 async function saveReference(source = 'iphone-screenshot', data = {}) {
   if (!current) return null;
+  if (!currentProjectId || !sessionBoundProject) {
+    toast('Keep or resume an investigation first. Capture is never auto-saved into a collection.');
+    return null;
+  }
   const fingerprint = await sha(current);
   const existing = (await all('refs')).find(r => r.projectId === currentProjectId && r.fingerprint === fingerprint);
   if (existing) { toast('This capture is already saved in this investigation.'); return existing; }
@@ -660,21 +851,202 @@ function renderAnalysis(d) {
     <div class="claim"><b>Signature</b><br>${esc(d.signature || 'Not supplied.')}</div>`;
 }
 
+function mountTools() {
+  const mount = $('toolsMount');
+  const src = $('legacyTools');
+  if (mount && src && src.parentElement !== mount) {
+    src.classList.remove('hidden');
+    mount.appendChild(src);
+  }
+}
+
+async function renderHome() {
+  if (!$('homeRecent')) return;
+  const ps = (await all('projects')).filter(p => p.status !== 'scratch');
+  ps.sort((a, b) => String(b.lastActivityAt || b.updatedAt || '').localeCompare(String(a.lastActivityAt || a.updatedAt || '')));
+  const resume = ps.find(p => p.status === 'active') || ps[0];
+  if ($('homeResume')) {
+    $('homeResume').innerHTML = resume ? `<div class="card"><h3>Resume</h3><div class="inv-card" data-resume="${esc(resume.id)}">${resume.thumbnail ? `<img src="${esc(imgSrc(resume.thumbnail))}" alt="">` : ''}<div class="body"><b>${esc(resume.name)}</b><div class="subtle">${esc(subjectLabel(resume.entityType))} · ${esc(resume.status || 'active')} · ${esc(resume.lastActivityAt ? new Date(resume.lastActivityAt).toLocaleString() : '')}</div><button class="btn primary" data-resume="${esc(resume.id)}" style="margin-top:8px">Resume investigation</button></div></div></div>` : '';
+  }
+  $('homeRecent').innerHTML = ps.slice(0, 4).map(p => `<div class="inv-card" data-resume="${esc(p.id)}">${p.thumbnail ? `<img src="${esc(imgSrc(p.thumbnail))}" alt="">` : ''}<div class="body"><b>${esc(p.name)}</b><div class="subtle">${esc(subjectLabel(p.entityType))} · ${esc(p.status || 'active')}</div></div></div>`).join('') || '<p class="empty">No saved investigations yet. Search, then Deep Dive or Keep to persist one.</p>';
+}
+
+async function renderInvestigations() {
+  if (!$('investigationList')) return;
+  const ps = (await all('projects')).filter(p => p.status !== 'scratch');
+  const f = invFilter;
+  const list = ps.filter(p => f === 'all' || (p.status || 'active') === f).sort((a, b) => String(b.lastActivityAt || b.updatedAt || '').localeCompare(String(a.lastActivityAt || a.updatedAt || '')));
+  $('investigationList').innerHTML = list.map(p => `<div class="inv-card">
+    ${p.thumbnail ? `<img src="${esc(imgSrc(p.thumbnail))}" alt="">` : ''}
+    <div class="body">
+      <b>${esc(p.name)}</b>
+      <div class="subtle">${esc(subjectLabel(p.entityType))} · ${esc(p.status || 'active')} · ${esc(p.lastActivityAt ? new Date(p.lastActivityAt).toLocaleString() : '')}</div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn primary" data-resume="${esc(p.id)}">Resume</button>
+        <button class="btn" data-invstat="paused" data-id="${esc(p.id)}">Pause</button>
+        <button class="btn" data-invstat="completed" data-id="${esc(p.id)}">Complete</button>
+      </div>
+    </div>
+  </div>`).join('') || '<p class="empty">Investigations appear here after you Keep a search or run Deep Dive.</p>';
+  const cur = ps.find(p => p.id === currentProjectId);
+  if ($('projectMeta')) $('projectMeta').textContent = cur ? `${cur.name} · ${cur.status} · notes stay on this phone.` : 'No investigation selected.';
+  if ($('appSub') && cur) $('appSub').textContent = cur.name;
+}
+
+async function resumeInvestigation(id) {
+  currentProjectId = id;
+  sessionBoundProject = true;
+  localStorage.setItem('carmen_current_project_v39', id);
+  const p = (await all('projects')).find(x => x.id === id);
+  if (p && $('projectInstructions')) $('projectInstructions').value = p.instructions || '';
+  if (p && $('projectQuestion')) $('projectQuestion').value = p.question || p.query || '';
+  await loadDiscovery();
+  setTab('search');
+  toast('Resumed ' + (p?.name || 'investigation'));
+}
+
+async function renderCollections() {
+  if (!$('collectionList')) return;
+  const cols = await all('collections');
+  const items = await all('collectionItems');
+  cols.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  $('collectionList').innerHTML = cols.map(c => {
+    const n = items.filter(i => (i.collectionIds || []).includes(c.id)).length;
+    const thumb = items.find(i => (i.collectionIds || []).includes(c.id) && i.image);
+    return `<div class="col-card" data-open-col="${esc(c.id)}">${thumb ? `<img src="${esc(imgSrc(thumb.image))}" alt="">` : ''}<div class="body"><b>${esc(c.name)}</b><div class="subtle">${n} item${n === 1 ? '' : 's'}</div></div></div>`;
+  }).join('') || '<p class="empty">No collections yet. Save a result or image explicitly.</p>';
+  if (openCollectionId) await renderCollectionDetail(openCollectionId);
+  else if ($('collectionDetail')) $('collectionDetail').innerHTML = '';
+}
+
+async function renderCollectionDetail(id) {
+  openCollectionId = id;
+  const cols = await all('collections');
+  const c = cols.find(x => x.id === id);
+  if (!c) { $('collectionDetail').innerHTML = ''; return; }
+  const items = (await all('collectionItems')).filter(i => (i.collectionIds || []).includes(id));
+  $('collectionDetail').innerHTML = `<div class="card"><h3>${esc(c.name)}</h3>
+    <div class="row"><button class="btn" data-rename-col="${esc(id)}">Rename</button><button class="btn danger" data-del-col="${esc(id)}">Delete collection</button></div>
+    ${items.map(it => `<div class="inv-card">${it.image ? `<img src="${esc(imgSrc(it.image))}" data-full="${esc(imgSrc(it.image))}" data-cap="${esc((it.domain || '') + ' · ' + (it.sourceUrl || it.url || ''))}" alt="">` : ''}<div class="body"><b>${esc(it.title || it.url)}</b><div class="subtle">${esc(it.kind)} · ${esc(it.domain || '')} · ${esc(it.createdAt ? new Date(it.createdAt).toLocaleString() : '')}</div><div class="row" style="margin-top:8px"><button class="btn" data-open-item="${esc(it.url || '')}">Open</button><button class="btn" data-move-item="${esc(it.id)}">Move</button><button class="btn" data-remove-item="${esc(it.id)}">Remove</button></div></div></div>`).join('') || '<p class="muted">Empty collection.</p>'}
+  </div>`;
+}
+
+async function openSaveSheet(item) {
+  pendingSaveItem = item;
+  const cols = await all('collections');
+  $('saveSheetList').innerHTML = cols.map(c => `<label class="refitem"><input type="checkbox" data-col="${esc(c.id)}"><span>${esc(c.name)}</span></label>`).join('') || '<p class="muted">Create a collection below.</p>';
+  $('saveSheet').classList.remove('hidden');
+}
+
+async function confirmSaveSheet() {
+  if (!pendingSaveItem) return;
+  let ids = [...document.querySelectorAll('#saveSheetList input:checked')].map(x => x.dataset.col);
+  const newName = $('saveSheetNew').value.trim();
+  if (newName) {
+    const c = { id: 'col_' + crypto.randomUUID(), name: newName, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    await put('collections', c);
+    ids.push(c.id);
+  }
+  if (!ids.length) return toast('Choose or create a collection.');
+  if (pendingSaveItem._moveId) {
+    const existing = (await all('collectionItems')).find(x => x.id === pendingSaveItem._moveId);
+    if (existing) {
+      existing.collectionIds = [...new Set(ids)];
+      await put('collectionItems', existing);
+    }
+    $('saveSheet').classList.add('hidden');
+    $('saveSheetNew').value = '';
+    pendingSaveItem = null;
+    toast('Moved. The item can belong to more than one collection.');
+    await renderCollections();
+    if (openCollectionId) await renderCollectionDetail(openCollectionId);
+    return;
+  }
+  const item = {
+    id: 'ci_' + crypto.randomUUID(),
+    collectionIds: ids,
+    kind: pendingSaveItem.kind || 'page',
+    url: pendingSaveItem.url || '',
+    title: pendingSaveItem.title || pendingSaveItem.url || 'Saved item',
+    image: pendingSaveItem.image || '',
+    sourceUrl: pendingSaveItem.sourceUrl || pendingSaveItem.url || '',
+    domain: pendingSaveItem.domain || hostOf(pendingSaveItem.url || pendingSaveItem.sourceUrl || ''),
+    note: pendingSaveItem.note || '',
+    provenance: pendingSaveItem.provenance || 'DISCOVERED',
+    createdAt: new Date().toISOString(),
+  };
+  await put('collectionItems', item);
+  $('saveSheet').classList.add('hidden');
+  $('saveSheetNew').value = '';
+  pendingSaveItem = null;
+  toast('Saved to collection. Carmen did not save anything automatically.');
+  await renderCollections();
+}
+
+async function runLearn() {
+  const q = $('learnQuery').value.trim();
+  if (!q) return toast('Enter something to learn.');
+  const base = backendUrl();
+  if (!base) return toast('Backend is not set.');
+  $('learnBtn').disabled = true;
+  $('learnResult').innerHTML = '<div class="skeleton"></div><p class="muted">Researching public sources, then writing a conservative brief…</p>';
+  try {
+    const r = await fetch(base + '/learn', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: q, type: currentLearnType }),
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
+    if (!r.ok || data.error) throw Error(data.error || `HTTP ${r.status}`);
+    lastPaths = data.paths || [];
+    renderPathChips(lastPaths, 'learnPaths');
+    const imgs = (data.images || []).slice(0, 12);
+    const imgHtml = imgs.length ? `<div class="gallery">${imgs.map(im => `<img src="${esc(imgSrc(im.url || im))}" data-full="${esc(imgSrc(im.url || im))}" data-cap="${esc((im.domain || '') + ' · ' + (im.pageUrl || ''))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>` : '';
+    const sources = (data.retrieved || []).map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> ${provenanceBadge(x.status)}<br><small>${esc(x.finalUrl || x.url || '')}${x.error ? ' · ' + esc(x.error) : ''}</small></div>`).join('');
+    const lesson = data.lesson || data.analysis || '';
+    $('learnResult').innerHTML = `<div class="card">
+      <span class="badge">${esc(subjectLabel(data.classification?.type))}</span>
+      <p class="hint">${esc(data.classification?.reason || '')}</p>
+      ${imgHtml}
+      ${lesson ? renderAdaptiveWriteup(lesson, lastPaths, q) : (data.analysisError ? `<div class="claim unknown">${esc(data.analysisError)}</div>` : '')}
+      <h4>Sources</h4>${sources || '<p class="muted">No retrieved pages.</p>'}
+      <p class="hint">${esc(data.safety || '')}</p>
+      <button class="btn" id="learnSave">Save this brief to a collection</button>
+    </div>`;
+    $('learnSave').onclick = () => openSaveSheet({ kind: 'tutorial', title: q, url: '', note: String(lesson).slice(0, 500), image: imgs[0]?.url || '' });
+  } catch (e) {
+    $('learnResult').innerHTML = `<div class="claim unknown"><b>Learn unavailable</b><br>${esc(e.message)}</div>`;
+  } finally { $('learnBtn').disabled = false; }
+}
+
 /* ---------- event wiring ---------- */
 function wire() {
-  // tabs
-  $('navInvestigate').onclick = () => setTab('investigate');
-  $('navCapture').onclick = () => setTab('capture');
-  $('navEvidence').onclick = () => setTab('evidence');
-  $('navLeads').onclick = () => setTab('leads');
-  $('quickDiscover').onclick = () => setTab('investigate');
-  $('quickCapture').onclick = () => { setTab('capture'); $('pick').click(); };
-  $('quickArchive').onclick = () => setTab('evidence');
-  $('quickLeads').onclick = () => setTab('leads');
+  $('navHome').onclick = () => setTab('home');
+  $('navSearch').onclick = () => setTab('search');
+  $('navCollections').onclick = () => setTab('collections');
+  $('navInvestigations').onclick = () => setTab('investigations');
+  $('navLearn').onclick = () => setTab('learn');
+  $('homeSearchBtn').onclick = () => {
+    sessionBoundProject = false;
+    currentProjectId = null;
+    $('searchQuery').value = $('homeQuery').value.trim();
+    setTab('search');
+    if ($('searchQuery').value) discover();
+  };
+  $('homeQuery').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('homeSearchBtn').click(); } });
+  document.body.addEventListener('click', e => {
+    const resume = e.target.closest('[data-resume]');
+    if (resume) { e.preventDefault(); resumeInvestigation(resume.dataset.resume); }
+  });
+  $('quickDiscover').onclick = () => setTab('search');
+  $('quickCapture').onclick = () => { setTab('investigations'); $('pick').click(); };
+  $('quickArchive').onclick = () => setTab('investigations');
+  $('quickLeads').onclick = () => setTab('investigations');
 
   // projects
   $('projectSelect').onchange = async () => {
     currentProjectId = $('projectSelect').value;
+    sessionBoundProject = !!currentProjectId;
     const ps = await all('projects');
     $('projectQuestion').value = ps.find(p => p.id === currentProjectId)?.question || '';
     await loadDiscovery();
@@ -683,9 +1055,10 @@ function wire() {
   $('newProject').onclick = async () => {
     const name = prompt('Name this investigation:', 'New investigation');
     if (!name?.trim()) return;
-    const p = { id: 'project_' + crypto.randomUUID(), name: name.trim(), question: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const p = { id: 'project_' + crypto.randomUUID(), name: name.trim(), question: '', status: 'active', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastActivityAt: new Date().toISOString() };
     await put('projects', p);
     currentProjectId = p.id;
+    sessionBoundProject = true;
     renderProjects(await all('projects'));
     $('projectQuestion').value = '';
     await refresh();
@@ -729,10 +1102,136 @@ function wire() {
   $('searchQuery').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); discover(); } });
   $('discoverBtn').onclick = discover;
   $('deepDiveBtn').onclick = () => deepDive(selectedCandidate);
-  $('addQueueBtn').onclick = () => { setTab('investigate'); $('queueUrl').focus(); };
+  $('keepBtn').onclick = async () => {
+    const p = await keepInvestigation();
+    toast(p ? 'Investigation kept on this phone.' : 'Nothing to keep yet.');
+    await refresh();
+  };
+  $('addQueueBtn').onclick = () => { setTab('investigations'); $('queueUrl').focus(); };
   if ($('lightboxClose')) $('lightboxClose').onclick = closeLightbox;
   if ($('lightbox')) $('lightbox').addEventListener('click', e => { if (e.target.id === 'lightbox') closeLightbox(); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeLightbox(); $('saveSheet')?.classList.add('hidden'); } });
+  $('createCollection').onclick = async () => {
+    const name = $('newCollectionName').value.trim();
+    if (!name) return toast('Name the collection first.');
+    await put('collections', { id: 'col_' + crypto.randomUUID(), name, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    $('newCollectionName').value = '';
+    await renderCollections();
+    toast('Collection created. Nothing else was saved.');
+  };
+  $('saveSheetConfirm').onclick = confirmSaveSheet;
+  $('saveSheetCancel').onclick = () => { $('saveSheet').classList.add('hidden'); pendingSaveItem = null; };
+  $('learnBtn').onclick = runLearn;
+  $('learnChips').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    document.querySelectorAll('#learnChips .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active');
+    currentLearnType = c.dataset.learn || '';
+  };
+  $('invFilter').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    document.querySelectorAll('#invFilter .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active');
+    invFilter = c.dataset.inv || 'all';
+    renderInvestigations();
+  };
+  function wirePathChips(elId) {
+    const el = $(elId);
+    if (!el) return;
+    el.onclick = e => {
+      const c = e.target.closest('[data-path]');
+      if (!c) return;
+      el.querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === c));
+      const target = document.getElementById('path-' + c.dataset.path);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+  }
+  wirePathChips('divePaths');
+  wirePathChips('learnPaths');
+  $('investigationList').addEventListener('click', async e => {
+    const st = e.target.closest('[data-invstat]');
+    if (!st) return;
+    const p = (await all('projects')).find(x => x.id === st.dataset.id);
+    if (!p) return;
+    p.status = st.dataset.invstat;
+    p.updatedAt = new Date().toISOString();
+    await put('projects', p);
+    await renderInvestigations();
+  });
+  $('collectionList').addEventListener('click', e => {
+    const open = e.target.closest('[data-open-col]');
+    if (open) renderCollectionDetail(open.dataset.openCol);
+  });
+  $('collectionDetail').addEventListener('click', async e => {
+    const full = e.target.closest('img[data-full]');
+    if (full) { openLightbox(full.dataset.full, full.dataset.cap || ''); return; }
+    const rn = e.target.closest('[data-rename-col]');
+    if (rn) {
+      const cols = await all('collections');
+      const c = cols.find(x => x.id === rn.dataset.renameCol);
+      const name = prompt('Rename collection:', c?.name || '');
+      if (!name?.trim() || !c) return;
+      c.name = name.trim(); c.updatedAt = new Date().toISOString();
+      await put('collections', c);
+      await renderCollections();
+    }
+    const delc = e.target.closest('[data-del-col]');
+    if (delc && confirm('Delete this collection? Items are removed from it, not from other collections.')) {
+      const items = await all('collectionItems');
+      for (const it of items) {
+        it.collectionIds = (it.collectionIds || []).filter(id => id !== delc.dataset.delCol);
+        if (it.collectionIds.length) await put('collectionItems', it);
+        else await del('collectionItems', it.id);
+      }
+      await del('collections', delc.dataset.delCol);
+      openCollectionId = null;
+      await renderCollections();
+    }
+    const rm = e.target.closest('[data-remove-item]');
+    if (rm) {
+      const items = await all('collectionItems');
+      const it = items.find(x => x.id === rm.dataset.removeItem);
+      if (!it) return;
+      it.collectionIds = (it.collectionIds || []).filter(id => id !== openCollectionId);
+      if (it.collectionIds.length) await put('collectionItems', it);
+      else await del('collectionItems', it.id);
+      await renderCollectionDetail(openCollectionId);
+    }
+    const op = e.target.closest('[data-open-item]');
+    if (op && op.dataset.openItem) window.open(op.dataset.openItem, '_blank', 'noopener,noreferrer');
+    const mv = e.target.closest('[data-move-item]');
+    if (mv) {
+      const items = await all('collectionItems');
+      const it = items.find(x => x.id === mv.dataset.moveItem);
+      if (!it) return;
+      pendingSaveItem = { ...it, _moveId: it.id };
+      const cols = await all('collections');
+      $('saveSheetList').innerHTML = cols.map(c => `<label class="refitem"><input type="checkbox" data-col="${esc(c.id)}"${(it.collectionIds || []).includes(c.id) ? ' checked' : ''}><span>${esc(c.name)}</span></label>`).join('') || '<p class="muted">Create a collection below.</p>';
+      $('saveSheet').classList.remove('hidden');
+    }
+  });
+  $('deepDiveResult').addEventListener('click', e => {
+    const full = e.target.closest('img[data-full]');
+    if (full) { openLightbox(full.dataset.full, full.dataset.cap || ''); return; }
+    if (e.target.closest('[data-save-images]')) {
+      const imgs = (lastDivePayload && lastDivePayload.images) || [];
+      const first = imgs[0] || {};
+      openSaveSheet({
+        kind: 'image',
+        title: (selectedCandidate?.title || lastDivePayload?.plan?.subject || 'Visual sources') + (imgs.length > 1 ? ` (${imgs.length} images)` : ''),
+        url: first.pageUrl || selectedCandidate?.url || '',
+        image: first.url || selectedCandidate?.image || '',
+        sourceUrl: first.pageUrl || selectedCandidate?.url || '',
+        domain: first.domain || selectedCandidate?.domain || '',
+        provenance: 'RETRIEVED',
+        note: imgs.map(im => (im.pageUrl || im.url || '')).filter(Boolean).slice(0, 8).join('\n'),
+      });
+    }
+  });
+  $('learnResult').addEventListener('click', e => {
+    const full = e.target.closest('img[data-full]');
+    if (full) openLightbox(full.dataset.full, full.dataset.cap || '');
+  });
   $('results').onclick = async e => {
     const full = e.target.closest('img[data-full]');
     if (full && full.dataset.full) {
@@ -754,6 +1253,7 @@ function wire() {
     if (act === 'select') { selectCandidate(r, +b.dataset.i); }
     else if (act === 'open') { window.open(r.url, '_blank', 'noopener,noreferrer'); }
     else if (act === 'evidence') { await saveResultAsEvidence(r); }
+    else if (act === 'save') { await openSaveSheet({ kind: 'page', title: r.title, url: r.url, image: r.image, domain: r.domain, provenance: r.provenance, sourceUrl: r.url }); }
     else if (act === 'queue') { await queueFromResult(r); }
     else if (act === 'dive') { selectCandidate(r, +b.dataset.i); await deepDive(r); }
   };
@@ -780,7 +1280,7 @@ function wire() {
     const leads = await all('leads'), l = leads.find(x => x.id === id); if (!l) return;
     if (action === 'review') await updateLead(id, { status: l.status === 'reviewed' ? 'new' : 'reviewed' });
     if (action === 'dismiss') await updateLead(id, { status: 'dismissed' });
-    if (action === 'question') { $('searchQuery').value = l.text; setTab('investigate'); toast('Lead copied into the discovery query.'); }
+    if (action === 'question') { $('searchQuery').value = l.text; setTab('search'); toast('Lead copied into the discovery query.'); }
   };
 
   // browser / capture
@@ -906,6 +1406,8 @@ function wire() {
       for (const q of (data.queue || [])) { if (q.id && !(await all('queue')).some(x => x.id === q.id)) await put('queue', { ...q, projectId: currentProjectId }); }
       for (const e of (data.events || [])) { if (e.id && !(await all('events')).some(x => x.id === e.id)) await put('events', { ...e, projectId: currentProjectId }); }
       for (const d of (data.discoveries || [])) { if (d.id && !(await all('discoveries')).some(x => x.id === d.id)) await put('discoveries', { ...d, projectId: currentProjectId }); }
+      for (const c of (data.collections || [])) { if (c.id && !(await all('collections')).some(x => x.id === c.id)) await put('collections', c); }
+      for (const it of (data.collectionItems || [])) { if (it.id && !(await all('collectionItems')).some(x => x.id === it.id)) await put('collectionItems', it); }
       await refresh();
       toast('Archive imported into this investigation.');
     } catch (e) { toast('Import failed: ' + e.message); }
@@ -920,6 +1422,8 @@ function wire() {
       events: (await all('events')).filter(e => e.projectId === currentProjectId),
       queue: (await all('queue')).filter(q => q.projectId === currentProjectId),
       discoveries: (await all('discoveries')).filter(d => d.projectId === currentProjectId),
+      collections: await all('collections'),
+      collectionItems: await all('collectionItems'),
     };
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(payload)], { type: 'application/json' }));
@@ -981,8 +1485,10 @@ async function loadDiscovery() {
     currentSubject = disc.subject;
     document.querySelectorAll('#subjectChips .chip').forEach(x => x.classList.toggle('active', x.dataset.subject === disc.subject));
   }
+  lastPaths = disc.paths || lastPaths;
   if (disc.query) $('searchQuery').value = disc.query;
   renderClassification(disc);
+  renderPathChips(lastPaths, 'divePaths');
   renderResults(lastResults, disc.providers || {});
   const focusUrl = disc.selectedUrl || disc.deepDiveFocusUrl;
   if (focusUrl) {
@@ -990,7 +1496,7 @@ async function loadDiscovery() {
     if (focus) selectCandidate(focus, lastResults.indexOf(focus));
   }
   if (disc.deepDiveText) {
-    renderDeepDivePayload({ plan: disc.deepDivePlan, analysis: disc.deepDiveText, images: disc.deepDiveImages || [], retrieved: [] }, disc.deepDiveSubject || disc.query || '');
+    renderDeepDivePayload({ plan: disc.deepDivePlan, analysis: disc.deepDiveText, images: disc.deepDiveImages || [], retrieved: disc.deepDiveRetrieved || [], paths: disc.paths }, disc.deepDiveSubject || disc.query || '');
   } else $('deepDiveResult').innerHTML = '';
   updateDeepDiveState();
 }
@@ -1018,7 +1524,8 @@ async function init() {
   await migrateLegacy('carmen-phone-v24', 'carmen_migrated_v24_to_v36', ['projects', 'refs', 'events', 'leads', 'queue']);
   await backfillFingerprints();
   await ensureProject();
-  await loadDiscovery();
+  restoreSession();
+  renderHome();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 init().catch(e => toast('Local archive unavailable: ' + e.message));

@@ -3,387 +3,424 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#111827">
+<meta name="theme-color" content="#07080a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon.svg">
 <title>Carmen</title>
 <style>
-:root{color-scheme:dark;--bg:#0b0f17;--card:#151b26;--card2:#10151f;--muted:#9ca7b8;--line:#273142;--accent:#7dd3fc;--accent2:#38bdf8;--good:#86efac;--warn:#fde68a;--danger:#fca5a5;--observed:#7dd3fc;--inferred:#c4b5fd;--unknown:#fde68a}
+:root{
+  color-scheme:dark;
+  --bg:#07080a;
+  --bg2:#0e1014;
+  --card:#14171c;
+  --card2:#101318;
+  --fg:#f3f4f6;
+  --muted:#8b939e;
+  --subtle:#636b75;
+  --line:color-mix(in oklab, #f3f4f6 12%, transparent);
+  --line2:color-mix(in oklab, #f3f4f6 22%, transparent);
+  --accent:#b7c9d6;
+  --accent-fg:#07080a;
+  --good:#9dcaa8;
+  --warn:#e4d3a0;
+  --danger:#e7a8a8;
+  --observed:#b7c9d6;
+  --inferred:#c5b8d9;
+  --unknown:#e4d3a0;
+  --radius-sm:8px;
+  --radius-md:12px;
+  --radius-lg:18px;
+  --radius-xl:24px;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:24px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+  --motion-fast:220ms; --ease:cubic-bezier(.22,1,.36,1);
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);font:15px -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;color:#f5f7fb;padding-bottom:calc(64px + env(safe-area-inset-bottom));-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 var(--font);-webkit-tap-highlight-color:transparent}
+body{padding-bottom:calc(72px + env(safe-area-inset-bottom));min-height:100dvh}
 a{color:var(--accent);text-decoration:none}
-a:active{opacity:.7}
-header{padding:calc(14px + env(safe-area-inset-top)) 16px 12px;position:sticky;top:0;background:#0b0f17ee;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);z-index:5;border-bottom:1px solid var(--line)}
-header h1{font-size:25px;margin:0 0 2px;letter-spacing:-.4px}
-header small{color:var(--muted);font-size:12px}
-main{max-width:760px;margin:auto;padding:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;margin-bottom:12px}
-.card h2,.card h3{margin:0 0 10px}
-.card h2{font-size:18px}
-.stat{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center}
-.stat .num{font-size:22px;font-weight:700}
-.muted,.hint{color:var(--muted);line-height:1.45;font-size:12px}
-label{display:block;color:var(--muted);font-size:12px;margin-bottom:6px}
-input,textarea,select,button{font:inherit}
-input,textarea,select{width:100%;background:#0f1520;color:#f5f7fb;border:1px solid var(--line);border-radius:12px;padding:11px}
-textarea{min-height:74px;resize:vertical}
-button{border:1px solid var(--line);background:#1b2433;color:#f5f7fb;border-radius:12px;padding:10px 12px;font-weight:600;cursor:pointer}
-button:disabled{opacity:.45;cursor:default}
-button.primary{background:#1d4f67;border-color:#2b6f91}
-button.danger{color:var(--danger)}
-button.ghost{background:transparent}
+button{font:inherit;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+input,textarea,select{font:inherit;width:100%;background:#0b0d11;color:var(--fg);border:1px solid var(--line);border-radius:var(--radius-md);padding:12px 14px}
+textarea{min-height:72px;resize:vertical}
+button.btn{border:1px solid var(--line);background:#1a1e25;color:var(--fg);border-radius:var(--radius-md);padding:12px 14px;font-weight:600;min-height:44px}
+button.btn.primary{background:var(--accent);color:var(--accent-fg);border-color:transparent}
+button.btn.ghost{background:transparent}
+button.btn.danger{color:var(--danger);background:transparent}
 .row{display:flex;gap:8px;flex-wrap:wrap}
-.row>*{flex:1;min-width:90px}
-.urlrow{display:flex;gap:8px}
-.urlrow input{flex:1}
-.urlrow button{flex:0 0 auto}
-.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
-.chip{padding:7px 11px;border-radius:999px;border:1px solid var(--line);background:#0f1520;font-size:12px;font-weight:600;color:var(--muted)}
-.chip.active{background:#1d4f67;border-color:#2b6f91;color:#fff}
-.result{border:1px solid var(--line);border-radius:16px;padding:0;margin-bottom:12px;background:var(--card2);cursor:pointer;-webkit-tap-highlight-color:rgba(255,255,255,.05);overflow:hidden}
-.result.selected{border-color:var(--accent);box-shadow:0 0 0 2px #7dd3fc55}
-.result .hero{width:100%;height:190px;object-fit:cover;background:#0a0e14;display:block}
-.result .rbody{padding:11px}
-.result .rhead{display:flex;gap:9px}
-.result .rthumb{flex:0 0 auto;width:92px;height:92px;border-radius:10px;object-fit:cover;background:#000;border:1px solid var(--line)}
-.result .rmeta{min-width:0;flex:1}
-.result .rtitle{font-weight:700;line-height:1.25;font-size:16px}
-.result .rsrc{font-size:11px;color:var(--muted);margin-top:2px}
-.result .rsrc .host{color:var(--accent)}
-.result .rsnippet{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.result .rwhy{font-size:12px;color:var(--accent);margin-top:6px;line-height:1.35}
-.result .racts{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
-.result .racts button{flex:1;min-width:74px;padding:7px 8px;font-size:12px}
+.row>*{flex:1;min-width:0}
+header.appbar{position:sticky;top:0;z-index:8;padding:calc(12px + env(safe-area-inset-top)) 18px 12px;background:color-mix(in oklab, var(--bg) 86%, transparent);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-bottom:1px solid var(--line)}
+header.appbar h1{margin:0;font-size:22px;letter-spacing:-.03em;font-weight:600}
+header.appbar .sub{color:var(--muted);font-size:12px;margin-top:2px}
+main{max-width:720px;margin:0 auto;padding:14px 16px 28px}
+.hero-home{padding:28px 4px 18px}
+.hero-home h2{font-size:34px;line-height:1.1;letter-spacing:-.04em;font-weight:560;margin:0 0 10px}
+.hero-home p{color:var(--muted);margin:0 0 18px;max-width:34ch}
+.searchbox{display:flex;gap:8px;align-items:stretch}
+.searchbox input{flex:1;min-height:48px;font-size:16px;border-radius:var(--radius-lg)}
+.searchbox button{flex:0 0 auto;min-width:96px;border-radius:var(--radius-lg)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-xl);padding:16px;margin-bottom:12px}
+.card h3{margin:0 0 10px;font-size:16px;letter-spacing:-.02em;font-weight:600}
+.muted,.hint{color:var(--muted);font-size:12px;line-height:1.45}
+.subtle{color:var(--subtle);font-size:11px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.chip{padding:8px 12px;border-radius:999px;border:1px solid var(--line);background:#0b0d11;font-size:12px;font-weight:600;color:var(--muted);min-height:36px}
+.chip.active{background:var(--fg);color:var(--bg);border-color:transparent}
+.result{border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;background:var(--card2);margin-bottom:12px}
+.result.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.result .hero{width:100%;height:210px;object-fit:cover;background:#050607;display:block}
+.result .rbody{padding:12px 12px 14px}
+.result .rtitle{font-weight:650;font-size:17px;letter-spacing:-.02em;line-height:1.25}
+.result .rmeta{font-size:11px;color:var(--muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.result .rwhy{margin-top:8px;font-size:13px;color:var(--accent)}
+.result .rsnippet{margin-top:6px;font-size:12px;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.result .racts{display:flex;gap:6px;margin-top:10px}
+.result .racts button{flex:1;min-height:40px;font-size:12px;font-weight:600;border-radius:var(--radius-sm);border:1px solid var(--line);background:#1a1e25;color:var(--fg)}
+.result .racts button.primary{background:var(--accent);color:var(--accent-fg);border-color:transparent}
 .thumbs{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;padding-bottom:2px}
-.thumbs img{width:76px;height:76px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#000;flex:0 0 auto}
-.selbar{border:1px dashed var(--accent);border-radius:14px;padding:10px;margin-bottom:10px;background:#0e2a36}
-.dive-step{font-size:12px;color:var(--muted);margin:4px 0}
-.dive-step.on{color:var(--good)}
-.imgstrip img.broken{display:none}
+.thumbs img{width:88px;height:88px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#000;flex:0 0 auto}
+.gallery{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
+.gallery img{width:100%;height:140px;object-fit:cover;border-radius:10px;background:#000;border:1px solid var(--line)}
+.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#1a1e25;color:var(--muted);border:1px solid var(--line)}
+.badge.observed{color:var(--observed);border-color:#2a3a44}
+.badge.inferred{color:var(--inferred);border-color:#3a3148}
+.badge.unknown{color:var(--unknown);border-color:#4a4020}
 .confidence.high{color:var(--good)}
 .confidence.medium{color:var(--warn)}
 .confidence.low{color:var(--danger)}
-.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#1b2433;color:var(--muted);border:1px solid var(--line)}
-.badge.observed{background:#0e2a36;color:var(--observed);border-color:#1d4f67}
-.badge.inferred{background:#241a36;color:var(--inferred);border-color:#3b2a5c}
-.badge.unknown{background:#332906;color:var(--unknown);border-color:#5a4a10}
-.claim{border-left:3px solid var(--accent);padding-left:10px;margin:10px 0}
-.claim.unknown{border-left-color:var(--warn)}
+.claim{border-left:2px solid var(--accent);padding:2px 0 2px 10px;margin:10px 0}
 .claim.inferred{border-left-color:var(--inferred)}
+.claim.unknown{border-left-color:var(--unknown)}
+.selbar{border:1px solid var(--line2);border-radius:var(--radius-lg);padding:12px;margin-bottom:12px;background:#12161c}
+.inv-card,.col-card{display:flex;gap:12px;align-items:stretch;border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;background:var(--card2);margin-bottom:10px;min-height:88px}
+.inv-card img,.col-card img{width:88px;height:88px;object-fit:cover;background:#050607;flex:0 0 auto}
+.inv-card .body,.col-card .body{padding:10px 12px 10px 0;min-width:0;flex:1}
+.inv-card b,.col-card b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pathchips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 0 10px}
+.pathchips .chip{flex:0 0 auto}
+.bottomnav{position:fixed;bottom:0;left:0;right:0;display:flex;background:color-mix(in oklab, var(--bg) 90%, transparent);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-top:1px solid var(--line);padding:6px 4px calc(8px + env(safe-area-inset-bottom));z-index:12}
+.bottomnav button{flex:1;background:transparent;border:0;color:var(--subtle);font-size:10px;font-weight:600;padding:6px 2px;display:flex;flex-direction:column;align-items:center;gap:3px}
+.bottomnav button.active{color:var(--fg)}
+.bottomnav svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.toast{position:fixed;bottom:92px;left:16px;right:16px;background:#1a1e25;border:1px solid var(--line);border-radius:14px;padding:12px 14px;z-index:30;font-size:13px}
+.sheet{position:fixed;inset:0;background:#000a;z-index:25;display:flex;align-items:flex-end;justify-content:center}
+.sheet .panel{width:100%;max-width:720px;background:var(--card);border-top:1px solid var(--line);border-radius:20px 20px 0 0;padding:16px 16px calc(18px + env(safe-area-inset-bottom))}
+.lightbox{position:fixed;inset:0;background:#000d;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:10px}
+.lightbox img{max-width:100%;max-height:72vh;object-fit:contain;border-radius:12px;background:#000}
+.hidden{display:none!important}
+section.view{display:block}
+section.view.hidden{display:none!important}
+.warning{font-size:11px;color:var(--warn);line-height:1.4;margin:8px 0 0}
 .diags{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5}
 .diags .ok{color:var(--good)}
 .diags .bad{color:var(--danger)}
-.pattern{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:8px}
-.patternbar{height:6px;border-radius:3px;background:#0f1520;margin-top:6px;overflow:hidden}
-.patternbar span{display:block;height:100%;background:var(--accent)}
-.lead{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:8px}
-.refitem{display:flex;gap:9px;border:1px solid var(--line);border-radius:12px;padding:9px;margin-bottom:7px}
-.refitem input{flex:0 0 auto;width:auto;margin-top:3px}
-.refitem span{min-width:0}
-.preview-img{width:100%;max-height:55vh;object-fit:contain;background:#000;border-radius:14px;margin-top:10px}
-.browser{height:46vh;min-height:260px;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#fff}
-.browser iframe{width:100%;height:100%;border:0;background:#fff}
-.warning{font-size:11px;color:var(--warn);margin-top:8px;line-height:1.4}
-.tabbar.hidden{display:none}
-.hidden{display:none!important}
-.smallbtn{font-size:12px;padding:7px 9px}
-.bottomnav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#0b0f17ee;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);z-index:6}
-.bottomnav button{flex:1;background:transparent;border:0;border-radius:0;color:var(--muted);font-size:11px;font-weight:600;padding:9px 4px 10px}
-.bottomnav button.active{color:var(--accent)}
-.bottomnav button .ico{display:block;font-size:18px;margin-bottom:2px}
-.toast{position:fixed;bottom:84px;left:16px;right:16px;background:#1b2433;border:1px solid var(--line);border-radius:14px;padding:12px 14px;z-index:20;box-shadow:0 8px 30px rgba(0,0,0,.5);font-size:13px}
-section{display:block}
-section.hidden{display:none!important}
-.next{border:1px dashed var(--line)}
-h4{margin:0 0 8px;font-size:14px}
-details summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}
+.stat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+.stat .num{font-size:20px;font-weight:650}
+.skeleton{background:linear-gradient(90deg,#101318 25%,#1a1e25 37%,#101318 63%);background-size:400% 100%;animation:sk 1.2s ease infinite;border-radius:10px;height:120px;margin-bottom:10px}
+@keyframes sk{0%{background-position:100% 50%}100%{background-position:0 50%}}
+.lead,.pattern,.refitem{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:8px}
+.refitem{display:flex;gap:9px;align-items:flex-start}
+.refitem input{width:auto;flex:0 0 auto;margin-top:4px}
+.preview-img{width:100%;max-height:50vh;object-fit:contain;background:#000;border-radius:14px;margin-top:10px}
+.browser{height:42vh;min-height:240px;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#fff}
+.browser iframe{width:100%;height:100%;border:0}
 .aliases{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
 .aliases span{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:3px 8px;color:var(--muted)}
-.lightbox{position:fixed;inset:0;background:#000c;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:10px}
-.lightbox.hidden{display:none!important}
-.lightbox img{max-width:100%;max-height:72vh;object-fit:contain;border-radius:12px;background:#000}
-.lightbox .hint{text-align:center;max-width:520px}
-@keyframes sk{0%{background-position:100% 50%}100%{background-position:0 50%}}
+.empty{padding:28px 8px;color:var(--muted);text-align:left}
+h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--subtle);font-weight:650}
+.dive-step{font-size:12px;color:var(--muted);margin:4px 0}
+.dive-step.on{color:var(--good)}
+@media (prefers-reduced-motion:reduce){.skeleton{animation:none}}
 </style>
 </head>
 <body>
-<header>
+<header class="appbar">
   <h1>Carmen</h1>
-  <small>Visual public-web investigation · discovery · evidence · synthesis</small>
+  <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
 </header>
 <main>
 
-  <!-- Investigation control -->
-  <section class="card">
-    <h3>Current investigation</h3>
+<section id="homeView" class="view">
+  <div class="hero-home">
+    <h2>Understand something.</h2>
+    <p>Give Carmen a name, URL, object, technique, or skill. It classifies the query, ranks public sources, and adapts the investigation.</p>
+    <div class="searchbox">
+      <input id="homeQuery" placeholder="Person, product, URL, technique…" enterkeyhint="search">
+      <button class="btn primary" id="homeSearchBtn">Search</button>
+    </div>
+    <p class="warning">Research only. Carmen never contacts people, posts, comments, follows, submits forms, or buys anything.</p>
+  </div>
+  <div id="homeResume"></div>
+  <div class="card">
+    <h3>Recent investigations</h3>
+    <div id="homeRecent"></div>
+  </div>
+</section>
+
+<section id="searchView" class="view hidden">
+  <div class="card">
+    <h3>Search</h3>
+    <p class="muted">Carmen classifies what you entered, then ranks public candidates. Deep Dive expands a selected result — it does not repeat the same keyword dump.</p>
+    <div class="chips" id="subjectChips">
+      <button class="chip active" data-subject="">Auto</button>
+      <button class="chip" data-subject="person">Person</button>
+      <button class="chip" data-subject="product">Product</button>
+      <button class="chip" data-subject="vehicle">Vehicle</button>
+      <button class="chip" data-subject="technique">Technique</button>
+      <button class="chip" data-subject="skill">Skill / project</button>
+      <button class="chip" data-subject="organization">Organization</button>
+      <button class="chip" data-subject="topic">Topic</button>
+      <button class="chip" data-subject="website">URL</button>
+    </div>
+    <textarea id="searchQuery" placeholder="A name, domain, Reddit URL, product, technique, or skill."></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="btn primary" id="discoverBtn">Discover</button>
+      <button class="btn" id="deepDiveBtn" disabled>Deep dive</button>
+      <button class="btn" id="keepBtn">Keep</button>
+    </div>
+    <p id="deepDiveHint" class="hint">Search first, then tap a candidate. Deep Dive stays unavailable until there is something real to expand.</p>
+    <div id="classBar"></div>
+    <div id="searchDiagnostics" class="diags"></div>
+  </div>
+  <div class="card">
+    <h3>Candidates <span id="resultCount" class="badge"></span></h3>
+    <div id="selectedBanner"></div>
+    <div id="results"></div>
+    <p id="resultsEmpty" class="muted">Results will appear here as ranked candidates — image, title, type, why it matched, source.</p>
+  </div>
+  <div class="card">
+    <h3>Deep dive</h3>
+    <p class="muted">Adapts to the selected entity. Images keep page provenance. Visual consistency is not identity proof.</p>
+    <div id="divePaths" class="pathchips"></div>
+    <div id="deepDiveProgress"></div>
+    <div id="deepDiveResult"></div>
+  </div>
+</section>
+
+<section id="collectionsView" class="view hidden">
+  <div class="card">
+    <h3>Saved Collections</h3>
+    <p class="muted">Only what you explicitly save. Viewing or investigating never auto-saves.</p>
     <div class="row">
-      <select id="projectSelect" style="flex:1"></select>
-      <button id="newProject">New</button>
-      <button id="renameProject" class="smallbtn">Rename</button>
+      <input id="newCollectionName" placeholder="New collection name">
+      <button class="btn primary" id="createCollection" style="flex:0 0 auto">Create</button>
     </div>
-    <label style="margin-top:10px">What are you investigating?</label>
-    <textarea id="projectQuestion" placeholder="Example: Background and public footprint of a person, topic, website, product, or claim."></textarea>
-    <label style="margin-top:10px">Instructions <span class="hint">(research direction — never external actions)</span></label>
-    <textarea id="projectInstructions" placeholder="Goals, questions to answer, sources to prioritize or exclude, dates/locations/identifiers that matter…"></textarea>
-    <button id="saveProjectQuestion" class="primary" style="margin-top:8px">Save investigation</button>
-    <p id="projectMeta" class="muted" style="margin-top:6px">Investigations stay on this phone.</p>
-    <p id="projectCount" class="muted">0 evidence items</p>
-  </section>
+  </div>
+  <div id="collectionList"></div>
+  <div id="collectionDetail"></div>
+</section>
 
-  <!-- Stats -->
-  <section class="card">
-    <div class="stat">
-      <div><div class="num" id="refs">0</div><small>References</small></div>
-      <div><div class="num" id="patterns">0</div><small>Patterns</small></div>
-      <div><div class="num" id="events">0</div><small>Events</small></div>
-      <div><div class="num" id="queueCount">0</div><small>Queued</small></div>
+<section id="investigationsView" class="view hidden">
+  <div class="card">
+    <h3>Investigations</h3>
+    <p class="muted">Persistent work. Search stays temporary until you Keep it or run Deep Dive.</p>
+    <div class="chips" id="invFilter">
+      <button class="chip active" data-inv="all">All</button>
+      <button class="chip" data-inv="active">Active</button>
+      <button class="chip" data-inv="paused">Paused</button>
+      <button class="chip" data-inv="completed">Completed</button>
     </div>
-  </section>
+    <div class="row">
+      <button class="btn" id="newProject">New</button>
+      <button class="btn" id="renameProject">Rename</button>
+    </div>
+    <label class="hint" style="margin-top:10px">Research direction (never external actions)</label>
+    <textarea id="projectInstructions" placeholder="Questions to answer, sources to prioritize or exclude…"></textarea>
+    <button class="btn primary" id="saveProjectQuestion" style="margin-top:8px">Save notes</button>
+    <p id="projectMeta" class="muted" style="margin-top:8px"></p>
+  </div>
+  <div id="investigationList"></div>
+  <details class="card">
+    <summary>Capture, compare, leads, backup</summary>
+    <p class="muted" style="margin-top:8px">Tools for the currently resumed investigation. Capture stays on this phone.</p>
+    <div id="toolsMount"></div>
+  </details>
+</section>
 
-  <!-- Health + timeline + quick actions + next move (dashboard) -->
-  <section class="card">
-    <h3>Investigation health</h3>
-    <p class="muted">A completeness check for your current evidence set. It measures documentation quality, not truth or certainty.</p>
+<section id="learnView" class="view hidden">
+  <div class="card">
+    <h3>Learn</h3>
+    <p class="muted">Turn public research into an organized brief. The layout follows the kind of thing you are learning — not a single hardcoded subject.</p>
+    <div class="chips" id="learnChips">
+      <button class="chip active" data-learn="">Auto</button>
+      <button class="chip" data-learn="technique">Technique</button>
+      <button class="chip" data-learn="skill">Skill / project</button>
+      <button class="chip" data-learn="product">Product</button>
+      <button class="chip" data-learn="topic">Topic</button>
+    </div>
+    <textarea id="learnQuery" placeholder="Welding a trailer hitch, a woodworking joint, a technique, a concept…"></textarea>
+    <button class="btn primary" id="learnBtn" style="margin-top:8px">Research & teach</button>
+    <p class="warning">Sourced information is labeled OBSERVED. Carmen’s interpretation is INFERRED. Missing facts stay UNKNOWN.</p>
+  </div>
+  <div id="learnPaths" class="pathchips"></div>
+  <div id="learnResult"></div>
+</section>
+
+<!-- Hidden durable IDs for capture / evidence / connection (mounted into investigations) -->
+<div id="legacyTools" class="hidden">
+  <div class="card">
+    <h3>Capture</h3>
+    <div class="urlrow row">
+      <input id="url" placeholder="https://…" inputmode="url" autocapitalize="off" spellcheck="false">
+      <button class="btn primary" id="go" style="flex:0 0 auto">Go</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" id="back">Back</button>
+      <button class="btn" id="forward">Forward</button>
+      <button class="btn" id="reload">Reload</button>
+      <button class="btn" id="openExternal">Open outside</button>
+    </div>
+    <div class="browser" style="margin-top:10px"><iframe id="webview" title="Carmen Browser" referrerpolicy="no-referrer"></iframe></div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn primary" id="pick">Choose screenshot</button>
+      <button class="btn" id="start">Screen capture</button>
+      <button class="btn" id="snap" disabled>Capture frame</button>
+      <button class="btn" id="stop" disabled>Stop</button>
+      <input id="file" type="file" accept="image/*" class="hidden">
+    </div>
+    <video id="preview" autoplay muted playsinline class="hidden"></video>
+    <canvas id="canvas" class="hidden"></canvas>
+    <label style="margin-top:10px;display:block" class="hint">Source type</label>
+    <select id="sourceType">
+      <option value="web">General web</option>
+      <option value="reddit">Reddit</option>
+      <option value="adult_video">Adult video</option>
+      <option value="other">Other</option>
+    </select>
+    <input id="sourceName" placeholder="Source name" style="margin-top:8px">
+    <textarea id="context" placeholder="Research context for this capture"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="btn primary" id="analyze" disabled>Analyze capture</button>
+      <button class="btn" id="save" disabled>Save locally</button>
+    </div>
+    <div id="capturedWrap"></div>
+    <div id="result"></div>
+  </div>
+  <div class="card">
+    <h3>Evidence & compare</h3>
+    <div id="sourceStats"></div>
+    <div id="patternBoard"></div>
+    <input id="archiveSearch" placeholder="Search evidence…" style="margin:8px 0">
+    <div class="row">
+      <button class="btn" id="selectAll">Select all</button>
+      <button class="btn" id="clearSelect">Clear</button>
+    </div>
+    <div id="archive"></div>
+    <textarea id="researchQuestion" placeholder="What should Carmen compare?"></textarea>
+    <button class="btn primary" id="compare" style="margin-top:8px">Compare evidence</button>
+    <div id="compareResult"></div>
+  </div>
+  <div class="card">
+    <h3>Leads & queue</h3>
+    <select id="leadFilter">
+      <option value="all">All leads</option>
+      <option value="new">New</option>
+      <option value="reviewed">Reviewed</option>
+      <option value="dismissed">Dismissed</option>
+    </select>
+    <div id="leadList" style="margin-top:8px"></div>
+    <div class="row" style="margin-top:8px">
+      <input id="queueUrl" placeholder="https://…">
+      <input id="queueLabel" placeholder="Label">
+    </div>
+    <select id="queueSourceType" style="margin-top:8px">
+      <option value="web">Web</option>
+      <option value="reddit">Reddit</option>
+      <option value="adult_video">Adult video</option>
+      <option value="other">Other</option>
+    </select>
+    <input id="queueNote" placeholder="Note" style="margin-top:8px">
+    <button class="btn primary" id="queueAdd" style="margin-top:8px">Add to queue</button>
+    <select id="queueFilter" style="margin-top:8px">
+      <option value="all">All queued</option>
+      <option value="queued">Queued</option>
+      <option value="completed">Completed</option>
+    </select>
+    <div id="queueList"></div>
+  </div>
+  <div class="card">
+    <h3>Backup</h3>
+    <div class="row">
+      <button class="btn" id="export">Export</button>
+      <button class="btn" id="importBtn">Import</button>
+      <input id="importFile" type="file" accept="application/json" class="hidden">
+    </div>
+    <button class="btn danger" id="clear" style="margin-top:8px">Clear this investigation</button>
+  </div>
+  <div class="card">
+    <h3>Connection</h3>
+    <input id="backend" placeholder="Hosted together: leave as-is">
+    <div class="row" style="margin-top:8px">
+      <button class="btn" id="health">Test connection</button>
+      <button class="btn hidden" id="install">Install Carmen</button>
+    </div>
+    <p class="muted" id="status">Local archive works without a connection.</p>
+    <p class="hint">Safari → Share → Add to Home Screen</p>
+  </div>
+  <div class="hidden">
+    <select id="projectSelect"></select>
+    <textarea id="projectQuestion"></textarea>
     <div id="evidenceHealth"></div>
-  </section>
-  <section class="card">
-    <h3>Investigation timeline</h3>
     <div id="timeline"></div>
-  </section>
-  <section class="card">
-    <h3>Quick actions</h3>
-    <div class="row">
-      <button id="quickDiscover" class="primary">🔍 Discover</button>
-      <button id="quickCapture">📸 Capture</button>
-      <button id="quickArchive">🗂 Evidence</button>
-      <button id="quickLeads">🎯 Leads</button>
-    </div>
-  </section>
-  <section class="card next">
-    <b>Next move</b>
-    <p id="nextMove" class="muted">Start a discovery search, then save useful results as evidence.</p>
-  </section>
-
-  <!-- INVESTIGATE VIEW -->
-  <section id="investigateView">
-    <div class="card">
-      <h3>Discovery</h3>
-      <p class="muted">Give Carmen a person, entity, topic, object, or URL. It classifies the query, searches public sources, and ranks visual candidates — not a generic dump of search-engine links.</p>
-      <label>Subject type <span class="hint">(hint — Carmen also auto-classifies)</span></label>
-      <div class="chips" id="subjectChips">
-        <button class="chip active" data-subject="person">Person</button>
-        <button class="chip" data-subject="topic">Topic</button>
-        <button class="chip" data-subject="website">Website</button>
-        <button class="chip" data-subject="claim">Claim</button>
-        <button class="chip" data-subject="product">Product / Entity</button>
-        <button class="chip" data-subject="position">Position / Instruction</button>
-        <button class="chip" data-subject="other">Other</button>
-      </div>
-      <label>Subject, URL, or query</label>
-      <textarea id="searchQuery" placeholder="A name, a domain, a Reddit URL, a product, or a claim."></textarea>
-      <div class="row" style="margin-top:8px">
-        <button id="discoverBtn" class="primary">🔍 Discover</button>
-        <button id="deepDiveBtn" disabled>🧠 Deep dive</button>
-        <button id="addQueueBtn">＋ Queue URL</button>
-      </div>
-      <p id="deepDiveHint" class="hint">Search first, then tap a candidate to select it. Deep Dive expands that candidate with more public sources, images, and OBSERVED / INFERRED / UNKNOWN analysis.</p>
-      <p class="warning">Carmen only reads public information. It never contacts people, sends messages, posts, submits forms, or takes external actions.</p>
-      <div id="classBar"></div>
-      <div id="searchDiagnostics" class="diags"></div>
-    </div>
-
-    <div class="card">
-      <h3>Candidates <span id="resultCount" class="badge"></span></h3>
-      <div id="selectedBanner"></div>
-      <div id="results"></div>
-      <p id="resultsEmpty" class="muted">Run discovery to see ranked public candidates. Each card keeps images, provenance, a match reason, and a Deep Dive action.</p>
-    </div>
-
-    <div class="card">
-      <h3>Deep dive</h3>
-      <p class="muted">Expands the selected candidate: more public sources, retrieved pages, images with provenance, and conservative analysis. Not a repeat of the same keyword search.</p>
-      <div id="deepDiveProgress"></div>
-      <div id="deepDiveResult"></div>
-    </div>
-
-    <div class="card">
-      <h3>Research queue</h3>
-      <p class="muted">URLs and leads to investigate next, ordered by you. Opening a queued item launches an external browser on your phone.</p>
-      <div class="row">
-        <input id="queueUrl" placeholder="https://…">
-        <input id="queueLabel" placeholder="Label (optional)" style="flex:1.4">
-      </div>
-      <div class="row" style="margin-top:8px">
-        <select id="queueSourceType">
-          <option value="web">Web</option>
-          <option value="reddit">Reddit</option>
-          <option value="adult_video">Adult video</option>
-          <option value="other">Other</option>
-        </select>
-        <input id="queueNote" placeholder="Note (optional)">
-        <button id="queueAdd" class="primary">Add</button>
-      </div>
-      <select id="queueFilter" style="margin-top:8px">
-        <option value="all">All queued</option>
-        <option value="queued">Queued</option>
-        <option value="completed">Completed</option>
-      </select>
-      <div id="queueList" style="margin-top:8px"></div>
-    </div>
-  </section>
-
-  <!-- CAPTURE VIEW -->
-  <section id="captureView" class="hidden">
-    <div class="card">
-      <h3>Carmen Browser</h3>
-      <div class="urlrow">
-        <input id="url" value="" placeholder="https://…" inputmode="url" autocapitalize="off" spellcheck="false">
-        <button id="go" class="primary">Go</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <button id="back">Back</button>
-        <button id="forward">Forward</button>
-        <button id="reload">Reload</button>
-        <button id="openExternal">Open outside</button>
-      </div>
-      <div class="browser" style="margin-top:10px"><iframe id="webview" title="Carmen Browser" referrerpolicy="no-referrer"></iframe></div>
-      <p class="hint">Sites that allow framing can appear here. If a site blocks embedding, use Open outside and take an iPhone screenshot for Carmen.</p>
-      <div class="warning">Carmen never contacts sellers, buyers, websites, or other people automatically.</div>
-    </div>
-    <div class="card">
-      <h3>Capture</h3>
-      <div class="row">
-        <button id="pick" class="primary">Choose screenshot</button>
-        <button id="start">Try screen capture</button>
-        <button id="snap" disabled>Capture frame</button>
-        <button id="stop" disabled>Stop</button>
-        <input id="file" type="file" accept="image/*" class="hidden">
-      </div>
-      <video id="preview" autoplay muted playsinline class="hidden"></video>
-      <canvas id="canvas" class="hidden"></canvas>
-    </div>
-    <div class="card">
-      <h3>Evidence workspace</h3>
-      <div class="row">
-        <div>
-          <label>Source type</label>
-          <select id="sourceType">
-            <option value="web">General web</option>
-            <option value="reddit">Reddit</option>
-            <option value="adult_video">Adult video</option>
-            <option value="other">Other</option>
-          </select>
-        </div>
-        <div>
-          <label>Source name (optional)</label>
-          <input id="sourceName" placeholder="Site, subreddit, or source">
-        </div>
-      </div>
-      <label style="margin-top:10px">Research question / context</label>
-      <textarea id="context" placeholder="Example: Compare these saved references and identify visible similarities, differences, and recurring features."></textarea>
-      <div class="row" style="margin-top:8px">
-        <button id="analyze" class="primary" disabled>Analyze capture</button>
-        <button id="save" disabled>Save locally</button>
-      </div>
-      <div id="capturedWrap"></div>
-      <div id="result"></div>
-    </div>
-    <div class="card">
-      <h3>Connection</h3>
-      <label>Carmen Worker URL</label>
-      <input id="backend" placeholder="Hosted together: leave as-is">
-      <div class="row" style="margin-top:8px">
-        <button id="health">Test connection</button>
-        <button id="install" class="hidden">Install Carmen</button>
-      </div>
-      <p class="muted" id="status">Local archive works without a connection.</p>
-    </div>
-  </section>
-
-  <!-- EVIDENCE VIEW -->
-  <section id="evidenceView" class="hidden">
-    <div class="card">
-      <h3>Source ledger</h3>
-      <p class="muted">A compact view of where your saved evidence is coming from. Descriptive, not proof of any relationship between sources.</p>
-      <div id="sourceStats"></div>
-    </div>
-    <div class="card">
-      <h3>Pattern board</h3>
-      <p class="muted">Carmen groups repeated candidate-pattern hypotheses across your evidence. Frequency is a consistency signal, not proof.</p>
-      <div id="patternBoard"></div>
-    </div>
-    <div class="card">
-      <h3>Evidence archive</h3>
-      <p class="muted">Select 2–4 saved references to compare. Source types stay visible so adult-video, Reddit, and other web evidence can be distinguished.</p>
-      <input id="archiveSearch" placeholder="Search this investigation…" style="margin-bottom:8px">
-      <div class="row">
-        <button id="selectAll">Select all</button>
-        <button id="clearSelect">Clear selection</button>
-      </div>
-      <div id="archive" style="margin-top:8px"></div>
-    </div>
-    <div class="card">
-      <h3>Compare selected evidence</h3>
-      <label>Research question</label>
-      <textarea id="researchQuestion" placeholder="What should Carmen look for across these references?"></textarea>
-      <button id="compare" class="primary" style="margin-top:8px">Compare evidence</button>
-      <div id="compareResult"></div>
-    </div>
-    <div class="card">
-      <h3>Backup &amp; restore</h3>
-      <div class="row">
-        <button id="export">Export archive</button>
-        <button id="importBtn">Import archive</button>
-        <input id="importFile" type="file" accept="application/json" class="hidden">
-      </div>
-      <p class="muted">Exports stay on your device unless you choose to share them. Import adds evidence without automatically contacting anyone.</p>
-      <button id="clear" class="danger">Clear this investigation</button>
-    </div>
-    <div class="card">
-      <h3>Phone setup</h3>
-      <p>Safari → Share → <b>Add to Home Screen</b></p>
-      <p class="muted">When Carmen is deployed as one Cloudflare Worker, the phone automatically uses the same origin for its backend.</p>
-    </div>
-  </section>
-
-  <!-- LEADS VIEW -->
-  <section id="leadsView" class="hidden">
-    <div class="card">
-      <h3>Research leads</h3>
-      <p class="muted">Leads are reviewable follow-ups generated from evidence comparisons and discovery. Carmen does not contact anyone or act on a lead automatically.</p>
-      <div class="row">
-        <select id="leadFilter">
-          <option value="all">All leads</option>
-          <option value="new">New</option>
-          <option value="reviewed">Reviewed</option>
-          <option value="dismissed">Dismissed</option>
-        </select>
-        <button id="showNewLeads" class="primary">Show new</button>
-      </div>
-      <div id="leadList" style="margin-top:8px"></div>
-    </div>
-    <div class="card">
-      <h3>How to use a lead</h3>
-      <p class="muted">Mark useful leads as reviewed, or send one back into discovery or the Archive as the next comparison question. Nothing is sent externally.</p>
-    </div>
-  </section>
+    <div id="nextMove"></div>
+    <div id="refs"></div>
+    <div id="patterns"></div>
+    <div id="events"></div>
+    <div id="queueCount"></div>
+    <div id="projectCount"></div>
+    <button id="quickDiscover"></button>
+    <button id="quickCapture"></button>
+    <button id="quickArchive"></button>
+    <button id="quickLeads"></button>
+    <button id="addQueueBtn"></button>
+    <button id="showNewLeads"></button>
+  </div>
+</div>
 
 </main>
 
 <nav class="bottomnav">
-  <button id="navInvestigate" class="active"><span class="ico">🔍</span>Investigate</button>
-  <button id="navCapture"><span class="ico">📸</span>Capture</button>
-  <button id="navEvidence"><span class="ico">🗂</span>Evidence</button>
-  <button id="navLeads"><span class="ico">🎯</span>Leads</button>
+  <button id="navHome" class="active">
+    <svg viewBox="0 0 24 24"><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-8.5Z"/></svg>
+    Home
+  </button>
+  <button id="navSearch">
+    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 5 5"/></svg>
+    Search
+  </button>
+  <button id="navCollections">
+    <svg viewBox="0 0 24 24"><path d="M6 7h12v12H6z"/><path d="M8 7V5h8v2"/></svg>
+    Saved
+  </button>
+  <button id="navInvestigations">
+    <svg viewBox="0 0 24 24"><path d="M6 4h9l3 3v13H6z"/><path d="M9 12h6M9 16h4"/></svg>
+    Investigate
+  </button>
+  <button id="navLearn">
+    <svg viewBox="0 0 24 24"><path d="M4 7.5 12 4l8 3.5v8.5L12 20l-8-4V7.5Z"/><path d="M12 4v16"/></svg>
+    Learn
+  </button>
 </nav>
 
 <div id="toast" class="toast hidden"></div>
 <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true">
   <img id="lightboxImg" alt="Evidence image">
   <p id="lightboxCap" class="hint"></p>
-  <button id="lightboxClose" class="ghost">Close</button>
+  <button class="btn ghost" id="lightboxClose">Close</button>
+</div>
+<div id="saveSheet" class="sheet hidden">
+  <div class="panel">
+    <h3 style="margin:0 0 8px">Save to collection</h3>
+    <p class="muted">Nothing is stored in a collection unless you confirm.</p>
+    <div id="saveSheetList"></div>
+    <div class="row" style="margin-top:10px">
+      <input id="saveSheetNew" placeholder="Or create a collection">
+      <button class="btn primary" id="saveSheetConfirm" style="flex:0 0 auto">Save</button>
+    </div>
+    <button class="btn ghost" id="saveSheetCancel" style="margin-top:8px;width:100%">Cancel</button>
+  </div>
 </div>
 <script src="app.js"></script>
 </body>

@@ -16,9 +16,10 @@ function assert(cond, msg) {
 console.log('--- /health ---');
 { const { status, body } = await call('/health');
   assert(status === 200, 'health 200');
-  assert(body.version === '38', 'version 38');
+  assert(body.version === '39', 'version 39');
   assert(body.routes.includes('/retrieve'), 'routes include /retrieve');
   assert(body.routes.includes('/dive'), 'routes include /dive');
+  assert(body.routes.includes('/learn'), 'routes include /learn');
   assert(body.provider === 'openrouter', 'provider openrouter');
   assert(body.model === 'openrouter/free', 'model openrouter/free');
   assert(body.configured === false, 'configured false without key'); }
@@ -37,6 +38,13 @@ console.log('--- /retrieve private blocked ---');
 console.log('--- /retrieve missing url ---');
 { const { status, body } = await call('/retrieve');
   assert(status === 400, 'missing url 400'); }
+console.log('--- /learn missing query ---');
+{ const { status, body } = await call('/learn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
+  assert(status === 400, 'learn 400 without query');
+  assert(/learn|understand/i.test(body.error || ''), 'learn error is actionable'); }
+console.log('--- /dive missing candidate ---');
+{ const { status, body } = await call('/dive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
+  assert(status === 400, 'dive 400 without subject'); }
 console.log('--- /chat without key ---');
 { const { status, body } = await call('/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }) });
   assert(status === 500, 'chat 500 without key');

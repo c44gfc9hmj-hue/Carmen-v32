@@ -1,4 +1,5 @@
-import { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath, researchPaths } from './worker.js';
+import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
 function assert(cond, msg) {
@@ -25,6 +26,22 @@ console.log('--- classify ---');
   assert(img.isImage === true, 'image URL flagged');
   const topic = classifyQuery('Cloudflare Workers');
   assert(topic.type !== 'person', 'Cloudflare Workers is not classified as a person');
+  const tech = classifyQuery('bowline knot');
+  assert(tech.type === 'technique', 'named knot/technique is technique');
+  const skill = classifyQuery('welding a steel frame');
+  assert(skill.type === 'skill', 'welding project is skill');
+  const hitch = classifyQuery('welding a trailer hitch');
+  assert(hitch.type === 'skill', 'welding a trailer hitch is a skill/project, not a hardcoded subject');
+  const wood = classifyQuery('woodworking a bookshelf');
+  assert(wood.type === 'skill', 'woodworking project is skill');
+  const joinery = classifyQuery('dovetail joinery');
+  assert(joinery.type === 'technique', 'named joinery is a technique');
+  const hintedTech = classifyQuery('frogtie', 'technique');
+  assert(hintedTech.type === 'technique', 'technique hint is honored without hardcoding the query');
+  const unhintedToken = classifyQuery('frogtie');
+  assert(unhintedToken.type === 'ambiguous' || unhintedToken.confidence === 'low', 'unknown single token is not a hardcoded technique');
+  const org = classifyQuery('Lincoln Electric Company');
+  assert(org.type === 'organization', 'company language is organization');
 }
 
 console.log('--- variants ---');
@@ -87,9 +104,42 @@ console.log('--- entities ---');
   assert(decodeEntities('Posts tagged "Workers"').includes('"Workers"'), 'named quot decoded');
 }
 
+console.log('--- research paths adapt to type ---');
+{
+  const person = researchPaths('person').map(p => p.id);
+  assert(person.includes('identity') && person.includes('images'), 'person paths include identity and images');
+  const tech = researchPaths('technique').map(p => p.id);
+  assert(tech.includes('visuals') && tech.includes('tutorials'), 'technique paths include visuals and tutorials');
+  const skill = researchPaths('skill').map(p => p.id);
+  assert(skill.includes('tools') && skill.includes('safety'), 'skill paths include tools and safety');
+  assert(!JSON.stringify(researchPaths('person')).toLowerCase().includes('drea'), 'paths are not hardcoded to a test person');
+  assert(!JSON.stringify(researchPaths('technique')).toLowerCase().includes('frogtie'), 'technique paths are not hardcoded to a test query');
+  const orgPaths = researchPaths('organization').map(p => p.id);
+  assert(orgPaths.includes('official'), 'organization paths include official presence');
+}
+console.log('--- instructional ranking ---');
+{
+  const q = 'bowline knot';
+  const c = classifyQuery(q);
+  assert(c.type === 'technique', 'bowline knot classified as technique');
+  const ranked = rankResults(q, [
+    { title: 'How to tie a bowline knot', url: 'https://www.wikihow.com/Tie-a-Bowline-Knot', source: 'Bing', snippet: 'A step-by-step tutorial' },
+    { title: 'Bowline products', url: 'https://www.example.net/bowline', source: 'Bing', snippet: 'listing' },
+  ], c);
+  assert(ranked[0].url.includes('wikihow'), 'instructional host ranks first for a technique');
+  assert(ranked[0].signals.includes('instructional source') || /instructional/i.test(ranked[0].reason), 'reason mentions instructional source');
+}
 console.log('--- humanizePath ---');
 {
   assert(humanizePath('https://dreamorgan.com/models/DreaMorgan.html') === 'Drea Morgan', 'camelCase path becomes a name');
+}
+
+console.log('--- no hardcoded test subjects in production worker ---');
+{
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert(!/\bfrogtie\b/i.test(src), 'worker does not hardcode frogtie');
+  assert(!/dreamorgan/i.test(src), 'worker does not hardcode the person-search test domain');
+  assert(!/\bdrea morgan\b/i.test(src), 'worker does not hardcode Drea Morgan');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

@@ -3,8 +3,8 @@
   "short_name": "Carmen",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0b0f17",
-  "theme_color": "#111827",
-  "description": "Carmen — personal investigation and research workspace. Public discovery, AI analysis, evidence, and synthesis for adult users.",
+  "background_color": "#07080a",
+  "theme_color": "#07080a",
+  "description": "Carmen — adaptive public-web research and learning. Discovery, Deep Dive, collections, and investigations.",
   "icons": [{"src": "icon.svg", "sizes": "180x180", "type": "image/svg+xml", "purpose": "any maskable"}]
 }

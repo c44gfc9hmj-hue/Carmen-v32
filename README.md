@@ -10,11 +10,17 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
-## Investigation workspace (v38) additions
+## Investigation workspace (v39)
 
-- Ranked discovery with query classification, match reasons, and visual candidate cards.
-- `/dive` expands a selected candidate (retrieve + images + OBSERVED/INFERRED/UNKNOWN).
-- `/img` same-origin image proxy for iPhone-reliable evidence photos.
+v39 is the Carmen product shell around the v38 investigation engine:
+
+- Home / Search / Saved Collections / Investigations / Learn.
+- Adaptive Deep Dive and Learn paths based on entity type (person, product, technique, skill, topic, organization…).
+- Saved Collections are explicit-only — viewing never auto-saves.
+- Search stays temporary until Keep or Deep Dive persists an investigation.
+- `/learn` turns public sources into a conservative teaching brief.
+
+v38 engine (search, ranking, retrieve, image proxy, `/dive`, OBSERVED/INFERRED/UNKNOWN) is preserved.
 - Search providers (v38): DuckDuckGo, Bing, Reddit, Wikipedia, Startpage fallback. Google/Mojeek/Yahoo remain implemented but are not on the default path (Cloudflare subrequest budget).
 - `/retrieve` and `/source` — real public source retrieval with metadata, text excerpt, images, fingerprints, and explicit `RETRIEVED` / `RETRIEVAL_FAILED` status.
 - Provenance states on evidence: DISCOVERED, RETRIEVED, RETRIEVAL_FAILED (OBSERVED / INFERRED / UNKNOWN remain in AI analysis).
@@ -52,7 +58,7 @@ stay at the project root and are never served as static assets.
 
 | File | Purpose |
 |------|---------|
-| `worker.js` | Cloudflare Worker backend: `/health`, `/search`, `/retrieve`, `/source`, `/img`, `/dive`, `/chat`, `/analyze`, `/synthesize` + static asset serving via the `ASSETS` binding. |
+| `worker.js` | Cloudflare Worker backend: `/health`, `/search`, `/retrieve`, `/source`, `/img`, `/dive`, `/learn`, `/chat`, `/analyze`, `/synthesize` + static asset serving via the `ASSETS` binding. |
 | `wrangler.jsonc` | Cloudflare deployment config (`assets.directory: public`). |
 | `public/index.html` | Single-page frontend (inline styles). |
 | `public/app.js` | Frontend logic (IndexedDB, discovery, capture, analysis, synthesis). |

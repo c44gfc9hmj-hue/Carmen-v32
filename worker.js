@@ -437,13 +437,20 @@ const NAV_TITLE_RE = /^(blog|community|newsletter|home|login|sign in|search|menu
 const SKIP_IMAGE_RE = /(favicon|sprite|1x1|pixel|tracking|badge\.svg|logo\.(png|svg|jpg|gif)|icon-?\d+|apple-touch-icon|join\.(jpg|png|gif)|play\.(png|gif|jpg)|spinner|placeholder|blank\.(gif|png)|custom_assets|\/icons?\/)/i;
 const NON_NAME_TOKENS = /^(workers?|iphone|ipad|server|engine|cloud|docs?|api|sdk|framework|protocol|database|linux|windows|android|ios|iphones?)$/i;
 const PROFILE_HOST_RE = /(^|\.)(linkedin|instagram|twitter|x|onlyfans)\.com$/i;
+const TECHNIQUE_WORD_RE = /\b(technique|techniques|position|positions|tutorial|tutorials|how[- ]to|howto|knot|knots|tie|ties|pose|poses|grip|stance|method|procedure|form|hitch|splice|joinery|jig)\b/i;
+const SKILL_WORD_RE = /\b(weld|welding|welder|woodwork|woodworking|carpentry|fabricat(?:e|ion)|repair|repairs|solder|soldering|machin(?:e|ing)|plumbing|electrical|diy|craft|crafts|build(?:ing)?|project)\b/i;
+const INSTRUCTIONAL_HOST_RE = /(youtube\.com|youtu\.be|wikihow\.com|instructables\.com|wikipedia\.org|reddit\.com|khronos|familyhandyman|thisoldhouse|finewoodworking|lincolnelectric|millerwelds|hobart)/i;
+const TECHNIQUE_HINTS = new Set(['technique', 'position', 'instruction']);
+const SKILL_HINTS = new Set(['skill', 'project']);
+
 
 function classifyQuery(q, hint = '') {
   const raw = String(q || '').trim();
   const hintMap = {
     person: 'person', topic: 'topic', website: 'website', claim: 'topic',
-    product: 'product', position: 'topic', other: '', organization: 'organization',
+    product: 'product', position: 'technique', other: '', organization: 'organization',
     vehicle: 'vehicle', place: 'place', social: 'social', reddit: 'reddit',
+    technique: 'technique', skill: 'skill', project: 'skill', instruction: 'technique',
   };
   const hinted = hintMap[String(hint || '').toLowerCase()] || '';
   if (!raw) return { type: 'unknown', confidence: 'low', reason: 'Empty query', isUrl: false };
@@ -456,6 +463,12 @@ function classifyQuery(q, hint = '') {
       return { type: 'reddit', confidence: 'high', reason: 'Direct Reddit URL', isUrl: true, url, isImage };
     }
     return { type: 'website', confidence: 'high', reason: 'Direct URL', isUrl: true, url, isImage };
+  }
+  if (TECHNIQUE_HINTS.has(hinted) || (TECHNIQUE_WORD_RE.test(raw) && !SKILL_WORD_RE.test(raw))) {
+    return { type: 'technique', confidence: hinted ? 'medium' : 'medium', reason: 'Looks like a technique, position, or instructional form', isUrl: false };
+  }
+  if (SKILL_HINTS.has(hinted) || SKILL_WORD_RE.test(raw) || /\bhow to\b/i.test(raw)) {
+    return { type: 'skill', confidence: 'medium', reason: 'Looks like a skill, craft, or project to learn', isUrl: false };
   }
   if (/^@[\w.]+/.test(raw) || /\b(instagram|tiktok|onlyfans|twitter|linkedin)\b/i.test(raw)) {
     return { type: 'social', confidence: 'medium', reason: 'Looks like a social handle or profile query', isUrl: false };
@@ -488,6 +501,104 @@ function classifyQuery(q, hint = '') {
   return { type: 'topic', confidence: 'low', reason: 'Treated as a topic/query, not a specific named entity', isUrl: false };
 }
 
+function researchPaths(type) {
+  const t = String(type || 'topic');
+  const paths = {
+    person: [
+      { id: 'identity', label: 'Identity & aliases' },
+      { id: 'images', label: 'Images & visual sources' },
+      { id: 'presence', label: 'Public web presence' },
+      { id: 'timeline', label: 'Timeline' },
+      { id: 'related', label: 'Related people & entities' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'leads', label: 'Leads' },
+      { id: 'questions', label: 'Questions to investigate' },
+    ],
+    product: [
+      { id: 'overview', label: 'Overview' },
+      { id: 'specs', label: 'Specifications' },
+      { id: 'variants', label: 'Models & variants' },
+      { id: 'images', label: 'Images' },
+      { id: 'manuals', label: 'Manuals & documents' },
+      { id: 'reviews', label: 'Reviews' },
+      { id: 'alternatives', label: 'Alternatives' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'questions', label: 'Questions' },
+    ],
+    vehicle: [
+      { id: 'overview', label: 'Overview' },
+      { id: 'specs', label: 'Specifications' },
+      { id: 'variants', label: 'Years & variants' },
+      { id: 'images', label: 'Images' },
+      { id: 'manuals', label: 'Manuals' },
+      { id: 'maintenance', label: 'Maintenance & parts' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'questions', label: 'Questions' },
+    ],
+    technique: [
+      { id: 'what', label: 'What this is' },
+      { id: 'terms', label: 'Terminology' },
+      { id: 'visuals', label: 'Visual references' },
+      { id: 'variations', label: 'Variations' },
+      { id: 'tutorials', label: 'Tutorials' },
+      { id: 'videos', label: 'Videos' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'related', label: 'Related techniques' },
+      { id: 'questions', label: 'Questions' },
+    ],
+    skill: [
+      { id: 'goal', label: 'What you are trying to accomplish' },
+      { id: 'materials', label: 'Materials' },
+      { id: 'tools', label: 'Tools' },
+      { id: 'steps', label: 'Steps' },
+      { id: 'measurements', label: 'Measurements' },
+      { id: 'techniques', label: 'Techniques' },
+      { id: 'safety', label: 'Safety considerations' },
+      { id: 'trouble', label: 'Troubleshooting' },
+      { id: 'tutorials', label: 'Tutorials' },
+      { id: 'sources', label: 'References' },
+    ],
+    organization: [
+      { id: 'overview', label: 'Overview' },
+      { id: 'official', label: 'Official presence' },
+      { id: 'people', label: 'Public people & roles' },
+      { id: 'history', label: 'History' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'questions', label: 'Questions' },
+    ],
+    website: [
+      { id: 'page', label: 'This page' },
+      { id: 'site', label: 'Site context' },
+      { id: 'images', label: 'Images' },
+      { id: 'related', label: 'Related public pages' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'questions', label: 'Questions' },
+    ],
+    reddit: [
+      { id: 'thread', label: 'Thread context' },
+      { id: 'claims', label: 'Claims in discussion' },
+      { id: 'sources', label: 'Linked sources' },
+      { id: 'questions', label: 'What still needs checking' },
+    ],
+    topic: [
+      { id: 'overview', label: 'Overview' },
+      { id: 'definitions', label: 'Definitions' },
+      { id: 'history', label: 'History' },
+      { id: 'evidence', label: 'Evidence' },
+      { id: 'related', label: 'Related concepts' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'questions', label: 'Questions' },
+    ],
+    ambiguous: [
+      { id: 'interpretations', label: 'Possible interpretations' },
+      { id: 'candidates', label: 'Candidate matches' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'questions', label: 'How to disambiguate' },
+    ],
+  };
+  return paths[t] || paths.topic;
+}
+
 function buildSearchVariants(q, classification) {
   const clean = q.trim().replace(/\s+/g, ' ').slice(0, 200);
   const out = [];
@@ -515,6 +626,14 @@ function buildSearchVariants(q, classification) {
     add(clean.replace(/^https?:\/\//, ''), 'domain form');
   } else if (classification.type === 'product' || classification.type === 'vehicle') {
     add('"' + clean.replace(/"/g, '') + '"', 'exact product string');
+  } else if (classification.type === 'technique') {
+    add(clean + ' tutorial OR diagram OR how to', 'instructional / visual references');
+    add('"' + clean.replace(/"/g, '') + '"', 'exact technique name');
+  } else if (classification.type === 'skill') {
+    add(clean + ' tutorial OR guide OR procedure', 'how-to / procedure sources');
+    add(clean + ' tools materials safety', 'tools and safety context');
+  } else if (classification.type === 'organization') {
+    add(clean + ' official website', 'official organization pages');
   } else if (classification.type === 'reddit') {
     add(clean.replace(/^r\//, ''), 'community query');
   } else if (/\s/.test(clean) && !/^".*"$/.test(clean)) {
@@ -558,6 +677,15 @@ function scoreResult(query, item, classification) {
   if (PROFILE_HOST_RE.test(host)) { score += 14; bits.push('public profile host'); }
   if (host === 'reddit.com' || host.endsWith('.reddit.com')) { score += 12; bits.push('Reddit thread'); }
   if (item.image || (item.images && item.images.length)) { score += 6; bits.push('has visual evidence'); }
+  if ((classification.type === 'technique' || classification.type === 'skill') && INSTRUCTIONAL_HOST_RE.test(host)) {
+    score += 16; bits.push('instructional source');
+  }
+  if ((classification.type === 'technique' || classification.type === 'skill') && /tutorial|how to|guide|explained|diagram|procedure|safety/i.test(title + ' ' + snip)) {
+    score += 12; bits.push('instructional title');
+  }
+  if (classification.type === 'technique' && (item.image || (item.images && item.images.length))) {
+    score += 8; bits.push('visual reference');
+  }
   if (NAV_TITLE_RE.test(String(item.title || '').trim())) { score -= 45; bits.push('generic nav title'); }
   if (SEO_JUNK_RE.test(host) || SEO_JUNK_RE.test(url)) { score -= 30; bits.push('SEO/name-mill site'); }
   if (TUBE_INDEX_RE.test(host) || /\/(top|playlists?|pornstar|search)\//i.test(url)) {
@@ -613,6 +741,7 @@ function rankResults(query, results, classification) {
       reason: s.reason,
       signals: s.signals,
       aliases: aliasesFor(item, query),
+      entityType: classification.type,
     };
   }).filter(r => r.score > 10 && (r.signals || []).length);
   ranked.sort((a, b) => b.score - a.score || String(a.domain).localeCompare(String(b.domain)));
@@ -827,6 +956,7 @@ async function runDiscovery(query, opts = {}) {
     results: ranked,
     providers: diagnostics,
     count: ranked.length,
+    paths: researchPaths(classification.type),
     warning,
   };
 }
@@ -1037,7 +1167,7 @@ function collectDiveImages(retrieved, results) {
     if (r.image) add(r.image, r.url, r.source);
     for (const img of r.images || []) add(img, r.url, r.source);
   }
-  return out.slice(0, 16);
+  return out.slice(0, 24);
 }
 
 async function deepDiveHandler(req, env) {
@@ -1068,6 +1198,8 @@ async function deepDiveHandler(req, env) {
     }
     for (const h of (ids.handles || []).slice(0, 2)) extra.push(h);
     if (classification.type === 'person') extra.push('"' + seed.replace(/"/g, '') + '" (profile OR official OR website)');
+    if (classification.type === 'technique') extra.push(seed + ' tutorial OR diagram');
+    if (classification.type === 'skill') extra.push(seed + ' procedure OR safety');
     extra.push(seed + ' reddit');
     const plan = {
       subject: seed,
@@ -1113,6 +1245,9 @@ Focus source: ${candidate?.url || 'none selected'}
 
 Rules:
 - Separate OBSERVED / INFERRED / UNKNOWN as labeled headings.
+- Organize the writeup using these research headings, in order:
+${researchPaths(classification.type).map(p => p.label).join('\n')}
+- Under each heading, label facts as OBSERVED, interpretations as INFERRED, and gaps as UNKNOWN.
 - Prefer RETRIEVED excerpts over search snippets.
 - Never invent URLs, dates, or identities.
 - Images showing similar appearance across sources are OBSERVED visual consistency, NOT identity proof. Never say they are definitely the same person.
@@ -1146,11 +1281,83 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
       analysis,
       analysisError,
       leads,
+      paths: researchPaths(classification.type),
       providers: discovery.providers,
       query: seed,
     }, 200, req);
   } catch (e) {
     return json({ error: e?.name === 'AbortError' ? 'Deep Dive timed out.' : e?.message || String(e) }, 500, req);
+  }
+}
+
+async function learnHandler(req, env) {
+  try {
+    const b = await req.json().catch(() => ({}));
+    const query = String(b.query || b.subject || '').trim().slice(0, 500);
+    if (!query) return json({ error: 'Enter something you want to learn or understand.' }, 400, req);
+    const hint = String(b.type || b.subject || '').trim();
+    const classification = classifyQuery(query, hint);
+    const paths = researchPaths(classification.type);
+    const discovery = await runDiscovery(query, { hint: classification.type, enrich: true });
+    const retrieved = [];
+    const seen = new Set();
+    for (const r of discovery.results) {
+      if (retrieved.length >= 5) break;
+      if (seen.has(r.url)) continue;
+      seen.add(r.url);
+      retrieved.push(await retrieveSource(r.url));
+    }
+    const images = collectDiveImages(retrieved, discovery.results);
+    const excerpts = retrieved.filter(x => x.status === 'RETRIEVED').map(x => ({
+      title: x.title, url: x.url, provenance: 'RETRIEVED',
+      excerpt: String(x.textExcerpt || x.text || '').slice(0, 1600),
+    }));
+    let lesson = '';
+    let analysisError = '';
+    try {
+      const j = await provider(env, [
+        { role: 'system', content: CARMEN_SYSTEM + ' You teach from public sources. Never instruct anyone to take external actions on other people. Safety notes are research, not a command to act.' },
+        { role: 'user', content: `Turn this public-web research into a conservative learning brief for Carmen.
+
+Entity type: ${classification.type}
+Subject: ${query}
+${b.instructions ? 'Learner notes (direction only):\n' + String(b.instructions).slice(0, 1500) + '\n' : ''}
+
+Write using these headings:
+${paths.map(p => p.label).join('\n')}
+
+Rules:
+- Separate OBSERVED / INFERRED / UNKNOWN inside headings.
+- Ground claims in retrieved excerpts. Never invent steps, measurements, or part numbers.
+- If sources disagree, say so.
+- For skills/projects, include safety as UNKNOWN where sources do not specify it.
+- Suggest next questions and public references, never actions that contact people or buy things.
+
+Retrieved sources:
+${JSON.stringify(excerpts)}
+
+Discovery results:
+${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: r.url, snippet: r.snippet, reason: r.reason, provenance: r.provenance })))}` },
+      ], 0.2);
+      lesson = extractMessageContent(j);
+    } catch (e) {
+      analysisError = e?.name === 'AbortError' ? 'AI provider timed out.' : (e?.message || String(e));
+    }
+    return json({
+      classification,
+      paths,
+      results: discovery.results,
+      retrieved,
+      images,
+      lesson,
+      analysis: lesson,
+      analysisError,
+      providers: discovery.providers,
+      query,
+      safety: 'Read-only learning from public sources. Carmen will not contact anyone or take external actions.',
+    }, 200, req);
+  } catch (e) {
+    return json({ error: e?.name === 'AbortError' ? 'Learn timed out.' : e?.message || String(e) }, 500, req);
   }
 }
 
@@ -1163,21 +1370,22 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '38',
-        build: 'investigate-visual',
+        version: '39',
+        build: 'product',
         schemaVersion: 2,
         provider: ai.provider,
         model: ai.model,
         configured: ai.configured,
-        routes: ['/health', '/search', '/retrieve', '/source', '/img', '/dive', '/chat', '/analyze', '/synthesize'],
+        routes: ['/health', '/search', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'deep-dive', 'instructions', 'timeline', 'evidence', 'leads'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'deep-dive', 'learn', 'collections', 'adaptive-paths', 'instructions', 'timeline', 'evidence', 'leads'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
     if (u.pathname === '/img' && req.method === 'GET') return imageProxy(req);
     if (u.pathname === '/dive' && req.method === 'POST') return deepDiveHandler(req, env);
+    if (u.pathname === '/learn' && req.method === 'POST') return learnHandler(req, env);
     if (u.pathname === '/chat' && req.method === 'POST') return chat(req, env);
     if (u.pathname === '/analyze' && req.method === 'POST') return analyze(req, env);
     if (u.pathname === '/synthesize' && req.method === 'POST') return synthesize(req, env);
@@ -1384,4 +1592,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath };
+export { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath, researchPaths };
