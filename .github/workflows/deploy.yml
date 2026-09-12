@@ -25,11 +25,13 @@ jobs:
           node-version: "20"
 
       - name: Install Wrangler
-        run: npm install --no-save wrangler@3
+        run: npm install --no-save wrangler@4
 
-      # Names only — Wrangler never prints secret values
+      # Prints secret NAMES only (never values)
       - name: List Worker secret names (before deploy)
-        run: npx wrangler secret list --name carmen-iphone-v25 --format pretty || true
+        run: |
+          echo "=== secret list (names only) ==="
+          npx wrangler secret list --name carmen-iphone-v25 --format json || true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -41,7 +43,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: List Worker secret names (after deploy)
-        run: npx wrangler secret list --name carmen-iphone-v25 --format pretty || true
+        run: |
+          echo "=== secret list after deploy (names only) ==="
+          npx wrangler secret list --name carmen-iphone-v25 --format json || true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
