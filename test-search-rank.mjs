@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath, researchPaths } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -108,6 +108,7 @@ console.log('--- research paths adapt to type ---');
 {
   const person = researchPaths('person').map(p => p.id);
   assert(person.includes('identity') && person.includes('images'), 'person paths include identity and images');
+  assert(person.includes('videos'), 'person paths include videos');
   const tech = researchPaths('technique').map(p => p.id);
   assert(tech.includes('visuals') && tech.includes('tutorials'), 'technique paths include visuals and tutorials');
   const skill = researchPaths('skill').map(p => p.id);
@@ -132,6 +133,26 @@ console.log('--- instructional ranking ---');
 console.log('--- humanizePath ---');
 {
   assert(humanizePath('https://dreamorgan.com/models/DreaMorgan.html') === 'Drea Morgan', 'camelCase path becomes a name');
+}
+
+console.log('--- dive path selection is not cosmetic ---');
+{
+  const person = researchPaths('person');
+  const all = resolveDivePaths('person', { all: true });
+  assert(all.all === true && all.selected.length === person.length, 'ALL selects every path for the type');
+  const subset = resolveDivePaths('person', { all: false, paths: ['images', 'videos'] });
+  assert(subset.all === false, 'subset is not ALL');
+  assert(subset.selected.map(p => p.id).join(',') === 'images,videos', 'backend keeps the selected path ids');
+  const productSubset = resolveDivePaths('product', { all: false, paths: ['images', 'videos'] });
+  assert(productSubset.selected.some(p => p.id === 'videos'), 'videos path is honored even when the entity type does not list it by default');
+  const inferred = inferPathsFromQuestion('Focus on public interviews and videos', person);
+  assert(inferred.includes('videos'), 'custom question infers videos path');
+  const variants = pathSearchVariants('example subject', subset.selected);
+  assert(variants.some(v => /video|youtube/i.test(v.q)), 'selected video path changes search variants');
+  assert(youtubeId('https://www.youtube.com/watch?v=dQw4w9wgGcQ') === 'dQw4w9wgGcQ', 'youtube id parsed');
+  const rel = parseRelated('RELATED\n- technique: a public form — mentioned on the source page\n- person: someone else — linked from the same site');
+  assert(rel.length >= 1 && rel[0].kind === 'technique', 'related entities parsed from writeup');
+  assert(!JSON.stringify(variants).toLowerCase().includes('frogtie'), 'path variants are not hardcoded to a test query');
 }
 
 console.log('--- no hardcoded test subjects in production worker ---');

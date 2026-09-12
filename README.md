@@ -10,17 +10,17 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
-## Investigation workspace (v39)
+## Investigation workspace (v40)
 
-v39 is the Carmen product shell around the v38 investigation engine:
+v40 is a product-architecture correction of the v39 shell around the v38 engine:
 
-- Home / Search / Saved Collections / Investigations / Learn.
-- Adaptive Deep Dive and Learn paths based on entity type (person, product, technique, skill, topic, organization…).
-- Saved Collections are explicit-only — viewing never auto-saves.
-- Search stays temporary until Keep or Deep Dive persists an investigation.
-- `/learn` turns public sources into a conservative teaching brief.
+- Deep Dive asks **what to investigate** first: ALL, multi-select research paths, or a custom question. Selections change retrieval and synthesis.
+- Deep Dive is a workspace (findings, images, videos, sources, leads, related) rather than a single dump.
+- Videos are playable when a public embed exists; otherwise thumbnail + Open source.
+- Related-entity branching keeps the original investigation.
+- Search stays ephemeral until Keep or Deep Dive. Collections stay explicit-only.
 
-v38 engine (search, ranking, retrieve, image proxy, `/dive`, OBSERVED/INFERRED/UNKNOWN) is preserved.
+v38 engine (search, ranking, retrieve, image proxy, OBSERVED/INFERRED/UNKNOWN) is preserved.
 - Search providers (v38): DuckDuckGo, Bing, Reddit, Wikipedia, Startpage fallback. Google/Mojeek/Yahoo remain implemented but are not on the default path (Cloudflare subrequest budget).
 - `/retrieve` and `/source` — real public source retrieval with metadata, text excerpt, images, fingerprints, and explicit `RETRIEVED` / `RETRIEVAL_FAILED` status.
 - Provenance states on evidence: DISCOVERED, RETRIEVED, RETRIEVAL_FAILED (OBSERVED / INFERRED / UNKNOWN remain in AI analysis).

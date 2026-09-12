@@ -109,6 +109,16 @@ main{max-width:720px;margin:0 auto;padding:14px 16px 28px}
 .sheet .panel{width:100%;max-width:720px;background:var(--card);border-top:1px solid var(--line);border-radius:20px 20px 0 0;padding:16px 16px calc(18px + env(safe-area-inset-bottom))}
 .lightbox{position:fixed;inset:0;background:#000d;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:10px}
 .lightbox img{max-width:100%;max-height:72vh;object-fit:contain;border-radius:12px;background:#000}
+.lightbox .navrow{display:flex;gap:8px;width:100%;max-width:720px}
+.ws-tabs{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 0 10px}
+.ws-tabs .chip{flex:0 0 auto}
+.video-card{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0b0d11;margin-bottom:10px}
+.video-card iframe,.video-card video{width:100%;aspect-ratio:16/9;border:0;background:#000;display:block}
+.video-card .vmeta{padding:10px 12px}
+.suggest{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:8px 0;background:#12161c;font-size:13px;color:var(--accent)}
+.pathpick{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.pathpick .chip{cursor:pointer}
+.branch{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:8px;background:var(--card2)}
 .hidden{display:none!important}
 section.view{display:block}
 section.view.hidden{display:none!important}
@@ -144,11 +154,15 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 
 <section id="homeView" class="view">
   <div class="hero-home">
-    <h2>Understand something.</h2>
-    <p>Give Carmen a name, URL, object, technique, or skill. It classifies the query, ranks public sources, and adapts the investigation.</p>
+    <h2>Give Carmen something to investigate or learn.</h2>
+    <p>A person, product, URL, technique, skill, photo, or anything you don’t yet understand. Carmen classifies it, finds public sources, and lets you choose what to investigate.</p>
     <div class="searchbox">
-      <input id="homeQuery" placeholder="Person, product, URL, technique…" enterkeyhint="search">
+      <input id="homeQuery" placeholder="Person, product, URL, technique, skill…" enterkeyhint="search">
       <button class="btn primary" id="homeSearchBtn">Search</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn ghost" id="homeImageBtn" style="flex:0 0 auto">Inspect image</button>
+      <input id="homeImage" type="file" accept="image/*" class="hidden">
     </div>
     <p class="warning">Research only. Carmen never contacts people, posts, comments, follows, submits forms, or buys anything.</p>
   </div>
@@ -162,7 +176,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <section id="searchView" class="view hidden">
   <div class="card">
     <h3>Search</h3>
-    <p class="muted">Carmen classifies what you entered, then ranks public candidates. Deep Dive expands a selected result — it does not repeat the same keyword dump.</p>
+    <p class="muted">Carmen classifies what you entered, then ranks public candidates. After you select one, Carmen asks what you want to investigate — it does not dump the same keywords again.</p>
     <div class="chips" id="subjectChips">
       <button class="chip active" data-subject="">Auto</button>
       <button class="chip" data-subject="person">Person</button>
@@ -171,6 +185,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <button class="chip" data-subject="technique">Technique</button>
       <button class="chip" data-subject="skill">Skill / project</button>
       <button class="chip" data-subject="organization">Organization</button>
+      <button class="chip" data-subject="place">Place</button>
       <button class="chip" data-subject="topic">Topic</button>
       <button class="chip" data-subject="website">URL</button>
     </div>
@@ -182,17 +197,28 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     </div>
     <p id="deepDiveHint" class="hint">Search first, then tap a candidate. Deep Dive stays unavailable until there is something real to expand.</p>
     <div id="classBar"></div>
+    <div id="suggestBar"></div>
     <div id="searchDiagnostics" class="diags"></div>
   </div>
   <div class="card">
     <h3>Candidates <span id="resultCount" class="badge"></span></h3>
     <div id="selectedBanner"></div>
+    <div id="divePlanner" class="hidden">
+      <p id="divePlannerLead" class="muted"></p>
+      <div class="pathpick" id="diveSelectChips"></div>
+      <label class="hint">Custom question — Carmen will choose useful paths from this</label>
+      <textarea id="diveCustom" placeholder="Focus on public interviews and videos…"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="btn primary" id="startDiveBtn">Start Deep Dive</button>
+        <button class="btn ghost" id="cancelDiveBtn">Not now</button>
+      </div>
+    </div>
     <div id="results"></div>
     <p id="resultsEmpty" class="muted">Results will appear here as ranked candidates — image, title, type, why it matched, source.</p>
   </div>
   <div class="card">
     <h3>Deep dive</h3>
-    <p class="muted">Adapts to the selected entity. Images keep page provenance. Visual consistency is not identity proof.</p>
+    <p class="muted">A workspace, not a one-shot report. Findings, images, videos, sources, leads, and related aspects. Visual likeness is not identity proof.</p>
     <div id="divePaths" class="pathchips"></div>
     <div id="deepDiveProgress"></div>
     <div id="deepDiveResult"></div>
@@ -408,7 +434,12 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true">
   <img id="lightboxImg" alt="Evidence image">
   <p id="lightboxCap" class="hint"></p>
-  <button class="btn ghost" id="lightboxClose">Close</button>
+  <div class="navrow">
+    <button class="btn" id="lightboxPrev">Prev</button>
+    <button class="btn" id="lightboxNext">Next</button>
+    <button class="btn" id="lightboxSource">Open source</button>
+    <button class="btn ghost" id="lightboxClose">Close</button>
+  </div>
 </div>
 <div id="saveSheet" class="sheet hidden">
   <div class="panel">

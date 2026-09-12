@@ -450,7 +450,7 @@ function classifyQuery(q, hint = '') {
     person: 'person', topic: 'topic', website: 'website', claim: 'topic',
     product: 'product', position: 'technique', other: '', organization: 'organization',
     vehicle: 'vehicle', place: 'place', social: 'social', reddit: 'reddit',
-    technique: 'technique', skill: 'skill', project: 'skill', instruction: 'technique',
+    technique: 'technique', skill: 'skill', project: 'project', instruction: 'technique',
   };
   const hinted = hintMap[String(hint || '').toLowerCase()] || '';
   if (!raw) return { type: 'unknown', confidence: 'low', reason: 'Empty query', isUrl: false };
@@ -468,7 +468,7 @@ function classifyQuery(q, hint = '') {
     return { type: 'technique', confidence: hinted ? 'medium' : 'medium', reason: 'Looks like a technique, position, or instructional form', isUrl: false };
   }
   if (SKILL_HINTS.has(hinted) || SKILL_WORD_RE.test(raw) || /\bhow to\b/i.test(raw)) {
-    return { type: 'skill', confidence: 'medium', reason: 'Looks like a skill, craft, or project to learn', isUrl: false };
+    return { type: hinted === 'project' ? 'project' : 'skill', confidence: 'medium', reason: 'Looks like a skill, craft, or project to learn', isUrl: false };
   }
   if (/^@[\w.]+/.test(raw) || /\b(instagram|tiktok|onlyfans|twitter|linkedin)\b/i.test(raw)) {
     return { type: 'social', confidence: 'medium', reason: 'Looks like a social handle or profile query', isUrl: false };
@@ -507,6 +507,7 @@ function researchPaths(type) {
     person: [
       { id: 'identity', label: 'Identity & aliases' },
       { id: 'images', label: 'Images & visual sources' },
+      { id: 'videos', label: 'Videos' },
       { id: 'presence', label: 'Public web presence' },
       { id: 'timeline', label: 'Timeline' },
       { id: 'related', label: 'Related people & entities' },
@@ -519,6 +520,7 @@ function researchPaths(type) {
       { id: 'specs', label: 'Specifications' },
       { id: 'variants', label: 'Models & variants' },
       { id: 'images', label: 'Images' },
+      { id: 'videos', label: 'Videos' },
       { id: 'manuals', label: 'Manuals & documents' },
       { id: 'reviews', label: 'Reviews' },
       { id: 'alternatives', label: 'Alternatives' },
@@ -530,6 +532,7 @@ function researchPaths(type) {
       { id: 'specs', label: 'Specifications' },
       { id: 'variants', label: 'Years & variants' },
       { id: 'images', label: 'Images' },
+      { id: 'videos', label: 'Videos' },
       { id: 'manuals', label: 'Manuals' },
       { id: 'maintenance', label: 'Maintenance & parts' },
       { id: 'sources', label: 'Sources' },
@@ -557,6 +560,35 @@ function researchPaths(type) {
       { id: 'trouble', label: 'Troubleshooting' },
       { id: 'tutorials', label: 'Tutorials' },
       { id: 'sources', label: 'References' },
+    ],
+    project: [
+      { id: 'goal', label: 'What you are trying to accomplish' },
+      { id: 'materials', label: 'Materials' },
+      { id: 'tools', label: 'Tools' },
+      { id: 'steps', label: 'Steps' },
+      { id: 'measurements', label: 'Measurements' },
+      { id: 'techniques', label: 'Techniques' },
+      { id: 'safety', label: 'Safety considerations' },
+      { id: 'trouble', label: 'Troubleshooting' },
+      { id: 'tutorials', label: 'Tutorials' },
+      { id: 'sources', label: 'References' },
+    ],
+    place: [
+      { id: 'overview', label: 'Overview' },
+      { id: 'location', label: 'Location & context' },
+      { id: 'images', label: 'Images' },
+      { id: 'related', label: 'Related places & entities' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'questions', label: 'Questions' },
+    ],
+    social: [
+      { id: 'identity', label: 'Identity & handles' },
+      { id: 'images', label: 'Images' },
+      { id: 'videos', label: 'Videos' },
+      { id: 'presence', label: 'Public presence' },
+      { id: 'related', label: 'Related accounts & entities' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'questions', label: 'Questions' },
     ],
     organization: [
       { id: 'overview', label: 'Overview' },
@@ -597,6 +629,170 @@ function researchPaths(type) {
     ],
   };
   return paths[t] || paths.topic;
+}
+
+function inferPathsFromQuestion(question, allPaths) {
+  const t = String(question || '').toLowerCase();
+  if (!t) return [];
+  const available = new Set((allPaths || []).map(p => p.id));
+  const out = [];
+  const rules = [
+    [/image|photo|visual|picture|gallery|pic\b/, ['images', 'visuals']],
+    [/video|youtube|interview|clip|watch|footage/, ['videos']],
+    [/timeline|history|when|chronolog|date/, ['timeline', 'history']],
+    [/identity|alias|who is|real name|handle/, ['identity']],
+    [/presence|website|profile|social|official/, ['presence', 'official']],
+    [/related|other people|connected|associated/, ['related']],
+    [/tutorial|how to|learn|teach|instruct|procedure|steps/, ['tutorials', 'steps']],
+    [/tool|material|part|supply/, ['tools', 'materials']],
+    [/safety|hazard|ppe/, ['safety']],
+    [/spec|measurement|dimension/, ['specs', 'measurements']],
+    [/source|citation|evidence|reference/, ['sources']],
+    [/variation|variant|model/, ['variations', 'variants']],
+    [/term|definition|what is this|meaning/, ['what', 'terms', 'definitions']],
+  ];
+  for (const [re, ids] of rules) {
+    if (!re.test(t)) continue;
+    for (const id of ids) if (available.has(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+function resolveDivePaths(type, body = {}) {
+  const all = researchPaths(type);
+  const requestedRaw = Array.isArray(body.paths) ? body.paths : (Array.isArray(body.pathIds) ? body.pathIds : []);
+  const requested = requestedRaw.map(x => (typeof x === 'string' ? x : x && x.id)).filter(Boolean);
+  const custom = String(body.customQuestion || body.question || '').trim();
+  const inferred = inferPathsFromQuestion(custom, all);
+  const wantAll = body.all === true || body.all === 'true' || requested.includes('all') || (!requested.length && !inferred.length);
+  if (wantAll) return { all: true, selected: all, inferred, custom };
+  const ids = new Set(requested.filter(id => id !== 'all'));
+  for (const id of inferred) ids.add(id);
+  const extras = [];
+  if (ids.has('videos') && !all.some(p => p.id === 'videos')) extras.push({ id: 'videos', label: 'Videos' });
+  if (ids.has('images') && !all.some(p => p.id === 'images') && !all.some(p => p.id === 'visuals')) extras.push({ id: 'images', label: 'Images' });
+  let selected = all.filter(p => ids.has(p.id)).concat(extras);
+  if (!selected.length) selected = all;
+  return { all: extras.length ? false : selected.length === all.length, selected, inferred, custom };
+}
+
+function pathSearchVariants(seed, selectedPaths) {
+  const extra = [];
+  const ids = new Set((selectedPaths || []).map(p => p.id));
+  const add = (q, why) => {
+    const t = String(q || '').trim();
+    if (!t || extra.some(x => x.q === t)) return;
+    extra.push({ q: t, why });
+  };
+  if (ids.has('images') || ids.has('visuals')) add(seed + ' photos OR images OR gallery', 'visual evidence');
+  if (ids.has('videos')) add(seed + ' video OR youtube OR interview', 'video sources');
+  if (ids.has('timeline') || ids.has('history')) add(seed + ' timeline OR history', 'chronology');
+  if (ids.has('presence') || ids.has('official')) add(seed + ' official OR profile OR website', 'public presence');
+  if (ids.has('tutorials') || ids.has('steps')) add(seed + ' tutorial OR procedure OR how to', 'instructional sources');
+  if (ids.has('safety')) add(seed + ' safety', 'safety context');
+  return extra.slice(0, 4);
+}
+
+function youtubeId(url) {
+  try {
+    const u = new URL(String(url || ''));
+    const h = u.hostname.replace(/^www\./, '').toLowerCase();
+    if (h === 'youtu.be') return u.pathname.replace(/^\//, '').split('/')[0] || '';
+    if (h === 'youtube.com' || h === 'm.youtube.com' || h.endsWith('.youtube.com')) {
+      if (u.searchParams.get('v')) return u.searchParams.get('v');
+      const m = u.pathname.match(/\/(?:embed|shorts|live)\/([^/?]+)/);
+      if (m) return m[1];
+    }
+  } catch {}
+  return '';
+}
+
+function vimeoId(url) {
+  try {
+    const u = new URL(String(url || ''));
+    if (!/(^|\.)vimeo\.com$/i.test(u.hostname.replace(/^www\./, ''))) return '';
+    const m = u.pathname.match(/\/(?:video\/)?(\d+)/);
+    return m ? m[1] : '';
+  } catch { return ''; }
+}
+
+function isVideoHost(url) {
+  const h = hostOf(url).replace(/^www\./, '');
+  return /youtube\.com|youtu\.be|vimeo\.com|reddit\.com/i.test(h) || /\.(mp4|webm|mov)(\?|$)/i.test(String(url || ''));
+}
+
+function collectDiveVideos(retrieved, results) {
+  const out = [];
+  const seen = new Set();
+  const add = (url, pageUrl, title, thumb) => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    const yt = youtubeId(url);
+    const vim = vimeoId(url);
+    const host = hostOf(url).replace(/^www\./, '');
+    const embedUrl = yt ? ('https://www.youtube.com/embed/' + yt) : (vim ? ('https://player.vimeo.com/video/' + vim) : '');
+    out.push({
+      url,
+      pageUrl: pageUrl || url,
+      title: title || host,
+      domain: host,
+      thumbnail: thumb || (yt ? ('https://i.ytimg.com/vi/' + yt + '/hqdefault.jpg') : ''),
+      embedUrl,
+      playable: !!embedUrl,
+      retrievedAt: new Date().toISOString(),
+    });
+  };
+  for (const r of results || []) {
+    if (youtubeId(r.url) || vimeoId(r.url) || /\.(mp4|webm|mov)(\?|$)/i.test(r.url || '')) {
+      add(r.url, r.url, r.title, r.image);
+    }
+  }
+  for (const page of retrieved || []) {
+    if (page.ogVideo) add(page.ogVideo, page.finalUrl || page.url, page.title, page.ogImage);
+    const text = String(page.textExcerpt || page.text || page.description || '');
+    const re = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=[\w-]{6,}|youtu\.be\/[\w-]{6,}|vimeo\.com\/\d+)/gi;
+    let m;
+    while ((m = re.exec(text)) && out.length < 12) add(m[0], page.finalUrl || page.url, page.title, page.ogImage);
+  }
+  return out.slice(0, 12);
+}
+
+function relatedFromDiscovery(results, candidate) {
+  const focus = (candidate && candidate.url) || '';
+  const focusHost = hostOf(focus);
+  const out = [];
+  for (const r of results || []) {
+    if (!r || r.url === focus) continue;
+    if (r.confidence !== 'high' && r.confidence !== 'medium') continue;
+    if (focusHost && hostOf(r.url) === focusHost) continue;
+    out.push({
+      kind: r.entityType || 'source',
+      label: r.title,
+      url: r.url,
+      why: r.reason || 'Related public source',
+      image: r.image || '',
+      domain: r.domain || hostOf(r.url),
+    });
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+function parseRelated(text) {
+  const out = [];
+  const raw = String(text || '');
+  const idx = raw.search(/RELATED(?:_ENTITIES)?\b/i);
+  if (idx < 0) return out;
+  const block = raw.slice(idx).split(/\n(?:OBSERVED|INFERRED|UNKNOWN)\b/i)[0];
+  const re = /^\s*[-*]\s*([A-Za-z][A-Za-z /]{2,24})\s*[:—\-]\s*(.+)$/gm;
+  let m;
+  while ((m = re.exec(block)) && out.length < 8) {
+    const kind = m[1].trim().toLowerCase();
+    const rest = m[2].trim();
+    const parts = rest.split(/\s[—–-]\s/);
+    out.push({ kind, label: (parts[0] || rest).trim(), why: parts.slice(1).join(' — ').trim() });
+  }
+  return out;
 }
 
 function buildSearchVariants(q, classification) {
@@ -1047,7 +1243,7 @@ async function provider(env, messages, temperature = 0.2) {
   } finally { clearTimeout(timer); }
 }
 
-const CARMEN_SYSTEM = 'You are Carmen, a conservative AI research assistant for adult users. Be concise and useful. Clearly distinguish OBSERVED (directly stated/visible), INFERRED (labeled interpretation), and UNKNOWN. Never invent facts, sources, URLs, dates, or evidence. Never claim something was saved or sent unless the user explicitly requested it. Never autonomously contact people, send messages, post, comment, submit forms, make purchases, create accounts, perform transactions, or take any external action. You may research, analyze, organize, and prepare information only.';
+const CARMEN_SYSTEM = 'You are Carmen, a conservative AI research assistant for adult users. Be concise and useful. Clearly distinguish OBSERVED (directly stated/visible), INFERRED (labeled interpretation), and UNKNOWN. Never invent facts, sources, URLs, dates, or evidence. Never claim something was saved or sent unless the user explicitly requested it. Never autonomously contact people, send messages, post, comment, submit forms, make purchases, create accounts, perform transactions, or take any external action. You may research, analyze, organize, and prepare information only. For sexual or self-bondage topics, do not provide explicit step-by-step sexual or self-bondage instructions; you may organize public sources, terminology, visual references, and research questions. For general skills and crafts you may outline procedures only when they are grounded in retrieved sources.';
 
 async function chat(req, env) {
   try {
@@ -1181,6 +1377,10 @@ async function deepDiveHandler(req, env) {
     }
     const seed = query || String(candidate.title || '').trim();
     const classification = classifyQuery(seed, hint);
+    const resolved = resolveDivePaths(classification.type, b);
+    const selectedPaths = resolved.selected;
+    const selectedIds = new Set(selectedPaths.map(p => p.id));
+    const customQuestion = resolved.custom || String(b.customQuestion || b.instructions || '').trim();
     const extra = [];
     const retrieved = [];
     const seenUrl = new Set();
@@ -1199,34 +1399,46 @@ async function deepDiveHandler(req, env) {
     for (const h of (ids.handles || []).slice(0, 2)) extra.push(h);
     if (classification.type === 'person') extra.push('"' + seed.replace(/"/g, '') + '" (profile OR official OR website)');
     if (classification.type === 'technique') extra.push(seed + ' tutorial OR diagram');
-    if (classification.type === 'skill') extra.push(seed + ' procedure OR safety');
+    if (classification.type === 'skill' || classification.type === 'project') extra.push(seed + ' procedure OR safety');
+    for (const v of pathSearchVariants(seed, selectedPaths)) extra.push(v.q);
     extra.push(seed + ' reddit');
     const plan = {
       subject: seed,
       type: classification.type,
       why: classification.reason,
       focusUrl: candidate?.url || '',
+      all: resolved.all,
+      selectedPaths: selectedPaths.map(p => p.id),
+      customQuestion,
       investigating: [
-        'Expand the selected candidate with exact and contextual variants',
+        resolved.all ? 'Investigate all relevant research paths for this entity type' : ('Investigate selected paths: ' + selectedPaths.map(p => p.label).join(', ')),
+        customQuestion ? ('User question: ' + customQuestion.slice(0, 180)) : 'No custom question — follow the selected paths',
         candidate?.url ? 'Retrieve the selected source page and public identifiers found on it' : 'Retrieve the strongest public sources',
-        ids.handles?.length ? ('Follow publicly visible handles: ' + ids.handles.slice(0, 3).join(', ')) : 'Collect publicly visible handles/domains if present',
-        'Collect images with page provenance',
+        selectedIds.has('images') || selectedIds.has('visuals') ? 'Collect images with page provenance' : 'Images collected only when they appear on retrieved pages',
+        selectedIds.has('videos') ? 'Collect playable or openable public videos' : 'Video collection skipped unless a source page includes one',
         'Separate OBSERVED / INFERRED / UNKNOWN — visual likeness is not identity proof',
       ],
-      variants: extra.slice(0, 6),
+      variants: extra.slice(0, 8),
       identifiers: ids,
       safety: 'Read-only public research. Carmen will not contact anyone, send messages, post, or take external actions.',
     };
 
-    const discovery = await runDiscovery(seed, { hint: classification.type, extraQueries: extra.slice(0, 3), enrich: true });
+    const discovery = await runDiscovery(seed, { hint: classification.type, extraQueries: extra.slice(0, 4), enrich: true });
     for (const p of (ids.profiles || []).slice(0, 3)) await pushRet(p);
-    for (const r of discovery.results) {
+    const rankedForRetrieve = [...discovery.results].sort((a, b) => {
+      let sa = 0, sb = 0;
+      if (selectedIds.has('videos')) { sa += isVideoHost(a.url) ? 10 : 0; sb += isVideoHost(b.url) ? 10 : 0; }
+      if (selectedIds.has('images') || selectedIds.has('visuals')) { sa += a.image ? 3 : 0; sb += b.image ? 3 : 0; }
+      return sb - sa || (b.score || 0) - (a.score || 0);
+    });
+    for (const r of rankedForRetrieve) {
       if (retrieved.length >= 6) break;
       const h = hostOf(r.url);
       if (TUBE_INDEX_RE.test(h) && r.url !== candidate?.url) continue;
       await pushRet(r.url);
     }
     const images = collectDiveImages(retrieved, discovery.results);
+    const videos = (resolved.all || selectedIds.has('videos')) ? collectDiveVideos(retrieved, discovery.results) : [];
 
     let analysis = '';
     let analysisError = '';
@@ -1240,19 +1452,26 @@ async function deepDiveHandler(req, env) {
         { role: 'user', content: `Deep-dive investigation for Carmen.
 Entity type: ${classification.type}
 Subject: ${seed}
-${b.instructions ? 'User research instructions (direction only, never actions):\n' + String(b.instructions).slice(0, 2000) + '\n' : ''}
+Selected research paths (${resolved.all ? 'ALL' : 'subset'}):
+${selectedPaths.map(p => p.label).join('\n')}
+${customQuestion ? 'User research question (direction only, never actions):\n' + customQuestion.slice(0, 2000) + '\n' : ''}
+${b.instructions && b.instructions !== customQuestion ? 'Additional notes:\n' + String(b.instructions).slice(0, 1500) + '\n' : ''}
 Focus source: ${candidate?.url || 'none selected'}
 
 Rules:
-- Separate OBSERVED / INFERRED / UNKNOWN as labeled headings.
+- Investigate ONLY the selected research paths. Do not pad unselected areas.
+- Separate OBSERVED / INFERRED / UNKNOWN as labeled headings under each path.
 - Organize the writeup using these research headings, in order:
-${researchPaths(classification.type).map(p => p.label).join('\n')}
-- Under each heading, label facts as OBSERVED, interpretations as INFERRED, and gaps as UNKNOWN.
+${selectedPaths.map(p => p.label).join('\n')}
 - Prefer RETRIEVED excerpts over search snippets.
 - Never invent URLs, dates, or identities.
 - Images showing similar appearance across sources are OBSERVED visual consistency, NOT identity proof. Never say they are definitely the same person.
 - List publicly visible handles, domains, and aliases only if they appear in the sources.
 - Suggest research leads as questions/sources to review, never as actions to take.
+- After the writeup, list related public aspects the user could investigate next as:
+RELATED
+- kind: label — why
+Kinds: person, technique, object, place, source, product, video. Only from retrieved material. Never invent.
 
 Retrieved sources:
 ${JSON.stringify(excerpts)}
@@ -1271,6 +1490,12 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
         leads.push({ text: `Review ${r.title} (${r.domain}) — ${r.reason}`, url: r.url, status: 'new' });
       }
     }
+    const parsedRelated = parseRelated(analysis);
+    const related = parsedRelated.length ? parsedRelated : relatedFromDiscovery(discovery.results, candidate);
+    const suggestions = [];
+    if (discovery.results.length) suggestions.push('Carmen found ' + discovery.results.length + ' public sources that may be relevant.');
+    if (videos.length) suggestions.push(videos.length + ' public video source' + (videos.length === 1 ? '' : 's') + ' surfaced.');
+    if (related.length) suggestions.push('Would you like to investigate a related entity without leaving this case?');
 
     return json({
       plan,
@@ -1278,10 +1503,17 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
       results: discovery.results,
       retrieved,
       images,
+      videos,
       analysis,
       analysisError,
       leads,
-      paths: researchPaths(classification.type),
+      related,
+      suggestions,
+      paths: selectedPaths,
+      availablePaths: researchPaths(classification.type),
+      selectedPathIds: selectedPaths.map(p => p.id),
+      all: resolved.all,
+      customQuestion,
       providers: discovery.providers,
       query: seed,
     }, 200, req);
@@ -1370,8 +1602,8 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '39',
-        build: 'product',
+        version: '40',
+        build: 'workspace',
         schemaVersion: 2,
         provider: ai.provider,
         model: ai.model,
@@ -1379,7 +1611,7 @@ export default {
         routes: ['/health', '/search', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'deep-dive', 'learn', 'collections', 'adaptive-paths', 'instructions', 'timeline', 'evidence', 'leads'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -1418,10 +1650,13 @@ function extractMeta(html) {
     html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i) || [])[1] || '';
   const ogImage = (html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']*)["']/i) ||
     html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:image["']/i) || [])[1] || '';
+  const ogVideo = (html.match(/<meta[^>]+property=["']og:video(?::url)?["'][^>]+content=["']([^"']*)["']/i) ||
+    html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:video(?::url)?["']/i) || [])[1] || '';
   return {
     title: cleanText(title).slice(0, 300),
     description: cleanText(desc).slice(0, 600),
     ogImage: decodeEntities(ogImage),
+    ogVideo: decodeEntities(ogVideo),
   };
 }
 
@@ -1550,6 +1785,8 @@ async function retrieveSource(targetUrl) {
     const identifiers = extractPublicIdentifiers(html, r.url || url);
     let ogAbs = meta.ogImage;
     try { if (ogAbs) ogAbs = new URL(decodeEntities(ogAbs), r.url || url).href; } catch {}
+    let ogVideo = meta.ogVideo || '';
+    try { if (ogVideo) ogVideo = new URL(decodeEntities(ogVideo), r.url || url).href; } catch {}
     return {
       status: 'RETRIEVED',
       url,
@@ -1559,6 +1796,7 @@ async function retrieveSource(targetUrl) {
       text,
       textExcerpt: text,
       ogImage: ogAbs || images[0] || '',
+      ogVideo,
       images,
       fingerprint: simpleFingerprint(text),
       retrievedAt: new Date().toISOString(),
@@ -1592,4 +1830,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath, researchPaths };
+export { classifyQuery, scoreResult, buildSearchVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, collectDiveVideos, parseRelated };

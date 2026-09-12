@@ -16,10 +16,12 @@ function assert(cond, msg) {
 console.log('--- /health ---');
 { const { status, body } = await call('/health');
   assert(status === 200, 'health 200');
-  assert(body.version === '39', 'version 39');
+  assert(body.version === '40', 'version 40');
   assert(body.routes.includes('/retrieve'), 'routes include /retrieve');
   assert(body.routes.includes('/dive'), 'routes include /dive');
   assert(body.routes.includes('/learn'), 'routes include /learn');
+  assert(Array.isArray(body.features) && body.features.includes('dive-select'), 'features include dive-select');
+  assert(body.features.includes('videos'), 'features include videos');
   assert(body.provider === 'openrouter', 'provider openrouter');
   assert(body.model === 'openrouter/free', 'model openrouter/free');
   assert(body.configured === false, 'configured false without key'); }
