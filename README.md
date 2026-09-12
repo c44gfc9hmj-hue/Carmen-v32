@@ -10,6 +10,16 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
+## Investigation workspace (v46)
+
+v46 is a correctness pass on live v45. It does not replace the v38 engine, v40 planner, v42 adult filter, v43 discovery graph, v44 interest lenses / result kinds, or v45 visual identification.
+
+- **Canonical entity ≠ discovery evidence** — selecting a Browse/Search card identifies a person/product/vehicle/org/topic. That card is provenance, not a research universe.
+- **Deep Dive researches ENTITY + CONTEXT + QUESTION** across public sources. It does not inherit `site:` / domain / result-set restrictions from the identifying page unless the user explicitly asked for one.
+- **Identifying source unavailable** — Deep Dive continues with the canonical entity on other public sources.
+- **Open source is distinct from identify** — tapping a person card/image selects the person; Open source opens the page.
+- Visual resemblance is still not identity proof. The selected image is evidence, not a search restriction.
+
 ## Investigation workspace (v45)
 
 v45 is a person-experience pass on live v44. It does not replace the v38 engine, v40 planner, v42 adult filter, v43 discovery graph, or v44 interest lenses / result kinds.

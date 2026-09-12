@@ -7,12 +7,12 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '45';
+const VERSION = '46';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
 const DB_VERSION = 3;
-const SESSION_KEY = 'carmen_session_v45';
+const SESSION_KEY = 'carmen_session_v46';
 const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).length) ? window.CARMEN_BACKEND : location.origin;
 
 let db = null, stream = null, current = null, historyStack = [], historyIndex = -1, currentProjectId = null;
@@ -861,23 +861,46 @@ function renderClassification(data) {
     <p class="hint" style="margin:6px 0 0">${esc(c.reason)}${c.isUrl ? ' · treating this as a page to inspect' : ''}${lanes ? '<br>Discovery lanes: ' + lanes : ''}</p>
   </div>${warn}`;
 }
+function entityIdFor(type, name) {
+  const t = String(type || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const n = String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return n ? ('entity:' + (t || 'unknown') + ':' + n) : '';
+}
 function resolveSelectedEntity(r) {
   const c = lastClassification || {};
   const name = String(c.subject || researchSubject || '').trim()
     || String(r?.title || '').split(/\s[\-–—|·]\s/)[0].trim();
+  const type = c.type || r?.entityType || currentSubject || '';
   const imgs = [...new Set([r?.image, ...(r?.images || [])].filter(Boolean))].slice(0, 8);
   const ctx = extraContextText(c) || currentLens()?.context || '';
+  const url = r?.url || '';
+  const evidence = url || r?.image ? {
+    url,
+    domain: r?.domain || hostOf(url),
+    title: r?.title || '',
+    snippet: r?.snippet || '',
+    source: r?.source || '',
+    image: r?.image || imgs[0] || '',
+    images: imgs,
+    resultKind: r?.resultKind || '',
+    provenance: r?.provenance || 'DISCOVERED',
+    reason: r?.reason || '',
+    observedAt: r?.observedAt || '',
+  } : null;
   return {
+    entityId: entityIdFor(type, name),
     canonicalName: name,
-    type: c.type || r?.entityType || currentSubject || '',
-    url: r?.url || '',
+    type,
+    aliases: r?.aliases || [],
+    confidence: r?.confidence || 'low',
+    discoveryEvidence: evidence,
+    sourceRefs: url ? [url] : [],
+    url,
     image: r?.image || imgs[0] || '',
     images: imgs,
     provenance: r?.provenance || 'DISCOVERED',
-    confidence: r?.confidence || 'low',
     reason: r?.reason || '',
-    sourceUrls: [r?.url].filter(Boolean),
-    aliases: r?.aliases || [],
+    sourceUrls: url ? [url] : [],
     originalQuery: originalQuery || $('searchQuery')?.value || '',
     context: ctx,
     adultContent: currentAdult,
@@ -905,7 +928,8 @@ function renderSelectedBanner() {
       <div>${esc(name)} · ${esc(subjectLabel(ent?.type || lastClassification?.type || 'web'))}</div>
       ${ctx ? '<div class="hint">Context stays with them: ' + esc(ctx) + (currentAdult !== 'off' ? ' · ' + esc(adultLabel(currentAdult)) : '') + '</div>' : (currentAdult !== 'off' ? '<div class="hint">' + esc(adultLabel(currentAdult)) + '</div>' : '')}
       ${why ? '<div class="rwhy">' + esc(why) + '</div>' : ''}
-      <p class="hint" style="margin:8px 0 0">${isPerson ? 'Visual resemblance is not identity proof. Deep Dive researches this resolved person — not the original search string alone.' : 'Deep Dive expands this selected entity with the context you chose.'}</p>
+      <p class="hint" style="margin:8px 0 0">${isPerson ? 'Visual resemblance is not identity proof. Deep Dive investigates this person — the source below identified them, it does not bound the research.' : 'Deep Dive expands this selected entity with the context you chose. The identifying source is provenance, not a research boundary.'}</p>
+      ${ent?.discoveryEvidence?.url || r?.url ? '<p class="subtle">Identified from <a href="' + esc(ent?.discoveryEvidence?.url || r.url) + '" target="_blank" rel="noopener noreferrer">' + esc(ent?.discoveryEvidence?.domain || hostOf(ent?.discoveryEvidence?.url || r.url)) + '</a> · evidence, not the investigation universe</p>' : ''}
       <button class="btn primary sel-cta" type="button" data-go-dive="1">Deep Dive</button>
     </div>
   </div></div>`;
@@ -955,6 +979,7 @@ function renderPersonRail() {
         <div class="racts">
           <button data-ract="select" data-i="${idx}">${selected ? 'This person' : 'This is the person'}</button>
           <button data-ract="dive" data-i="${idx}">Deep Dive</button>
+          <button data-ract="open" data-i="${idx}">Open source</button>
         </div>
       </div>
     </article>`;
@@ -980,18 +1005,20 @@ function renderDiveIdentity() {
     <div class="body">
       <h2>${esc(name)}</h2>
       <div class="rmeta"><span class="badge">${esc(type)}</span> ${isPerson ? '<span class="badge access-ok">selected visual match</span> ' : ''}${adultBadge(ent?.adultContent || currentAdult)} <span class="badge">${esc(depthLabel(ent?.depth || currentDepth))}</span>${ctx ? ' <span class="badge access-ok">context: ' + esc(ctx) + '</span>' : ''}</div>
-      <p class="hint" style="margin:8px 0 0">${isPerson ? 'Visual resemblance is not identity proof. Carmen is investigating this resolved person.' : 'Investigating the selected entity.'} ${esc(why)}</p>
+      <p class="hint" style="margin:8px 0 0">${isPerson ? 'Visual resemblance is not identity proof. Carmen is investigating this person across public sources — not only the page that identified them.' : 'Investigating the selected entity across public sources. The identifying page is provenance, not a boundary.'} ${esc(why)}</p>
       ${ent?.originalQuery ? '<p class="subtle">Original search: ' + esc(ent.originalQuery) + '</p>' : ''}
-      ${ent?.url ? '<p class="subtle">' + esc(hostOf(ent.url)) + ' · ' + provenanceBadge(ent.provenance) + ' · ' + esc(confidenceLabel(ent.confidence)) + '</p>' : ''}
+      ${(ent?.discoveryEvidence?.url || ent?.url) ? '<p class="subtle">Identified from <a href="' + esc(ent.discoveryEvidence?.url || ent.url) + '" target="_blank" rel="noopener noreferrer">' + esc(ent.discoveryEvidence?.domain || hostOf(ent.discoveryEvidence?.url || ent.url)) + '</a> · ' + provenanceBadge(ent.provenance) + ' · evidence, not a research boundary</p>' : ''}
     </div>
   </div>`;
 }
 function goToDive() {
-  const candidate = selectedCandidate || lastResults[0] || null;
-  if (!candidate && !selectedEntity && !$('searchQuery')?.value.trim()) return toast('Search and select a person first.');
-  if (candidate && !selectedCandidate) {
-    const i = Math.max(0, lastResults.findIndex(x => x.url === candidate.url));
-    selectCandidate(candidate, i, { silent: true });
+  if (!selectedEntity) {
+    const candidate = selectedCandidate || lastResults[0] || null;
+    if (!candidate && !$('searchQuery')?.value.trim()) return toast('Search and select a person first.');
+    if (candidate && !selectedCandidate) {
+      const i = Math.max(0, lastResults.findIndex(x => x.url === candidate.url));
+      selectCandidate(candidate, i, { silent: true });
+    }
   }
   setTab('dive');
   renderDiveIdentity();
@@ -1013,7 +1040,7 @@ function selectCandidate(r, i, opts = {}) {
   persistSession();
   if (!opts.silent) {
     const isPerson = (selectedEntity?.type || lastClassification?.type) === 'person';
-    toast(isPerson ? 'This is the person. Deep Dive keeps your original context.' : 'Candidate selected. Deep Dive is ready.');
+    toast(isPerson ? 'This is the person. Deep Dive investigates them, not only that source.' : 'Entity selected. Deep Dive is ready — the source is evidence, not a boundary.');
   }
 }
 async function persistSelection(r) {
@@ -1036,13 +1063,13 @@ function openDivePlanner(candidate) {
   const el = $('divePlanner');
   if (!el) return;
   const c = candidate || selectedCandidate || lastResults[0];
-  if (!c && !$('searchQuery')?.value.trim()) return;
-  const type = lastClassification?.type || c?.entityType || currentSubject || 'topic';
+  if (!c && !selectedEntity && !$('searchQuery')?.value.trim()) return;
+  const type = lastClassification?.type || selectedEntity?.type || c?.entityType || currentSubject || 'topic';
   const paths = (lastDiscoveryMeta?.paths && lastDiscoveryMeta.paths.length) ? lastDiscoveryMeta.paths : lastPaths;
   lastPaths = paths.length ? paths : lastPaths;
   diveAll = true;
   selectedDivePathIds = lastPaths.map(p => p.id);
-  const name = c?.title || lastClassification?.subject || $('searchQuery')?.value || 'this subject';
+  const name = selectedEntity?.canonicalName || lastClassification?.subject || c?.title || $('searchQuery')?.value || 'this subject';
   const ctx = extraContextText(lastClassification) || currentLens()?.context || '';
   const found = foundSummary(lastDiscoveryMeta);
   $('divePlannerLead').innerHTML = `<div class="lens-stack">
@@ -1132,7 +1159,7 @@ function renderResults(results, providers) {
     const imgs = [...new Set([r.image, ...(r.images || [])].filter(Boolean))].slice(0, 6);
     const hero = imgs[0];
     const rest = imgs.slice(1, 5);
-    const selected = selectedCandidate && selectedCandidate.url === r.url;
+    const selected = (selectedCandidate && selectedCandidate.url === r.url) || (selectedEntity && (selectedEntity.discoveryEvidence?.url === r.url || selectedEntity.url === r.url));
     const aliases = (r.aliases || []).filter(Boolean).slice(0, 4);
     const kind = r.resultKind || (r.intersection ? 'INTERSECTION_MATCH' : '');
     const kindLabel = resultKindLabel(kind);
@@ -1162,7 +1189,7 @@ function renderResults(results, providers) {
           <button data-ract="select" data-i="${i}">${selected ? (personCard ? 'This person' : 'Selected') : (personCard ? 'This is the person' : 'Select')}</button>
           <button data-ract="dive" data-i="${i}">Deep dive</button>
           <button data-ract="save" data-i="${i}">Save</button>
-          <button data-ract="open" data-i="${i}">Open</button>
+          <button data-ract="open" data-i="${i}">Open source</button>
         </div>
       </div>
     </div>`;
@@ -1255,7 +1282,10 @@ async function runDeepDive() {
   if (!base) return toast('Set the Carmen Worker URL in Capture → Connection.');
   const subject = selectedEntity?.canonicalName || $('searchQuery').value.trim() || $('projectQuestion').value.trim();
   const seed = originalQuery || selectedEntity?.originalQuery || $('searchQuery').value.trim() || subject;
-  const candidate = selectedCandidate || lastResults[0] || null;
+  const evidence = selectedEntity?.discoveryEvidence || selectedCandidate || null;
+  const candidate = selectedCandidate
+    || (evidence && evidence.url ? evidence : null)
+    || (!selectedEntity && lastResults[0] ? lastResults[0] : null);
   if (!subject && !candidate && !selectedEntity) return toast('Search and select a candidate first.');
   await keepInvestigation(subject || candidate?.title);
   localStorage.setItem(BACKEND_KEY, base);
@@ -1352,9 +1382,10 @@ async function runDeepDive() {
   }
 }
 function selectCandidateKeepPlanner(candidate) {
-  selectedCandidate = candidate;
-  selectedEntity = candidate ? resolveSelectedEntity(candidate) : selectedEntity;
-  const i = Math.max(0, lastResults.findIndex(x => x.url === candidate.url));
+  if (candidate) selectedCandidate = candidate;
+  if (!selectedEntity && candidate) selectedEntity = resolveSelectedEntity(candidate);
+  const url = candidate?.url || selectedEntity?.discoveryEvidence?.url || selectedEntity?.url || '';
+  const i = url ? Math.max(0, lastResults.findIndex(x => x.url === url)) : -1;
   document.querySelectorAll('#results .result, #personRail .person-tile').forEach(el => el.classList.toggle('selected', el.dataset.i === String(i)));
   renderSelectedBanner();
 }
@@ -2189,6 +2220,9 @@ function wire() {
     }
     const hit = identifyFromEvent(e, $('personRail'));
     if (!hit) return;
+    if (hit.act === 'open') { window.open(hit.r.url, '_blank', 'noopener,noreferrer'); return; }
+    if (hit.act === 'evidence') { await saveResultAsEvidence(hit.r); return; }
+    if (hit.act === 'save') { await openSaveSheet({ kind: 'page', title: hit.r.title, url: hit.r.url, image: hit.r.image, domain: hit.r.domain, provenance: hit.r.provenance, sourceUrl: hit.r.url }); return; }
     selectCandidate(hit.r, hit.i);
     if (hit.act === 'dive') goToDive();
   };

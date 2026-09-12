@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -559,6 +559,170 @@ console.log('--- selected entity carries context into dive seed ---');
   assert(/bondage/i.test(ent.context), 'bondage context is stored on the selected entity');
   assert(ent.originalQuery === raw, 'original search is stored');
   assert(ent.url.includes('iafd'), 'selected source URL is stored');
+  assert(ent.entityId === 'entity:person:jordan hale', 'entity id is type + canonical name, not a URL');
+  assert(ent.discoveryEvidence && ent.discoveryEvidence.url.includes('iafd'), 'identifying page is nested as discovery evidence');
+  assert(ent.visualLikenessIsNotIdentityProof === true, 'visual likeness is not identity proof on the selected entity');
+}
+
+console.log('--- v46 Test A: different-domain discovery is not blocked by Source A ---');
+{
+  const c = { subject: 'Jordan Hale', type: 'person' };
+  const extras = diveExpansionQueries({ classification: c, seed: 'Jordan Hale', evidenceHost: 'source-a.example', customQuestion: '' });
+  assert(!extras.some(q => /site:source-a\.example/i.test(q)), 'A: no automatic site: restriction to the identifying host');
+  assert(extras.some(q => /Jordan Hale/i.test(q)), 'A: expansion queries are entity-named');
+  const queue = diveRetrievalQueue({
+    evidenceUrl: 'https://source-a.example/jordan',
+    discoveryResults: [
+      { url: 'https://source-a.example/gallery', title: 'same-host gallery' },
+      { url: 'https://source-b.example/interview', title: 'independent interview' },
+      { url: 'https://www.reddit.com/r/example/jordan', title: 'reddit thread' },
+    ],
+    galleryUrls: ['https://source-a.example/photos/1', 'https://source-a.example/photos/2', 'https://source-a.example/photos/3'],
+    retrieveCap: 6,
+    adult: 'off',
+  });
+  assert(queue[0] === 'https://source-a.example/jordan', 'A: identifying URL is provenance, retrieved once');
+  assert(queue.includes('https://source-b.example/interview'), 'A: Source B can appear after selecting Source A');
+  assert(queue.indexOf('https://source-b.example/interview') < queue.indexOf('https://source-a.example/gallery') || !queue.includes('https://source-a.example/gallery'), 'A: other-domain discovery is queued before same-domain pages');
+  const gallerySlots = queue.filter(u => /source-a\.example\/photos/.test(u)).length;
+  assert(gallerySlots <= 2, 'A: same-host galleries cannot crowd out other-domain retrieval');
+}
+
+console.log('--- v46 Test B: identifying source unavailable still researches the entity ---');
+{
+  const extras = diveExpansionQueries({ classification: { subject: 'Jordan Hale', type: 'person' }, seed: 'Jordan Hale', evidenceHost: 'source-a.example' });
+  assert(extras.some(q => /"Jordan Hale"/i.test(q)), 'B: quoted entity query exists without the identifying page');
+  assert(extras.some(q => /reddit/i.test(q)), 'B: independent public-source classes still generate');
+  const queue = diveRetrievalQueue({
+    evidenceUrl: 'https://source-a.example/missing',
+    discoveryResults: [
+      { url: 'https://source-b.example/bio' },
+      { url: 'https://en.wikipedia.org/wiki/Jordan_Hale' },
+    ],
+    retrieveCap: 6,
+  });
+  assert(queue.includes('https://source-b.example/bio'), 'B: unavailable Source A does not prevent other retrievals');
+  assert(queue.includes('https://en.wikipedia.org/wiki/Jordan_Hale'), 'B: other public sources remain in the queue');
+  const seed = diveSeedQuery({ subject: 'Jordan Hale', type: 'person' }, 'Jordan Hale', 'Jordan Hale', 'https://source-a.example/missing');
+  assert(seed === 'Jordan Hale', 'B: seed stays the canonical entity, not the dead URL');
+}
+
+console.log('--- v46 Test C: Browse result set is not the universe ---');
+{
+  const extras = diveExpansionQueries({
+    classification: { subject: 'Jordan Hale', type: 'person', context: 'interview' },
+    seed: 'Jordan Hale interview',
+    evidenceHost: 'source-a.example',
+    resolvedAll: true,
+  });
+  assert(extras.some(q => /reddit/i.test(q)), 'C: reddit lane is generated independently of Browse');
+  assert(extras.some(q => /interview/i.test(q)), 'C: context lanes are independent of the Browse result set');
+  assert(extras.every(q => !/^https?:\/\//i.test(q)), 'C: expansion queries are searches, not the Browse URL list');
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  const diveFn = src.slice(src.indexOf('async function deepDiveHandler'), src.indexOf('async function learnHandler'));
+  assert(/runDiscovery\(seed/.test(diveFn), 'C: Deep Dive runs a fresh discovery, not lastResults');
+  assert(!/lastResults/.test(diveFn), 'C: dive handler does not reuse the Browse collection as the universe');
+}
+
+console.log('--- v46 Test D: provenance survives as discovery evidence ---');
+{
+  const cand = { title: 'Jordan Hale — Official', url: 'https://source-a.example/j', snippet: 'official page', image: 'https://source-a.example/p.jpg', domain: 'source-a.example', provenance: 'DISCOVERED', reason: 'official-looking domain' };
+  const c = { type: 'person', subject: 'Jordan Hale' };
+  const ent = buildSelectedEntity(c, cand, { canonicalName: 'Jordan Hale' }, { originalQuery: 'Jordan Hale' });
+  assert(ent.discoveryEvidence && ent.discoveryEvidence.url === cand.url, 'D: original Browse source recorded as discovery evidence');
+  assert(ent.discoveryEvidence.domain === 'source-a.example', 'D: evidence domain is stored');
+  assert(ent.discoveryEvidence.image === cand.image, 'D: identifying image is provenance, not identity');
+  assert(ent.sourceRefs.includes(cand.url), 'D: source refs keep the identifying URL');
+  const ev = discoveryEvidenceFrom(cand);
+  assert(ev.url === cand.url && ev.title === cand.title, 'D: discoveryEvidenceFrom copies URL/title/snippet, not identity');
+}
+
+console.log('--- v46 Test E: canonical entity survives source change ---');
+{
+  const c = { type: 'person', subject: 'Jordan Hale' };
+  const a = { title: 'Official', url: 'https://source-a.example/j', domain: 'source-a.example', image: 'https://source-a.example/a.jpg' };
+  const b = { title: 'Interview', url: 'https://source-b.example/interview', domain: 'source-b.example', image: 'https://source-b.example/b.jpg' };
+  const id = entityIdFor('person', 'Jordan Hale');
+  const entA = buildSelectedEntity(c, a, { canonicalName: 'Jordan Hale' }, { originalQuery: 'Jordan Hale' });
+  const entB = buildSelectedEntity(c, b, { canonicalName: 'Jordan Hale' }, { originalQuery: 'Jordan Hale', entityId: entA.entityId });
+  assert(entA.entityId === id, 'E: entity id is derived from type+name');
+  assert(entB.entityId === entA.entityId, 'E: changing discovery source does not change entity id');
+  assert(entB.canonicalName === 'Jordan Hale', 'E: canonical name survives source change');
+  assert(entB.discoveryEvidence.url === b.url, 'E: new evidence is recorded');
+  assert(entA.entityId !== entA.discoveryEvidence.url, 'E: entity id is not the source URL');
+  assert(diveSeedQuery(c, 'Jordan Hale', 'Jordan Hale', a.url) === diveSeedQuery(c, 'Jordan Hale', 'Jordan Hale', b.url), 'E: seed query is identical after source swap');
+}
+
+console.log('--- v46 Test F: custom question is instruction, not a site restriction ---');
+{
+  const c = { subject: 'Jordan Hale', type: 'person' };
+  const ins = parseInvestigativeQuestion('Find interviews where she discusses rope', c);
+  assert(ins.intent === 'interviews', 'F: interview instruction is classified as interviews');
+  assert(/rope/i.test(ins.topic), 'F: topic extracted from the instruction');
+  assert(ins.variants.every(v => !/site:/i.test(v.q)), 'F: instruction variants do not inherit a site: restriction');
+  assert(ins.variants.every(v => !/source-a/i.test(v.q)), 'F: instruction does not mention the Browse host');
+  assert(ins.variants.every(v => !/where she discusses/i.test(v.q)), 'F: raw sentence is not concatenated as the query');
+  const extras = diveExpansionQueries({
+    classification: c,
+    seed: 'Jordan Hale',
+    instruction: ins,
+    customQuestion: 'Find interviews where she discusses rope',
+    evidenceHost: 'source-a.example',
+  });
+  assert(!extras.some(q => /site:source-a/i.test(q)), 'F: custom question does not add identifying-host site:');
+  assert(extras.some(q => /interview/i.test(q) && /rope/i.test(q)), 'F: instruction influences query planning');
+  assert(userAskedForSourceRestriction('Find interviews where she discusses rope') === false, 'F: plain investigative question is not a source restriction');
+  assert(userAskedForSourceRestriction('only on source-a.example') === true, 'F: explicit only-on-domain is a source restriction');
+  assert(userAskedForSourceRestriction('site:source-a.example interviews') === true, 'F: explicit site: is a source restriction');
+  const gated = diveExpansionQueries({
+    classification: c,
+    seed: 'Jordan Hale',
+    customQuestion: 'only on source-a.example',
+    evidenceHost: 'source-a.example',
+  });
+  assert(gated.some(q => /site:source-a\.example/i.test(q)), 'F: site: is added only when the user asked for it');
+  assert(extras.every(q => !/https?:\/\/source-a\.example\/p\.jpg/i.test(q)), 'F: selected image URL is not a search query');
+}
+
+console.log('--- v46 Test G: same entity/source split for non-person types ---');
+{
+  const cases = [
+    { type: 'product', name: 'Acme Widget' },
+    { type: 'vehicle', name: 'Lincoln Aviator' },
+    { type: 'organization', name: 'Lincoln Electric' },
+    { type: 'topic', name: 'Cloudflare Workers' },
+    { type: 'technique', name: 'bowline knot' },
+    { type: 'skill', name: 'welding a steel frame' },
+    { type: 'website', name: 'example.com' },
+  ];
+  for (const row of cases) {
+    const extras = diveExpansionQueries({
+      classification: { subject: row.name, type: row.type },
+      seed: row.name,
+      evidenceHost: 'source-a.example',
+    });
+    assert(!extras.some(q => /site:source-a\.example/i.test(q)), 'G: ' + row.type + ' has no automatic site: to identifying host');
+    const id = entityIdFor(row.type, row.name);
+    const ent = buildSelectedEntity({ type: row.type, subject: row.name }, { url: 'https://source-a.example/x', title: row.name, domain: 'source-a.example' }, { canonicalName: row.name }, {});
+    assert(ent.entityId === id, 'G: ' + row.type + ' entity id is name-based not url-based');
+    assert(ent.canonicalName === row.name, 'G: ' + row.type + ' keeps canonical name');
+    assert(ent.discoveryEvidence.url === 'https://source-a.example/x', 'G: ' + row.type + ' keeps discovery evidence separate');
+    assert(diveSeedQuery({ subject: row.name, type: row.type }, row.name, row.name, 'https://source-a.example/x') === row.name, 'G: ' + row.type + ' seed is the entity, not the identifying URL');
+  }
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  const extraFn = src.slice(src.indexOf('function diveExpansionQueries'), src.indexOf('function diveRetrievalQueue'));
+  assert((extraFn.match(/site:/g) || []).length === 1, 'G: dive expansion has only the explicit-request site: path');
+  assert(/userAskedForSourceRestriction\(customQuestion\)/.test(extraFn), 'G: site: identifying host is gated on explicit user request');
+  assert(!/\bdrea morgan\b/i.test(src), 'G: worker does not hardcode Drea Morgan');
+  assert(!/\bfrogtie\b/i.test(src), 'G: worker does not hardcode Frogtie');
+}
+
+console.log('--- v46 dive seed never uses the identifying URL or page title ---');
+{
+  const c = { subject: 'Jordan Hale', type: 'person', context: 'rope' };
+  assert(diveSeedQuery(c, 'Jordan Hale', 'Jordan Hale', 'https://source-a.example/j') === 'Jordan Hale', 'original name query wins over URL fallback');
+  assert(diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', 'Page Title | Source A') === 'Jordan Hale rope' || diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', '') === 'Jordan Hale', 'URL original query falls back to canonical name, not page title');
+  assert(!/^https?:/i.test(diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', '')), 'seed is never the identifying URL');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
