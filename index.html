@@ -66,6 +66,11 @@ main{max-width:720px;margin:0 auto;padding:14px 16px 28px}
 .muted,.hint{color:var(--muted);font-size:12px;line-height:1.45}
 .subtle{color:var(--subtle);font-size:11px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.filter-block{margin:12px 0 8px}
+.filter-block .flabel{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--subtle);margin:0 0 4px}
+.briefing{border:1px solid var(--line2);border-radius:14px;padding:12px;margin:10px 0;background:#12161c}
+.briefing b{display:block;font-size:15px;margin-bottom:4px}
+.briefing .rowbits{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .chip{padding:8px 12px;border-radius:999px;border:1px solid var(--line);background:#0b0d11;font-size:12px;font-weight:600;color:var(--muted);min-height:36px}
 .chip.active{background:var(--fg);color:var(--bg);border-color:transparent}
 .result{border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;background:var(--card2);margin-bottom:12px}
@@ -172,7 +177,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <button type="button" class="chip" data-adult="on">On</button>
       <button type="button" class="chip" data-adult="both">Both</button>
     </div>
-    <p class="hint">A research context, not a type. It stays with the investigation until you change it.</p>
+    <p class="hint">A research context, not a type. It stays with the investigation until you change it. Depth (broad / contextual / deep) is on the next screen.</p>
     <div class="row" style="margin-top:8px">
       <button class="btn ghost" id="homeImageBtn" style="flex:0 0 auto">Inspect image</button>
       <input id="homeImage" type="file" accept="image/*" class="hidden">
@@ -188,28 +193,42 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 
 <section id="searchView" class="view hidden">
   <div class="card">
-    <h3>Search</h3>
-    <p class="muted">Carmen classifies what you entered, then ranks public candidates. After you select one, Carmen asks what you want to investigate — it does not dump the same keywords again.</p>
-    <div class="chips" id="subjectChips">
-      <button class="chip active" data-subject="">Auto</button>
-      <button class="chip" data-subject="person">Person</button>
-      <button class="chip" data-subject="product">Product</button>
-      <button class="chip" data-subject="vehicle">Vehicle</button>
-      <button class="chip" data-subject="technique">Technique</button>
-      <button class="chip" data-subject="skill">Skill / project</button>
-      <button class="chip" data-subject="organization">Organization</button>
-      <button class="chip" data-subject="place">Place</button>
-      <button class="chip" data-subject="topic">Topic</button>
-      <button class="chip" data-subject="website">URL</button>
+    <h3>Investigate</h3>
+    <p class="muted">What are you researching? Carmen will classify it, keep your context, and look for public sources about the intersection — not a dump of unrelated name hits.</p>
+    <textarea id="searchQuery" placeholder="A name, plus optional context (interview, repair, towing, bondage…), a URL, product, or skill."></textarea>
+    <div class="filter-block">
+      <p class="flabel">Adult content — research context, not a subject type</p>
+      <div class="chips" id="adultChips" style="margin-top:0">
+        <button type="button" class="chip active" data-adult="off">Off</button>
+        <button type="button" class="chip" data-adult="on">On</button>
+        <button type="button" class="chip" data-adult="both">Both</button>
+      </div>
+      <p class="hint">Stays with this investigation: search, ranking, images, videos, Deep Dive, and branches.</p>
     </div>
-    <div class="chips" id="adultChips" style="margin-top:4px">
-      <span class="hint" style="align-self:center">Adult content</span>
-      <button type="button" class="chip active" data-adult="off">Off</button>
-      <button type="button" class="chip" data-adult="on">On</button>
-      <button type="button" class="chip" data-adult="both">Both</button>
+    <div class="filter-block">
+      <p class="flabel">How deep</p>
+      <div class="chips" id="depthChips" style="margin-top:0">
+        <button type="button" class="chip" data-depth="broad">Broad</button>
+        <button type="button" class="chip active" data-depth="contextual">Contextual</button>
+        <button type="button" class="chip" data-depth="deep">Deep</button>
+      </div>
+      <p class="hint">Broad identifies the entity. Contextual finds entity ∩ your context. Deep follows productions, people, and sources from what it finds.</p>
     </div>
-    <p class="hint">Filter applies to ranking, images, videos, Deep Dive, and branches. Off / On / Both.</p>
-    <textarea id="searchQuery" placeholder="A name, domain, Reddit URL, product, technique, or skill."></textarea>
+    <div class="filter-block">
+      <p class="flabel">Subject type</p>
+      <div class="chips" id="subjectChips" style="margin-top:0">
+        <button class="chip active" data-subject="">Auto</button>
+        <button class="chip" data-subject="person">Person</button>
+        <button class="chip" data-subject="product">Product</button>
+        <button class="chip" data-subject="vehicle">Vehicle</button>
+        <button class="chip" data-subject="technique">Technique</button>
+        <button class="chip" data-subject="skill">Skill / project</button>
+        <button class="chip" data-subject="organization">Organization</button>
+        <button class="chip" data-subject="place">Place</button>
+        <button class="chip" data-subject="topic">Topic</button>
+        <button class="chip" data-subject="website">URL</button>
+      </div>
+    </div>
     <div class="row" style="margin-top:8px">
       <button class="btn primary" id="discoverBtn">Discover</button>
       <button class="btn" id="deepDiveBtn" disabled>Deep dive</button>

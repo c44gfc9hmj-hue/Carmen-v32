@@ -7,12 +7,12 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '42';
+const VERSION = '43';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
 const DB_VERSION = 3;
-const SESSION_KEY = 'carmen_session_v42';
+const SESSION_KEY = 'carmen_session_v43';
 const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).length) ? window.CARMEN_BACKEND : location.origin;
 
 let db = null, stream = null, current = null, historyStack = [], historyIndex = -1, currentProjectId = null;
@@ -36,6 +36,7 @@ let lightboxSourceUrl = '';
 let currentLearnType = '';
 let expandedMode = false;
 let currentAdult = 'off';
+let currentDepth = 'contextual';
 
 const ACCESS_LABELS = {
   DIRECTLY_RETRIEVED: 'DIRECTLY RETRIEVED',
@@ -428,6 +429,19 @@ function adultBadge(v) {
   const cls = a === 'on' ? 'access-warn' : a === 'both' ? 'inferred' : '';
   return `<span class="badge ${cls}">${esc(adultLabel(a))}</span>`;
 }
+function depthLabel(v) {
+  const d = String(v || currentDepth || 'contextual').toLowerCase();
+  if (d === 'deep') return 'Deep';
+  if (d === 'broad') return 'Broad';
+  return 'Contextual';
+}
+function setDepth(mode, opts = {}) {
+  currentDepth = (mode === 'broad' || mode === 'deep') ? mode : 'contextual';
+  document.querySelectorAll('#depthChips .chip').forEach(x => {
+    x.classList.toggle('active', x.dataset.depth === currentDepth);
+  });
+  persistSession();
+}
 function persistSession() {
   try {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({
@@ -440,6 +454,7 @@ function persistSession() {
       meta: lastDiscoveryMeta,
       dive: lastDivePayload,
       adult: currentAdult,
+      depth: currentDepth,
     }));
   } catch {}
 }
@@ -456,6 +471,7 @@ async function persistDiscoveryIfKept() {
   disc.providers = lastDiscoveryMeta?.providers;
   disc.variants = lastDiscoveryMeta?.variants;
   disc.adultContent = currentAdult;
+  disc.depth = currentDepth;
   disc.at = new Date().toISOString();
   disc.status = 'DISCOVERED';
   await put('discoveries', disc);
@@ -463,6 +479,7 @@ async function persistDiscoveryIfKept() {
   p.entityType = lastClassification?.type || p.entityType;
   p.query = disc.query;
   p.adultContent = currentAdult;
+  p.researchDepth = currentDepth;
   p.thumbnail = selectedCandidate?.image || lastResults[0]?.image || p.thumbnail;
   p.updatedAt = disc.at;
   await put('projects', p);
@@ -483,6 +500,7 @@ async function keepInvestigation(nameHint) {
       status: 'active',
       entityType: lastClassification?.type || currentSubject || '',
       adultContent: currentAdult,
+      researchDepth: currentDepth,
       thumbnail: selectedCandidate?.image || lastResults[0]?.image || '',
       query: q,
       createdAt: now,
@@ -500,6 +518,7 @@ async function keepInvestigation(nameHint) {
     p.query = q;
     p.entityType = lastClassification?.type || p.entityType;
     p.adultContent = currentAdult;
+    p.researchDepth = currentDepth;
     p.thumbnail = selectedCandidate?.image || p.thumbnail;
     await put('projects', p);
   }
@@ -526,6 +545,7 @@ function restoreSession() {
     lastDiscoveryMeta = s.meta || null;
     lastDivePayload = s.dive || null;
     if (s.adult) setAdult(s.adult, { silent: true });
+    if (s.depth) setDepth(s.depth, { silent: true });
     if (s.selectedUrl) selectedCandidate = lastResults.find(r => r.url === s.selectedUrl) || null;
     if (lastResults.length) {
       renderClassification(lastDiscoveryMeta || { classification: lastClassification, variants: [] });
@@ -561,7 +581,7 @@ async function discover(opts = {}) {
   $('selectedBanner').innerHTML = '';
   updateDeepDiveState();
   try {
-    const r = await fetch(base + '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(currentSubject) + '&adult=' + encodeURIComponent(currentAdult) + (expanded ? '&expanded=1' : ''), { headers: { accept: 'application/json' } });
+    const r = await fetch(base + '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(currentSubject) + '&adult=' + encodeURIComponent(currentAdult) + '&depth=' + encodeURIComponent(currentDepth) + (expanded ? '&expanded=1' : ''), { headers: { accept: 'application/json' } });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
     if (!r.ok || data.error) throw Error(data.error || `HTTP ${r.status}`);
@@ -613,7 +633,21 @@ function renderClassification(data) {
   if (!c) { $('classBar').innerHTML = ''; return; }
   const variants = (data.variants || []).map(v => esc(v.q) + (v.why ? ` <span class="muted">(${esc(v.why)})</span>` : '')).join(' · ');
   const warn = data.warning ? `<p class="warning">${esc(data.warning)}</p>` : '';
-  $('classBar').innerHTML = `<p class="hint" style="margin-top:8px"><span class="badge">${esc(c.type)}</span> ${adultBadge(data.adultContent || currentAdult)} <span class="confidence ${esc(c.confidence)}">${esc(c.confidence)}</span> — ${esc(c.reason)}${c.context ? ' · context: ' + esc(c.context) : ''}${c.isUrl ? ' · treating this as a page to inspect' : ''}${data.expanded ? ' · <span class="badge access-ok">Expanded Research</span>' : ''}${variants ? '<br>Search variants: ' + variants : ''}</p>${warn}`;
+  const lanes = (data.lanes || []).map(l => esc(l.id)).join(', ');
+  const depth = data.depth || currentDepth;
+  const ctx = c.context && !/^adult content$/i.test(c.context) ? c.context : '';
+  $('classBar').innerHTML = `<div class="briefing">
+    <b>Investigating ${esc(c.subject || data.query || '')}</b>
+    <div class="rowbits">
+      <span class="badge">${esc(c.type)}</span>
+      ${adultBadge(data.adultContent || currentAdult)}
+      <span class="badge">${esc(depthLabel(depth))}</span>
+      ${ctx ? '<span class="badge access-ok">context: ' + esc(ctx) + '</span>' : '<span class="badge">no extra context</span>'}
+      ${data.intersectionCount ? '<span class="badge access-ok">' + esc(String(data.intersectionCount)) + ' intersection hits</span>' : ''}
+      ${data.expanded ? '<span class="badge access-ok">Expanded Research</span>' : ''}
+    </div>
+    <p class="hint" style="margin:8px 0 0">${esc(c.reason)}${c.isUrl ? ' · treating this as a page to inspect' : ''}${lanes ? '<br>Discovery lanes: ' + lanes : ''}${variants ? '<br>Queries: ' + variants : ''}</p>
+  </div>${warn}`;
 }
 function selectCandidate(r, i, opts = {}) {
   selectedCandidate = r;
@@ -735,7 +769,7 @@ function renderResults(results, providers) {
           ${!hero && r.image ? `<img class="rthumb" data-full="${esc(imgSrc(r.image))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(r.image))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
           <div class="rmeta">
             <div class="rtitle">${esc(r.title)}</div>
-            <div class="rmeta"><span class="badge">${esc(subjectLabel(r.entityType || lastClassification?.type || currentSubject || 'web'))}</span>${r.contextLane === 'adult' ? ' <span class="badge access-warn">adult-context</span>' : ''} <span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')}${r.accessState ? ' · ' + accessBadge(r.accessState) : ''} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
+            <div class="rmeta"><span class="badge">${esc(subjectLabel(r.entityType || lastClassification?.type || currentSubject || 'web'))}</span>${r.intersection ? ' <span class="badge access-ok">entity ∩ context</span>' : ''}${r.contextLane === 'adult' ? ' <span class="badge access-warn">adult-context</span>' : ''} <span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')}${r.accessState ? ' · ' + accessBadge(r.accessState) : ''} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
           </div>
         </div>
         ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
@@ -879,6 +913,7 @@ async function runDeepDive() {
         expanded: useExpanded,
         adult: currentAdult,
         adultContent: currentAdult,
+        depth: currentDepth,
       }),
     });
     const text = await r.text();
@@ -1007,7 +1042,7 @@ function renderDiveWorkspace(data, subject) {
     body = analysisHtml || '<p class="muted">Findings will appear here after Deep Dive finishes.</p>';
   }
   $('deepDiveResult').innerHTML = `
-    <div class="selbar"><b>${esc(plan.subject || subject)}</b> <span class="badge">${esc(subjectLabel(plan.type || currentSubject))}</span> ${plan.all ? '<span class="badge">ALL</span>' : ''}${adultBadge(plan.adultContent || data.adultContent || currentAdult)}${plan.expanded ? '<span class="badge access-ok">Expanded Research</span>' : ''}${plan.context ? '<span class="badge">context: ' + esc(plan.context) + '</span>' : ''}<br><small>${esc(plan.why || '')}</small>${plan.customQuestion ? '<br><small>Question: ' + esc(plan.customQuestion) + '</small>' : ''}<br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
+    <div class="selbar"><b>${esc(plan.subject || subject)}</b> <span class="badge">${esc(subjectLabel(plan.type || currentSubject))}</span> ${plan.all ? '<span class="badge">ALL</span>' : ''}${adultBadge(plan.adultContent || data.adultContent || currentAdult)}<span class="badge">${esc(depthLabel(plan.depth || data.depth || currentDepth))}</span>${plan.expanded ? '<span class="badge access-ok">Expanded Research</span>' : ''}${plan.context ? '<span class="badge">context: ' + esc(plan.context) + '</span>' : ''}<br><small>${esc(plan.why || '')}</small>${plan.customQuestion ? '<br><small>Question: ' + esc(plan.customQuestion) + '</small>' : ''}<br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
     ${accessHtml}${suggestHtml}${tabHtml}${body}`;
 }
 function renderAdaptiveWriteup(text, paths, subject) {
@@ -1177,6 +1212,7 @@ async function resumeInvestigation(id) {
   if (p && $('projectInstructions')) $('projectInstructions').value = p.instructions || '';
   if (p && $('projectQuestion')) $('projectQuestion').value = p.question || p.query || '';
   if (p && p.adultContent) setAdult(p.adultContent, { silent: true });
+  if (p && p.researchDepth) setDepth(p.researchDepth, { silent: true });
   await loadDiscovery();
   setTab('search');
   toast('Resumed ' + (p?.name || 'investigation'));
@@ -1408,6 +1444,11 @@ function wire() {
   };
   wireAdult('adultChips');
   wireAdult('homeAdultChips');
+  if ($('depthChips')) $('depthChips').onclick = e => {
+    const c = e.target.closest('[data-depth]');
+    if (!c) return;
+    setDepth(c.dataset.depth);
+  };
 
   // discovery
   $('searchQuery').addEventListener('input', updateDeepDiveState);
@@ -1867,6 +1908,7 @@ async function loadDiscovery() {
   }
   lastPaths = disc.paths || lastPaths;
   if (disc.adultContent) setAdult(disc.adultContent, { silent: true });
+  if (disc.depth) setDepth(disc.depth, { silent: true });
   else if (disc.classification && disc.classification.adultContent) setAdult(disc.classification.adultContent, { silent: true });
   if (disc.query) $('searchQuery').value = disc.query;
   renderClassification(disc);

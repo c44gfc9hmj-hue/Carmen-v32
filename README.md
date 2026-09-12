@@ -10,6 +10,16 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
+## Investigation workspace (v43)
+
+v43 hardens v42 discovery so entity + context is a research graph, not a keyword dump:
+
+- **Discovery lanes** run independently (identity, exact intersection, related terminology, interviews, productions, specialist sources, media) and are reconciled afterward.
+- **Intersection ranking** prefers sources that support entity ∩ context. A name-only biography is not a contextual hit.
+- **Relationship following** (Deep / Deep Dive ALL) extracts titles, aliases, and productions observed on retrieved pages and searches those as leads.
+- **Research depth** — Broad / Contextual / Deep. Contextual is the default when a context is active. Deep follows the graph; it is not more explicit generated content.
+- Adult Content remains a research filter, not an entity type. Expanded Research remains restricted-source escalation, not a bypass.
+
 ## Investigation workspace (v42)
 
 v42 hardens the live v41 workspace. It does not replace the v38 engine, v39 shell, v40 Deep Dive planner, or v41 Expanded Research / access states.

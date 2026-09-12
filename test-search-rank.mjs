@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -289,7 +289,7 @@ console.log('--- person + extra context is a different research problem ---');
     { title: 'Jordan Hale bondage photoset', url: 'https://www.babepedia.com/babe/Jordan_Hale', source: 'Bing', snippet: 'bondage photoset performer' },
   ], c);
   assert(ranked[0].url.includes('babepedia'), 'person + bondage ranks contextual adult source above biography');
-  assert(/requested context/i.test(ranked[0].reason) || (ranked[0].signals || []).includes('requested context present'), 'reason cites the requested context');
+  assert(/requested context|entity ∩ context|intersection/i.test(ranked[0].reason) || (ranked[0].signals || []).some(s => /context/i.test(s)), 'reason cites the requested context');
 }
 
 console.log('--- entity + technical context generalizes ---');
@@ -333,6 +333,80 @@ console.log('--- adult ON visual collection rejects generic portraits ---');
   assert(isAdultishSource({ url: 'https://www.iafd.com/person.rme/perfid=x', title: 'performer', snippet: '' }), 'industry database is adult-context');
   assert(!isAdultishSource({ url: 'https://en.wikipedia.org/wiki/Jordan_Hale', title: 'Jordan Hale', snippet: 'biography' }), 'wikipedia biography is not adult-context');
   assert(!isAdultishSource({ url: 'https://www.apple.com/store', title: 'Apple Store Online', snippet: 'Shop the latest iPhone models' }), 'product “models” language is not adult-context');
+}
+
+console.log('--- discovery lanes are independent, not a keyword dump ---');
+{
+  const c = applyResearchFilter(classifyQuery('Jordan Hale bondage'), 'on', 'Jordan Hale bondage');
+  const graph = discoveryLanes(c, 'contextual');
+  assert(graph.lanes.some(l => l.id === 'intersection'), 'has an intersection lane');
+  assert(graph.lanes.some(l => l.id === 'identity'), 'has an identity lane');
+  const allQs = graph.lanes.flatMap(l => l.queries);
+  assert(allQs.some(q => /bondage/i.test(q) && /Jordan Hale/i.test(q)), 'intersection query is entity + context');
+  const relatedLanes = graph.lanes.filter(l => /^term-/.test(l.id));
+  assert(relatedLanes.length >= 1, 'related terminology is its own lane');
+  assert(relatedLanes.every(l => l.queries.length === 1), 'each related term is searched independently');
+  assert(!allQs.some(q => /bdsm/i.test(q) && /shibari/i.test(q) && /restraint/i.test(q) && /rope/i.test(q)), 'does not dump every related term into one query');
+  const broad = discoveryLanes(c, 'broad');
+  const deep = discoveryLanes(c, 'deep');
+  assert(deep.lanes.length > broad.lanes.length, 'deep has more lanes than broad');
+  assert(normalizeDepth('contextual', applyResearchFilter(classifyQuery('Jordan Hale'), 'off', 'Jordan Hale')) === 'broad', 'contextual with no extra context falls back to broad');
+  assert(normalizeDepth('', c) === 'contextual', 'person + extra context defaults to contextual');
+  assert(normalizeDepth('deep', c) === 'deep', 'deep is honored');
+}
+
+console.log('--- intersection ranking beats name-only ---');
+{
+  const c = applyResearchFilter(classifyQuery('Jordan Hale bondage'), 'on', 'Jordan Hale bondage');
+  const iafdItem = { title: 'Jordan Hale in Rope Session (2014)', url: 'https://www.iafd.com/title.rme/title=ropesession', snippet: 'bondage scene credits performer' };
+  const wikiItem = { title: 'Jordan Hale', url: 'https://en.wikipedia.org/wiki/Jordan_Hale', snippet: 'American person, biography' };
+  const scoredIafd = scoreResult('Jordan Hale bondage', iafdItem, c);
+  const scoredWiki = scoreResult('Jordan Hale bondage', wikiItem, c);
+  assert(scoredIafd.intersection === true, 'scoreResult flags entity ∩ context');
+  assert(scoredIafd.score > scoredWiki.score, 'intersection page outscores name-only biography');
+  const ranked = rankResults('Jordan Hale bondage', [
+    wikiItem,
+    iafdItem,
+    { title: 'Bondage videos', url: 'https://tube.example/bondage', snippet: 'generic bondage index' },
+  ], c);
+  assert(/iafd|ropesession/i.test(ranked[0].url), 'entity ∩ context production record ranks first');
+  assert(ranked[0].intersection === true, 'top result is flagged as intersection');
+  const wiki = ranked.find(r => /wikipedia/i.test(r.url));
+  assert(!wiki || wiki.score < ranked[0].score, 'name-only biography is below the intersection or filtered');
+}
+
+console.log('--- relationship extraction from retrieved text ---');
+{
+  const c = applyResearchFilter(classifyQuery('Jordan Hale bondage'), 'on', 'Jordan Hale bondage');
+  const leads = extractGraphLeads([{
+    title: 'Credits',
+    url: 'https://example.com/credits',
+    textExcerpt: 'Jordan Hale appeared in Rope Session (2014) and the interview "Talking Shop". Also known as.',
+    identifiers: { aliases: ['J Hale'], handles: [], profiles: [] },
+  }], [], c);
+  assert(leads.some(l => /rope session/i.test(l.label)), 'extracts observed production titles');
+  assert(leads.some(l => l.kind === 'alias' && /j hale/i.test(l.label)), 'extracts observed aliases');
+  assert(!leads.some(l => /jordan hale/i.test(l.label) && l.kind === 'production'), 'does not treat the entity name as a discovered production');
+}
+
+console.log('--- ALL is adaptive for entity+context, unchanged without it ---');
+{
+  const person = researchPaths('person');
+  const all = resolveDivePaths('person', { all: true });
+  assert(all.all === true && all.selected.length === person.length, 'ALL without extra context still matches the type path set');
+  const c = applyResearchFilter(classifyQuery('Jordan Hale bondage'), 'on', 'Jordan Hale bondage');
+  const adaptive = resolveDivePaths('person', { all: true }, c);
+  assert(adaptive.all === true, 'ALL with active context is still ALL');
+  assert(adaptive.selected.some(p => p.id === 'context'), 'ALL with active context includes the requested-context path');
+  assert(adaptive.selected.some(p => p.id === 'projects'), 'ALL includes projects/productions');
+  assert(adaptive.selected.length > person.length, 'adaptive ALL is larger than the generic type list');
+}
+
+console.log('--- no hardcoded differential-test subjects ---');
+{
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert(!/\babella danger\b/i.test(src), 'worker does not hardcode Abella Danger');
+  assert(!/\bangela white\b/i.test(src), 'worker does not hardcode Angela White');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
