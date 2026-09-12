@@ -10,6 +10,16 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
+## Investigation workspace (v44)
+
+v44 is a product-quality and ranking-hardening pass on live v43. It does not replace the v38 engine, v40 planner, v42 adult filter, or v43 discovery graph.
+
+- **Research flow** — Give Carmen something → say what you care about → choose depth → Discover. The homepage is one input, not a dashboard. Adult content is a research lens, not a subject type.
+- **Adaptive interest lenses** — after the subject is classified, Carmen asks what you are interested in. Paths stay adaptive by entity type (person / vehicle / skill / product / …) plus Specific context and Ask a question.
+- **Result kinds** — Direct contextual evidence, Background, Related, Media, Index. Aggregator/index pages with exact query terms are not treated as verified entity ∩ context.
+- **Ranking** — specific production/interview/database evidence outranks generic aggregators whose titles happen to contain the query. Keyword overlap is not a relationship.
+- **Visible investigation** — entity → context → discovered titles/people/orgs as tappable branches. Deep Dive briefing states researching / context / depth / what was found / meaningful paths. ALL still means ALL, adaptively.
+
 ## Investigation workspace (v43)
 
 v43 hardens v42 discovery so entity + context is a research graph, not a keyword dump:

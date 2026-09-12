@@ -55,12 +55,32 @@ header.appbar{position:sticky;top:0;z-index:8;padding:calc(12px + env(safe-area-
 header.appbar h1{margin:0;font-size:22px;letter-spacing:-.03em;font-weight:600}
 header.appbar .sub{color:var(--muted);font-size:12px;margin-top:2px}
 main{max-width:720px;margin:0 auto;padding:14px 16px 28px}
-.hero-home{padding:28px 4px 18px}
-.hero-home h2{font-size:34px;line-height:1.1;letter-spacing:-.04em;font-weight:560;margin:0 0 10px}
-.hero-home p{color:var(--muted);margin:0 0 18px;max-width:34ch}
+.hero-home{padding:36px 4px 20px}
+.hero-home h2{font-size:34px;line-height:1.08;letter-spacing:-.045em;font-weight:560;margin:0 0 14px}
+.hero-home p{color:var(--muted);margin:0 0 18px;max-width:36ch}
+.kicker{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--subtle);font-weight:650;margin:0 0 10px}
 .searchbox{display:flex;gap:8px;align-items:stretch}
-.searchbox input{flex:1;min-height:48px;font-size:16px;border-radius:var(--radius-lg)}
-.searchbox button{flex:0 0 auto;min-width:96px;border-radius:var(--radius-lg)}
+.searchbox input{flex:1;min-height:52px;font-size:17px;border-radius:var(--radius-lg)}
+.searchbox button{flex:0 0 auto;min-width:108px;border-radius:var(--radius-lg)}
+.searchbox.stack{flex-direction:column}
+.searchbox.stack button{width:100%;min-height:48px}
+.stage{margin:16px 0 10px}
+.stage h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle);font-weight:650;margin:0 0 8px}
+.lens-stack{display:flex;flex-direction:column;gap:10px;margin:4px 0 12px}
+.lens-row{display:flex;gap:10px;align-items:baseline}
+.lens-row .flabel{min-width:6.8rem;flex:0 0 auto;margin:0}
+.lens-row b{font-size:16px;letter-spacing:-.02em}
+.graph-trail{margin:4px 0 14px}
+.result.direct{border-color:color-mix(in oklab, var(--good) 45%, var(--line))}
+.result.index,.result.weak{opacity:.94}
+.rkind{margin-bottom:6px}
+.rconn{margin-top:8px;font-size:13px;color:var(--fg)}
+.rconn span{color:var(--subtle);font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:650;display:block;margin-bottom:2px}
+details.adv{margin:12px 0 8px;border:1px solid var(--line);border-radius:var(--radius-md);padding:10px 12px;background:var(--card2)}
+details.adv summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600;min-height:36px;list-style:none}
+details.adv summary::-webkit-details-marker{display:none}
+.quiet-link{background:transparent;border:0;color:var(--muted);padding:8px 0;font-size:13px;min-height:44px}
+.home-recent h3{margin:0 0 10px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--subtle);font-weight:650}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-xl);padding:16px;margin-bottom:12px}
 .card h3{margin:0 0 10px;font-size:16px;letter-spacing:-.02em;font-weight:600}
 .muted,.hint{color:var(--muted);font-size:12px;line-height:1.45}
@@ -165,27 +185,19 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 
 <section id="homeView" class="view">
   <div class="hero-home">
-    <h2>Give Carmen something to investigate or learn.</h2>
-    <p>A person, product, URL, technique, skill, photo, or anything you don’t yet understand. Carmen classifies it, finds public sources, and lets you choose what to investigate.</p>
-    <div class="searchbox">
-      <input id="homeQuery" placeholder="Person, product, URL, technique, skill…" enterkeyhint="search">
-      <button class="btn primary" id="homeSearchBtn">Search</button>
+    <p class="kicker">Public research</p>
+    <h2>What are you researching?</h2>
+    <div class="searchbox stack">
+      <input id="homeQuery" placeholder="A person, product, vehicle, organization, topic, URL, or image" enterkeyhint="go" autocapitalize="words">
+      <button class="btn primary" id="homeSearchBtn">Continue</button>
     </div>
-    <div class="chips" id="homeAdultChips" style="margin-top:10px">
-      <span class="hint" style="align-self:center">Adult content</span>
-      <button type="button" class="chip active" data-adult="off">Off</button>
-      <button type="button" class="chip" data-adult="on">On</button>
-      <button type="button" class="chip" data-adult="both">Both</button>
-    </div>
-    <p class="hint">A research context, not a type. It stays with the investigation until you change it. Depth (broad / contextual / deep) is on the next screen.</p>
-    <div class="row" style="margin-top:8px">
-      <button class="btn ghost" id="homeImageBtn" style="flex:0 0 auto">Inspect image</button>
-      <input id="homeImage" type="file" accept="image/*" class="hidden">
-    </div>
+    <p class="hint" style="margin-top:12px">Then tell Carmen what you care about. Adult content is a research lens, not a type of subject.</p>
+    <button class="quiet-link" id="homeImageBtn" type="button">Inspect an image instead</button>
+    <input id="homeImage" type="file" accept="image/*" class="hidden">
     <p class="warning">Research only. Carmen never contacts people, posts, comments, follows, submits forms, or buys anything.</p>
   </div>
   <div id="homeResume"></div>
-  <div class="card">
+  <div class="home-recent" id="homeRecentWrap">
     <h3>Recent investigations</h3>
     <div id="homeRecent"></div>
   </div>
@@ -193,11 +205,25 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 
 <section id="searchView" class="view hidden">
   <div class="card">
-    <h3>Investigate</h3>
-    <p class="muted">What are you researching? Carmen will classify it, keep your context, and look for public sources about the intersection — not a dump of unrelated name hits.</p>
-    <textarea id="searchQuery" placeholder="A name, plus optional context (interview, repair, towing, bondage…), a URL, product, or skill."></textarea>
+    <p class="kicker">Investigate</p>
+    <h3 style="font-size:22px;letter-spacing:-.03em;margin:0 0 12px">What are you researching?</h3>
+    <textarea id="searchQuery" placeholder="A person, product, vehicle, organization, topic, URL, or image. Add context if you already know it."></textarea>
+    <div id="lensStack"></div>
+    <div class="stage" id="interestBlock">
+      <h3>What are you interested in?</h3>
+      <p class="hint" style="margin:0 0 8px">Choose a research lens for this subject. Everything is valid. Specific context and questions stay yours.</p>
+      <div class="chips" id="interestChips"></div>
+      <div id="customContextWrap" class="hidden" style="margin-top:8px">
+        <label class="hint">Specific context</label>
+        <input id="customContext" placeholder="A production, collaboration, interview series, repair, towing…">
+      </div>
+      <div id="customQuestionWrap" class="hidden" style="margin-top:8px">
+        <label class="hint">Your question</label>
+        <textarea id="customQuestion" placeholder="What do you actually want to know?"></textarea>
+      </div>
+    </div>
     <div class="filter-block">
-      <p class="flabel">Adult content — research context, not a subject type</p>
+      <p class="flabel">Adult content — a research lens, not a subject type</p>
       <div class="chips" id="adultChips" style="margin-top:0">
         <button type="button" class="chip active" data-adult="off">Off</button>
         <button type="button" class="chip" data-adult="on">On</button>
@@ -212,11 +238,11 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
         <button type="button" class="chip active" data-depth="contextual">Contextual</button>
         <button type="button" class="chip" data-depth="deep">Deep</button>
       </div>
-      <p class="hint">Broad identifies the entity. Contextual finds entity ∩ your context. Deep follows productions, people, and sources from what it finds.</p>
+      <p class="hint">Broad identifies the entity. Contextual finds entity ∩ your context. Deep follows productions, people, and sources from what it finds — not more explicit generated content.</p>
     </div>
-    <div class="filter-block">
-      <p class="flabel">Subject type</p>
-      <div class="chips" id="subjectChips" style="margin-top:0">
+    <details class="adv">
+      <summary>Subject type (optional)</summary>
+      <div class="chips" id="subjectChips" style="margin-top:8px">
         <button class="chip active" data-subject="">Auto</button>
         <button class="chip" data-subject="person">Person</button>
         <button class="chip" data-subject="product">Product</button>
@@ -228,7 +254,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
         <button class="chip" data-subject="topic">Topic</button>
         <button class="chip" data-subject="website">URL</button>
       </div>
-    </div>
+    </details>
     <div class="row" style="margin-top:8px">
       <button class="btn primary" id="discoverBtn">Discover</button>
       <button class="btn" id="deepDiveBtn" disabled>Deep dive</button>
@@ -245,8 +271,9 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     </div>
   </div>
   <div class="card">
-    <h3>Candidates <span id="resultCount" class="badge"></span></h3>
+    <h3>Evidence <span id="resultCount" class="badge"></span></h3>
     <div id="selectedBanner"></div>
+    <div id="graphTrail" class="graph-trail"></div>
     <div id="divePlanner" class="hidden">
       <p id="divePlannerLead" class="muted"></p>
       <div class="pathpick" id="diveSelectChips"></div>
@@ -261,7 +288,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       </div>
     </div>
     <div id="results"></div>
-    <p id="resultsEmpty" class="muted">Results will appear here as ranked candidates — image, title, type, why it matched, source.</p>
+    <p id="resultsEmpty" class="muted">Direct contextual evidence, background, related sources, media, and indexes will appear here after Discover — not a dump of name hits.</p>
   </div>
   <div class="card">
     <h3>Deep dive</h3>

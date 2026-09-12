@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -407,6 +407,103 @@ console.log('--- no hardcoded differential-test subjects ---');
   const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
   assert(!/\babella danger\b/i.test(src), 'worker does not hardcode Abella Danger');
   assert(!/\bangela white\b/i.test(src), 'worker does not hardcode Angela White');
+}
+
+console.log('--- aggregator index does not beat specific intersection evidence ---');
+{
+  const raw = 'Jordan Hale bondage';
+  const c = applyResearchFilter(classifyQuery(raw), 'on', raw);
+  const specific = { title: 'Jordan Hale in Rope Session (2014)', url: 'https://www.iafd.com/title.rme/title=ropesession', snippet: 'bondage scene credits performer' };
+  const specialistPage = { title: 'Jordan Hale Electro Torment (2014)', url: 'https://studio.example/jordan-hale-electro-torment', snippet: 'bondage scene photoset performer' };
+  const tube = { title: 'Jordan Hale Bondage Porn Videos', url: 'https://www.pornhub.com/video/search?search=jordan+hale+bondage', snippet: 'Watch Jordan Hale bondage porn videos' };
+  const eporner = { title: '"Jordan Hale Bondage" Search', url: 'https://www.eporner.com/search/jordan-hale-bondage/', snippet: 'Most relevant porn videos to watch' };
+  const wiki = { title: 'Jordan Hale', url: 'https://en.wikipedia.org/wiki/Jordan_Hale', snippet: 'American person, biography' };
+  const wrongPerson = { title: 'Morgan Blake in Rope Session (2014)', url: 'https://www.iafd.com/title.rme/title=otherperson', snippet: 'bondage scene credits performer Morgan Blake' };
+  const wrongContext = { title: 'Jordan Hale interview on morning radio', url: 'https://news.example/jordan-hale-interview', snippet: 'a public interview about career and projects' };
+  const industryProfile = { title: 'Jordan Hale — free sex vids profile', url: 'https://www.freeones.com/jordan-hale', snippet: 'performer filmography' };
+
+  assert(isAggregatorPage(tube) === true, 'tube search URL is an aggregator');
+  assert(isAggregatorPage(eporner) === true, 'tube index search is an aggregator');
+  assert(isAggregatorPage(specific) === false, 'specialist title record is not an aggregator');
+  assert(isAggregatorPage(industryProfile) === false, 'industry profile host is not treated as an aggregator');
+  assert(isSpecificEvidence(specific, c) === true, 'IAFD title page is specific evidence');
+  assert(isSpecificEvidence(tube, c) === false, 'aggregator is not specific evidence');
+
+  const scoredTube = scoreResult(raw, tube, c);
+  const scoredSpecific = scoreResult(raw, specific, c);
+  assert(scoredTube.intersection !== true, 'keyword co-occurrence on an index is not verified intersection');
+  assert(scoredTube.resultKind === 'AGGREGATOR', 'tube index resultKind is AGGREGATOR');
+  assert(scoredSpecific.intersection === true, 'specific production is verified intersection');
+  assert(scoredSpecific.resultKind === 'INTERSECTION_MATCH', 'specific production resultKind is INTERSECTION_MATCH');
+  assert(scoredSpecific.score > scoredTube.score, 'specific intersection outscores aggregator exact-title overlap');
+
+  const ranked = rankResults(raw, [tube, eporner, wiki, specific, specialistPage, wrongPerson, wrongContext, industryProfile], c);
+  assert(ranked.length >= 1, 'contextual ranking returned candidates');
+  assert(/iafd|studio\.example/i.test(ranked[0].url), 'specific production/specialist outranks aggregator indexes');
+  assert(ranked[0].resultKind === 'INTERSECTION_MATCH', 'top result is Direct contextual evidence internally');
+  assert(ranked[0].intersection === true, 'top result keeps intersection flag');
+  const tubeR = ranked.find(r => /pornhub|eporner/i.test(r.url));
+  const specR = ranked.find(r => /iafd\.com\/title/i.test(r.url));
+  assert(specR && (!tubeR || specR.score > tubeR.score), 'IAFD title outranks tube aggregators');
+  if (tubeR) {
+    assert(tubeR.resultKind === 'AGGREGATOR', 'surviving tube row is labeled AGGREGATOR');
+    assert(tubeR.intersection !== true, 'aggregator is not flagged as intersection');
+  }
+  const wikiR = ranked.find(r => /wikipedia/i.test(r.url));
+  assert(!wikiR || wikiR.resultKind === 'GENERIC_BACKGROUND' || wikiR.resultKind === 'ENTITY_MATCH', 'encyclopedia is background/entity, not intersection');
+  assert(!wikiR || specR.score > wikiR.score, 'name-only biography stays below true intersection');
+  const wrongR = ranked.find(r => /otherperson|Morgan Blake/i.test(r.url + ' ' + r.title));
+  assert(!wrongR || specR.score > wrongR.score, 'wrong person + right context ranks below true intersection');
+  const interviewR = ranked.find(r => /interview/i.test(r.url));
+  assert(!interviewR || specR.score > interviewR.score, 'right person + wrong context ranks below true intersection');
+}
+
+console.log('--- keyword overlap is not a relationship ---');
+{
+  const c = applyResearchFilter(classifyQuery('Jordan Hale bondage'), 'on', 'Jordan Hale bondage');
+  const cooccur = { title: 'Jordan Hale Bondage Porn Videos', url: 'https://www.xvideos.com/?k=jordan+hale+bondage', snippet: 'jordan hale bondage videos to watch' };
+  const s = scoreResult('Jordan Hale bondage', cooccur, c);
+  assert(s.intersection === false, 'a page containing both words is not automatically a relationship');
+  assert(s.resultKind === 'AGGREGATOR', 'generic index stays AGGREGATOR');
+  const kind = classifyResultKind(cooccur, c, { intersection: false, hasEntity: true, hasContext: true });
+  assert(kind === 'AGGREGATOR', 'classifyResultKind does not let aggregators masquerade as INTERSECTION_MATCH');
+}
+
+console.log('--- interest lenses stay adaptive ---');
+{
+  const personL = interestLenses('person', { type: 'person', adultContent: 'off' });
+  assert(personL.some(x => x.id === 'everything' && x.label === 'Everything'), 'person has Everything');
+  assert(personL.some(x => x.id === 'interviews'), 'person has Interviews');
+  assert(personL.some(x => x.id === 'career'), 'person has Career');
+  assert(personL.some(x => x.id === 'specific' && x.custom), 'person has Specific context');
+  assert(personL.some(x => x.id === 'question' && x.question), 'person has Ask a question');
+  const vehicleL = interestLenses('vehicle', { type: 'vehicle', adultContent: 'off' });
+  assert(vehicleL.some(x => x.id === 'towing'), 'vehicle has Towing');
+  assert(vehicleL.some(x => x.id === 'repair'), 'vehicle has Repair');
+  const skillL = interestLenses('skill', { type: 'skill' });
+  assert(skillL.some(x => x.id === 'techniques'), 'skill has Techniques');
+  assert(skillL.some(x => x.id === 'safety'), 'skill has Safety');
+  const productL = interestLenses('product', { type: 'product' });
+  assert(productL.some(x => x.id === 'repair'), 'product has Repair');
+  const adultL = interestLenses('person', { type: 'person', adultContent: 'on' });
+  assert(adultL.some(x => x.id === 'credits'), 'adult ON person includes credits lens');
+  assert(!adultL.some(x => /bondage|riley|abella|angela/i.test(x.id + x.label + (x.context || ''))), 'lenses are not hardcoded to a test subject or fetish');
+  const offL = interestLenses('person', { type: 'person', adultContent: 'off' });
+  assert(!offL.some(x => x.id === 'credits'), 'adult OFF does not inject credits lens');
+}
+
+console.log('--- vehicle + towing result kinds still generalize ---');
+{
+  const av = classifyQuery('Lincoln Aviator towing');
+  const ranked = rankResults('Lincoln Aviator towing', [
+    { title: 'Lincoln Aviator', url: 'https://en.wikipedia.org/wiki/Lincoln_Aviator', source: 'Bing', snippet: 'luxury SUV' },
+    { title: 'Lincoln Aviator towing capacity', url: 'https://www.lincoln.com/suvs/aviator/towing/', source: 'Bing', snippet: 'towing payload hitch' },
+    { title: 'Lincoln Aviator Search', url: 'https://www.example.com/search?q=lincoln+aviator+towing', source: 'Bing', snippet: 'search results towing' },
+  ], av);
+  assert(ranked[0].url.includes('lincoln.com') || /towing/i.test(ranked[0].title), 'vehicle + towing still ranks the contextual source first');
+  assert(ranked[0].resultKind === 'INTERSECTION_MATCH' || ranked[0].intersection === true, 'vehicle contextual hit is intersection, not a dump');
+  const idx = ranked.find(r => /\/search\?/i.test(r.url));
+  assert(!idx || idx.resultKind === 'AGGREGATOR' || idx.score < ranked[0].score, 'generic search index does not beat towing evidence');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

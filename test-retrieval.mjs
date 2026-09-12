@@ -16,10 +16,11 @@ function assert(cond, msg) {
 console.log('--- /health ---');
 { const { status, body } = await call('/health');
   assert(status === 200, 'health 200');
-  assert(body.version === '43', 'version 43');
+  assert(body.version === '44', 'version 44');
   assert(body.routes.includes('/retrieve'), 'routes include /retrieve');
   assert(body.routes.includes('/dive'), 'routes include /dive');
   assert(body.routes.includes('/learn'), 'routes include /learn');
+  assert(body.routes.includes('/classify'), 'routes include /classify');
   assert(Array.isArray(body.features) && body.features.includes('dive-select'), 'features include dive-select');
   assert(body.features.includes('videos'), 'features include videos');
   assert(body.features.includes('expanded-research'), 'features include expanded-research');
@@ -29,9 +30,19 @@ console.log('--- /health ---');
   assert(body.features.includes('discovery-graph'), 'features include discovery-graph');
   assert(body.features.includes('research-depth'), 'features include research-depth');
   assert(body.features.includes('relationship-follow'), 'features include relationship-follow');
+  assert(body.features.includes('result-kinds'), 'features include result-kinds');
+  assert(body.features.includes('interest-lenses'), 'features include interest-lenses');
   assert(body.provider === 'openrouter', 'provider openrouter');
   assert(body.model === 'openrouter/free', 'model openrouter/free');
   assert(body.configured === false, 'configured false without key'); }
+console.log('--- /classify ---');
+{ const { status, body } = await call('/classify?q=' + encodeURIComponent('Jordan Hale') + '&adult=on');
+  assert(status === 200, 'classify 200');
+  assert(body.classification && body.classification.type === 'person', 'classify returns person');
+  assert(body.classification.adultContent === 'on', 'classify honors adult ON');
+  assert(Array.isArray(body.lenses) && body.lenses.some(l => l.id === 'everything'), 'classify returns interest lenses');
+  assert(body.lenses.some(l => l.id === 'credits'), 'adult ON person lenses include credits');
+  assert(Array.isArray(body.paths), 'classify returns paths'); }
 console.log('--- /retrieve success ---');
 { const { status, body } = await call('/retrieve?url=' + encodeURIComponent('https://example.com'));
   assert(status === 200, 'retrieve 200');

@@ -7,12 +7,12 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '43';
+const VERSION = '44';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
 const DB_VERSION = 3;
-const SESSION_KEY = 'carmen_session_v43';
+const SESSION_KEY = 'carmen_session_v44';
 const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).length) ? window.CARMEN_BACKEND : location.origin;
 
 let db = null, stream = null, current = null, historyStack = [], historyIndex = -1, currentProjectId = null;
@@ -37,6 +37,10 @@ let currentLearnType = '';
 let expandedMode = false;
 let currentAdult = 'off';
 let currentDepth = 'contextual';
+let researchSubject = '';
+let currentLensId = 'everything';
+let lastLenses = [];
+let classifyTimer = 0;
 
 const ACCESS_LABELS = {
   DIRECTLY_RETRIEVED: 'DIRECTLY RETRIEVED',
@@ -422,6 +426,8 @@ function setAdult(mode, opts = {}) {
   if (!opts.silent) {
     const el = $('appSub');
     if (el && currentAdult !== 'off') el.textContent = adultLabel(currentAdult) + ' · public research only';
+    else if (el) el.textContent = 'Public research. Nothing is saved unless you choose Save.';
+    if (researchSubject || ($('searchQuery') && $('searchQuery').value.trim())) classifySubject({ silent: true });
   }
 }
 function adultBadge(v) {
@@ -441,6 +447,154 @@ function setDepth(mode, opts = {}) {
     x.classList.toggle('active', x.dataset.depth === currentDepth);
   });
   persistSession();
+  if (!opts.silent) renderLensStack();
+}
+function extraContextText(c) {
+  return String((c && c.context) || '').replace(/adult content/gi, ' ').replace(/\s+/g, ' ').trim();
+}
+function resultKindLabel(kind) {
+  return ({
+    INTERSECTION_MATCH: 'Direct contextual evidence',
+    RELATIONSHIP_MATCH: 'Related',
+    MEDIA_MATCH: 'Media',
+    AGGREGATOR: 'Index',
+    GENERIC_BACKGROUND: 'Background',
+    ENTITY_MATCH: 'Entity',
+    CONTEXT_MATCH: 'Related context',
+    WEAK_MATCH: 'Weak match',
+    JUNK: 'Junk',
+  }[kind] || '');
+}
+function resultKindClass(kind) {
+  if (kind === 'INTERSECTION_MATCH') return 'access-ok';
+  if (kind === 'AGGREGATOR' || kind === 'JUNK' || kind === 'WEAK_MATCH') return 'access-warn';
+  if (kind === 'GENERIC_BACKGROUND' || kind === 'ENTITY_MATCH') return '';
+  if (kind === 'RELATIONSHIP_MATCH' || kind === 'MEDIA_MATCH') return 'inferred';
+  return '';
+}
+function resultCardClass(kind) {
+  if (kind === 'INTERSECTION_MATCH') return ' direct';
+  if (kind === 'AGGREGATOR' || kind === 'JUNK') return ' index';
+  if (kind === 'WEAK_MATCH') return ' weak';
+  return '';
+}
+function currentLens() {
+  return (lastLenses || []).find(x => x.id === currentLensId) || null;
+}
+function composeQuery() {
+  const typed = ($('searchQuery')?.value || '').trim();
+  const sub = researchSubject || typed;
+  const lens = currentLens();
+  if (!lens || lens.id === 'everything') return typed || sub;
+  if (lens.question) {
+    const q = ($('customQuestion')?.value || '').trim();
+    return q ? (sub + ' ' + q) : (typed || sub);
+  }
+  if (lens.custom) {
+    const c = ($('customContext')?.value || '').trim();
+    return c ? (sub + ' ' + c) : (typed || sub);
+  }
+  if (lens.context) {
+    if (typed && typed.toLowerCase().includes(String(lens.context).toLowerCase())) return typed;
+    return (sub + ' ' + lens.context).trim();
+  }
+  return typed || sub;
+}
+function matchLensToClassification(c) {
+  const extra = extraContextText(c);
+  const lenses = lastLenses || [];
+  if (!extra) { currentLensId = currentLensId || 'everything'; return; }
+  const hit = lenses.find(l => l.context && extra.toLowerCase().includes(String(l.context).toLowerCase()));
+  if (hit) currentLensId = hit.id;
+  else {
+    currentLensId = 'specific';
+    if ($('customContext') && !$('customContext').value.trim()) $('customContext').value = extra;
+  }
+}
+function renderInterestChips() {
+  const el = $('interestChips');
+  if (!el) return;
+  const list = lastLenses || [];
+  el.innerHTML = list.map(l => `<button type="button" class="chip${l.id === currentLensId ? ' active' : ''}" data-lens="${esc(l.id)}">${esc(l.label)}</button>`).join('')
+    || '<span class="hint">Enter a subject to see adaptive research lenses.</span>';
+  const lens = currentLens();
+  $('customContextWrap')?.classList.toggle('hidden', !(lens && lens.custom));
+  $('customQuestionWrap')?.classList.toggle('hidden', !(lens && lens.question));
+}
+function renderLensStack(data) {
+  const el = $('lensStack');
+  if (!el) return;
+  const c = (data && data.classification) || lastClassification;
+  const entity = (c && c.subject) || researchSubject || ($('searchQuery')?.value || '').trim();
+  if (!entity) { el.innerHTML = ''; return; }
+  const ctx = extraContextText(c) || (currentLens()?.custom ? ($('customContext')?.value || '') : (currentLens()?.context || ''));
+  const q = (currentLens()?.question && ($('customQuestion')?.value || '').trim()) || '';
+  const adult = currentAdult !== 'off' ? adultLabel(currentAdult) : '';
+  el.innerHTML = `<div class="lens-stack">
+    <div class="lens-row"><p class="flabel">Entity</p><b>${esc(entity)}</b></div>
+    <div class="lens-row"><p class="flabel">Context</p><span>${esc(ctx || (adult ? 'Adult research lens' : 'Everything'))}</span></div>
+    ${q ? `<div class="lens-row"><p class="flabel">Question</p><span>${esc(q)}</span></div>` : ''}
+    ${adult ? `<div class="lens-row"><p class="flabel">Lens</p><span>${esc(adult)}</span></div>` : ''}
+    <div class="lens-row"><p class="flabel">Depth</p><span>${esc(depthLabel(currentDepth))}</span></div>
+  </div>`;
+}
+function foundSummary(data) {
+  const n = (data && data.results && data.results.length) || lastResults.length || 0;
+  const ix = (data && data.intersectionCount) || lastResults.filter(r => r.intersection || r.resultKind === 'INTERSECTION_MATCH').length;
+  const leads = (data && data.graphLeads && data.graphLeads.length) || 0;
+  const parts = [];
+  if (ix) parts.push(ix + ' direct contextual source' + (ix === 1 ? '' : 's'));
+  if (n) parts.push(n + ' ranked candidate' + (n === 1 ? '' : 's'));
+  if (leads) parts.push(leads + ' relationship lead' + (leads === 1 ? '' : 's'));
+  return parts.join(' · ') || 'Public sources ranked for this investigation.';
+}
+function renderGraphTrail(data) {
+  const el = $('graphTrail');
+  if (!el) return;
+  const c = (data && data.classification) || lastClassification || {};
+  const entity = c.subject || researchSubject || '';
+  const ctx = extraContextText(c);
+  const leads = (data && data.graphLeads) || [];
+  if (!entity && !leads.length) { el.innerHTML = ''; return; }
+  const bits = [];
+  if (entity) bits.push(`<button type="button" class="chip active" data-graph-q="${esc(entity)}">${esc(entity)}</button>`);
+  if (ctx) bits.push(`<span class="subtle">→</span><button type="button" class="chip" data-graph-q="${esc((entity + ' ' + ctx).trim())}">${esc(ctx)}</button>`);
+  for (const lead of leads.slice(0, 8)) {
+    const label = lead.label || lead.text || '';
+    if (!label) continue;
+    bits.push(`<span class="subtle">→</span><button type="button" class="chip" data-graph-kind="${esc(lead.kind || '')}" data-graph-q="${esc(label)}">${esc(label)}</button>`);
+  }
+  el.innerHTML = bits.length ? `<p class="flabel">Investigation</p><div class="chips">${bits.join('')}</div><p class="hint">Tap a node to branch. The parent investigation stays.</p>` : '';
+}
+async function classifySubject(opts = {}) {
+  const q = ($('searchQuery')?.value || '').trim();
+  if (!q) return null;
+  const base = backendUrl();
+  if (!base) return null;
+  try {
+    const r = await fetch(base + '/classify?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(currentSubject) + '&adult=' + encodeURIComponent(currentAdult) + '&depth=' + encodeURIComponent(currentDepth), { headers: { accept: 'application/json' } });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
+    if (!r.ok || data.error) throw Error(data.error || `HTTP ${r.status}`);
+    lastClassification = data.classification || lastClassification;
+    lastLenses = Array.isArray(data.lenses) ? data.lenses : lastLenses;
+    lastPaths = Array.isArray(data.paths) && data.paths.length ? data.paths : lastPaths;
+    if (lastClassification && lastClassification.subject) researchSubject = lastClassification.subject;
+    matchLensToClassification(lastClassification);
+    const extra = extraContextText(lastClassification);
+    if ((extra || currentAdult === 'on' || currentAdult === 'both') && currentDepth !== 'deep') setDepth('contextual', { silent: true });
+    renderInterestChips();
+    renderLensStack(data);
+    persistSession();
+    if (!opts.silent) {
+      const lensHint = lastLenses.find(x => x.id === currentLensId);
+      toast(lensHint ? 'What are you interested in? ' + lensHint.label + ' is selected.' : 'Subject classified. Choose a research lens, then Discover.');
+    }
+    return data;
+  } catch (e) {
+    if (!opts.silent) toast('Could not classify yet: ' + e.message);
+    return null;
+  }
 }
 function persistSession() {
   try {
@@ -455,6 +609,9 @@ function persistSession() {
       dive: lastDivePayload,
       adult: currentAdult,
       depth: currentDepth,
+      researchSubject,
+      lensId: currentLensId,
+      lenses: lastLenses,
     }));
   } catch {}
 }
@@ -546,11 +703,17 @@ function restoreSession() {
     lastDivePayload = s.dive || null;
     if (s.adult) setAdult(s.adult, { silent: true });
     if (s.depth) setDepth(s.depth, { silent: true });
+    if (s.researchSubject) researchSubject = s.researchSubject;
+    if (s.lensId) currentLensId = s.lensId;
+    if (Array.isArray(s.lenses)) lastLenses = s.lenses;
     if (s.selectedUrl) selectedCandidate = lastResults.find(r => r.url === s.selectedUrl) || null;
+    renderInterestChips();
+    renderLensStack(s.meta || { classification: lastClassification });
     if (lastResults.length) {
       renderClassification(lastDiscoveryMeta || { classification: lastClassification, variants: [] });
       renderPathChips(lastPaths, 'divePaths');
       renderResults(lastResults, lastDiscoveryMeta?.providers || {});
+      renderGraphTrail(lastDiscoveryMeta);
       if (selectedCandidate) {
         const i = lastResults.findIndex(r => r.url === selectedCandidate.url);
         if (i >= 0) selectCandidate(selectedCandidate, i);
@@ -561,6 +724,8 @@ function restoreSession() {
 }
 
 async function discover(opts = {}) {
+  const composed = composeQuery();
+  if (composed && $('searchQuery')) $('searchQuery').value = composed;
   const q = $('searchQuery').value.trim();
   if (!q) return toast('Enter a subject, name, or URL first.');
   const base = backendUrl();
@@ -589,9 +754,15 @@ async function discover(opts = {}) {
     lastClassification = data.classification || null;
     lastDiscoveryMeta = data;
     lastPaths = Array.isArray(data.paths) ? data.paths : lastPaths;
+    if (data.classification && data.classification.subject) researchSubject = data.classification.subject;
+    if (Array.isArray(data.lenses) && data.lenses.length) lastLenses = data.lenses;
+    matchLensToClassification(lastClassification);
+    renderInterestChips();
     renderClassification(data);
+    renderLensStack(data);
     renderPathChips(lastPaths, 'divePaths');
     renderResults(lastResults, data.providers || {});
+    renderGraphTrail(data);
     renderExpandedCard(data);
     persistSession();
     updateDeepDiveState();
@@ -635,9 +806,10 @@ function renderClassification(data) {
   const warn = data.warning ? `<p class="warning">${esc(data.warning)}</p>` : '';
   const lanes = (data.lanes || []).map(l => esc(l.id)).join(', ');
   const depth = data.depth || currentDepth;
-  const ctx = c.context && !/^adult content$/i.test(c.context) ? c.context : '';
+  const ctx = extraContextText(c);
+  const found = foundSummary(data);
   $('classBar').innerHTML = `<div class="briefing">
-    <b>Investigating ${esc(c.subject || data.query || '')}</b>
+    <b>Researching ${esc(c.subject || data.query || '')}</b>
     <div class="rowbits">
       <span class="badge">${esc(c.type)}</span>
       ${adultBadge(data.adultContent || currentAdult)}
@@ -646,7 +818,8 @@ function renderClassification(data) {
       ${data.intersectionCount ? '<span class="badge access-ok">' + esc(String(data.intersectionCount)) + ' intersection hits</span>' : ''}
       ${data.expanded ? '<span class="badge access-ok">Expanded Research</span>' : ''}
     </div>
-    <p class="hint" style="margin:8px 0 0">${esc(c.reason)}${c.isUrl ? ' · treating this as a page to inspect' : ''}${lanes ? '<br>Discovery lanes: ' + lanes : ''}${variants ? '<br>Queries: ' + variants : ''}</p>
+    <p class="hint" style="margin:8px 0 0">${esc(found)}</p>
+    <p class="hint" style="margin:6px 0 0">${esc(c.reason)}${c.isUrl ? ' · treating this as a page to inspect' : ''}${lanes ? '<br>Discovery lanes: ' + lanes : ''}</p>
   </div>${warn}`;
 }
 function selectCandidate(r, i, opts = {}) {
@@ -681,8 +854,16 @@ function openDivePlanner(candidate) {
   lastPaths = paths.length ? paths : lastPaths;
   diveAll = true;
   selectedDivePathIds = lastPaths.map(p => p.id);
-  const name = c?.title || $('searchQuery')?.value || 'this subject';
-  $('divePlannerLead').innerHTML = `<b>${esc(name)}</b> <span class="badge">${esc(subjectLabel(type))}</span><br>Carmen found several research areas. What do you want to explore?`;
+  const name = c?.title || lastClassification?.subject || $('searchQuery')?.value || 'this subject';
+  const ctx = extraContextText(lastClassification) || currentLens()?.context || '';
+  const found = foundSummary(lastDiscoveryMeta);
+  $('divePlannerLead').innerHTML = `<div class="lens-stack">
+    <div class="lens-row"><p class="flabel">Researching</p><b>${esc(lastClassification?.subject || name)}</b></div>
+    <div class="lens-row"><p class="flabel">Context</p><span>${esc(ctx || (currentAdult !== 'off' ? adultLabel(currentAdult) : 'Everything'))}</span></div>
+    <div class="lens-row"><p class="flabel">Depth</p><span>${esc(depthLabel(currentDepth))}</span></div>
+  </div>
+  <p style="margin:8px 0 4px"><b>What Carmen found.</b> ${esc(found)}</p>
+  <p class="muted">Meaningful paths from this investigation. ALL means every path Carmen discovered here — not a fixed list of categories.</p>`;
   renderDiveSelectChips();
   el.classList.remove('hidden');
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -762,17 +943,22 @@ function renderResults(results, providers) {
     const rest = imgs.slice(1, 5);
     const selected = selectedCandidate && selectedCandidate.url === r.url;
     const aliases = (r.aliases || []).filter(Boolean).slice(0, 4);
-    return `<div class="result${selected ? ' selected' : ''}" data-i="${i}">
+    const kind = r.resultKind || (r.intersection ? 'INTERSECTION_MATCH' : '');
+    const kindLabel = resultKindLabel(kind);
+    const ctxBits = extraContextText(lastClassification);
+    return `<div class="result${selected ? ' selected' : ''}${resultCardClass(kind)}" data-i="${i}">
       ${hero ? `<img class="hero" data-full="${esc(imgSrc(hero))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(hero))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
       <div class="rbody">
         <div class="rhead">
           ${!hero && r.image ? `<img class="rthumb" data-full="${esc(imgSrc(r.image))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(r.image))}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
           <div class="rmeta">
+            ${kindLabel ? `<div class="rkind"><span class="badge ${resultKindClass(kind)}">${esc(kindLabel)}</span></div>` : ''}
             <div class="rtitle">${esc(r.title)}</div>
             <div class="rmeta"><span class="badge">${esc(subjectLabel(r.entityType || lastClassification?.type || currentSubject || 'web'))}</span>${r.intersection ? ' <span class="badge access-ok">entity ∩ context</span>' : ''}${r.contextLane === 'adult' ? ' <span class="badge access-warn">adult-context</span>' : ''} <span class="host">${esc(r.domain || hostOf(r.url))}</span> · ${esc(r.source)} · ${provenanceBadge(r.provenance || 'DISCOVERED')}${r.accessState ? ' · ' + accessBadge(r.accessState) : ''} · <span class="confidence ${esc(r.confidence || 'low')}">${esc(confidenceLabel(r.confidence))}</span>${r.observedAt ? ' · ' + esc(new Date(r.observedAt).toLocaleString()) : ''}</div>
           </div>
         </div>
-        ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
+        ${r.reason ? `<div class="rconn"><span>Why it matched</span>${esc(r.reason)}</div>` : ''}
+        ${ctxBits && (r.intersection || kind === 'INTERSECTION_MATCH') ? `<div class="rconn"><span>Context</span>Connects ${esc(lastClassification?.subject || researchSubject || 'this entity')} to ${esc(ctxBits)}.</div>` : ''}
         ${r.accessNote ? `<p class="warning">${esc(r.accessNote)}</p>` : ''}
         ${r.publicEvidence ? `<p class="hint">Public evidence (not protected content): ${esc(r.publicEvidence)}</p>` : ''}
         ${aliases.length ? `<div class="aliases">${aliases.map(a => `<span>${esc(a)}</span>`).join('')}</div>` : ''}
@@ -1042,7 +1228,10 @@ function renderDiveWorkspace(data, subject) {
     body = analysisHtml || '<p class="muted">Findings will appear here after Deep Dive finishes.</p>';
   }
   $('deepDiveResult').innerHTML = `
-    <div class="selbar"><b>${esc(plan.subject || subject)}</b> <span class="badge">${esc(subjectLabel(plan.type || currentSubject))}</span> ${plan.all ? '<span class="badge">ALL</span>' : ''}${adultBadge(plan.adultContent || data.adultContent || currentAdult)}<span class="badge">${esc(depthLabel(plan.depth || data.depth || currentDepth))}</span>${plan.expanded ? '<span class="badge access-ok">Expanded Research</span>' : ''}${plan.context ? '<span class="badge">context: ' + esc(plan.context) + '</span>' : ''}<br><small>${esc(plan.why || '')}</small>${plan.customQuestion ? '<br><small>Question: ' + esc(plan.customQuestion) + '</small>' : ''}<br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
+    <div class="selbar"><b>${esc(plan.subject || subject)}</b> <span class="badge">${esc(subjectLabel(plan.type || currentSubject))}</span> ${plan.all ? '<span class="badge">ALL</span>' : ''}${adultBadge(plan.adultContent || data.adultContent || currentAdult)}<span class="badge">${esc(depthLabel(plan.depth || data.depth || currentDepth))}</span>${plan.expanded ? '<span class="badge access-ok">Expanded Research</span>' : ''}${plan.context ? '<span class="badge">context: ' + esc(plan.context) + '</span>' : ''}<br>
+    <small>Researching ${esc(plan.subject || subject)} · Context ${esc(plan.context || extraContextText(lastClassification) || 'everything')} · Depth ${esc(depthLabel(plan.depth || data.depth || currentDepth))}</small>
+    ${foundSummary(data) ? '<br><small>What Carmen found: ' + esc(foundSummary(data)) + '</small>' : ''}
+    <br><small>${esc(plan.why || '')}</small>${plan.customQuestion ? '<br><small>Question: ' + esc(plan.customQuestion) + '</small>' : ''}<br><small>${esc(plan.safety || 'Read-only public research.')}</small></div>
     ${accessHtml}${suggestHtml}${tabHtml}${body}`;
 }
 function renderAdaptiveWriteup(text, paths, subject) {
@@ -1179,7 +1368,7 @@ async function renderHome() {
   if ($('homeResume')) {
     $('homeResume').innerHTML = resume ? `<div class="card"><h3>Resume</h3><div class="inv-card" data-resume="${esc(resume.id)}">${resume.thumbnail ? `<img src="${esc(imgSrc(resume.thumbnail))}" alt="">` : ''}<div class="body"><b>${esc(resume.name)}</b><div class="subtle">${esc(subjectLabel(resume.entityType))} · ${esc(adultLabel(resume.adultContent || 'off'))} · ${esc(resume.status || 'active')} · ${esc(resume.lastActivityAt ? new Date(resume.lastActivityAt).toLocaleString() : '')}</div><button class="btn primary" data-resume="${esc(resume.id)}" style="margin-top:8px">Resume investigation</button></div></div></div>` : '';
   }
-  $('homeRecent').innerHTML = ps.slice(0, 4).map(p => `<div class="inv-card" data-resume="${esc(p.id)}">${p.thumbnail ? `<img src="${esc(imgSrc(p.thumbnail))}" alt="">` : ''}<div class="body"><b>${esc(p.name)}</b><div class="subtle">${esc(subjectLabel(p.entityType))} · ${esc(p.status || 'active')}</div></div></div>`).join('') || '<p class="empty">No saved investigations yet. Search, then Deep Dive or Keep to persist one.</p>';
+  $('homeRecent').innerHTML = ps.slice(0, 4).map(p => `<div class="inv-card" data-resume="${esc(p.id)}">${p.thumbnail ? `<img src="${esc(imgSrc(p.thumbnail))}" alt="">` : ''}<div class="body"><b>${esc(p.name)}</b><div class="subtle">${esc(subjectLabel(p.entityType))} · ${esc(p.status || 'active')}</div></div></div>`).join('') || '<p class="empty">No saved investigations yet. Continue, choose a lens, then Discover — Keep or Deep Dive to persist one.</p>';
 }
 
 async function renderInvestigations() {
@@ -1368,7 +1557,7 @@ function wire() {
     currentProjectId = null;
     $('searchQuery').value = $('homeQuery').value.trim();
     setTab('search');
-    if ($('searchQuery').value) discover();
+    if ($('searchQuery').value) classifySubject();
   };
   $('homeQuery').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('homeSearchBtn').click(); } });
   document.body.addEventListener('click', e => {
@@ -1451,9 +1640,43 @@ function wire() {
   };
 
   // discovery
-  $('searchQuery').addEventListener('input', updateDeepDiveState);
+  $('searchQuery').addEventListener('input', () => {
+    updateDeepDiveState();
+    persistSession();
+    clearTimeout(classifyTimer);
+    classifyTimer = setTimeout(() => {
+      if (($('searchQuery').value || '').trim().length >= 2) classifySubject({ silent: true });
+    }, 480);
+  });
   $('searchQuery').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); discover(); } });
   $('discoverBtn').onclick = discover;
+  if ($('interestChips')) $('interestChips').onclick = e => {
+    const c = e.target.closest('[data-lens]');
+    if (!c) return;
+    currentLensId = c.dataset.lens;
+    renderInterestChips();
+    const lens = currentLens();
+    if (lens && (lens.context || lens.custom || lens.question) && currentDepth !== 'deep') setDepth('contextual', { silent: true });
+    if (lens?.id === 'everything' && researchSubject) $('searchQuery').value = researchSubject;
+    else {
+      const composed = composeQuery();
+      if (composed && $('searchQuery') && (lens?.context || lens?.custom || lens?.question)) $('searchQuery').value = composed;
+    }
+    renderLensStack();
+    persistSession();
+  };
+  if ($('customContext')) $('customContext').addEventListener('input', () => {
+    const composed = composeQuery();
+    if (composed) $('searchQuery').value = composed;
+    renderLensStack();
+    persistSession();
+  });
+  if ($('customQuestion')) $('customQuestion').addEventListener('input', () => {
+    const composed = composeQuery();
+    if (composed) $('searchQuery').value = composed;
+    renderLensStack();
+    persistSession();
+  });
   if ($('expandedBtn')) $('expandedBtn').onclick = () => discover({ expanded: true });
   $('deepDiveBtn').onclick = () => openPlannerFromButton();
   if ($('startDiveBtn')) $('startDiveBtn').onclick = runDeepDive;
@@ -1623,6 +1846,18 @@ function wire() {
     const br = e.target.closest('[data-branch]');
     if (br && lastDivePayload?.related) {
       branchInvestigation(lastDivePayload.related[+br.dataset.branch]);
+      return;
+    }
+    const gq = e.target.closest('[data-graph-q]');
+    if (gq) {
+      const label = gq.dataset.graphQ;
+      const kind = gq.dataset.graphKind || '';
+      if (kind) branchInvestigation({ label, kind });
+      else {
+        $('searchQuery').value = label;
+        researchSubject = lastClassification?.subject || researchSubject;
+        discover();
+      }
       return;
     }
     const sv = e.target.closest('[data-save-video]');
