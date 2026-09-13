@@ -1035,6 +1035,7 @@ console.log('--- v47.2 continue batch and intersection count ---');
   const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
   assert(/retrieved\.length - batchStartCount/.test(src), 'Deep Dive compare retrieve cap against this batch, not prior total');
   assert(/priorRows\.filter\(r => r && r.intersection\)/.test(src), 'skipDiscover derives intersectionCount from prior results');
+  assert(/const analysisOnly = b.analysisOnly === true \|\| b.retryAnalysis === true;/.test(src), 'Continue is not analysis-only just because a prior analysis failed');
   const overflowQ = diveRetrievalQueue({
     retrieveCap: 4,
     discoveryResults: Array.from({ length: 10 }, (_, i) => ({ url: 'https://studio.example/title/' + i, resultKind: 'INTERSECTION_MATCH', score: 40 })),

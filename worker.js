@@ -3691,7 +3691,7 @@ async function deepDiveHandler(req, env) {
     const interpreted = interpretRequest(classification, customQuestion);
     classification.concepts = interpreted.concepts;
     const cont = (b.continueFrom && typeof b.continueFrom === 'object') ? b.continueFrom : null;
-    const analysisOnly = b.analysisOnly === true || b.retryAnalysis === true || (cont && cont.stage === 'analyze');
+    const analysisOnly = b.analysisOnly === true || b.retryAnalysis === true;
     resetFetchBudget();
     const priorRetrieved = Array.isArray(b.priorRetrieved) ? b.priorRetrieved.slice() : [];
     const retrieved = priorRetrieved.slice();
@@ -3851,7 +3851,7 @@ async function deepDiveHandler(req, env) {
       queue: retrieveQueue,
       batchCap: retrieveCap,
     });
-    if (!analysisOnly && !(cont && (cont.stage === 'synthesize' || cont.stage === 'analyze'))) {
+    if (!analysisOnly && !(cont && cont.stage === 'synthesize')) {
       for (const url of batch.next.length ? batch.next : queue) {
         if (remainingFetches() < 3) break;
         if ((retrieved.length - batchStartCount) >= retrieveCap) break;
@@ -3970,7 +3970,7 @@ Planning vocabulary is INFERRED, not case evidence. Only treat retrieved co-occu
     if (paused) suggestions.push('Research paused — more evidence available to continue. Carmen reached the per-request research budget; this is not a failed analysis.');
     if (analysisError) suggestions.push('Research collected. Analysis unavailable — retry analysis. Retrieved sources, images, videos, and leads are kept.');
     const researchState = {
-      stage: analysisError ? 'analyze' : (paused ? 'paused' : 'complete'),
+      stage: pendingUrls.length ? 'paused' : (analysisError ? 'analyze' : (paused ? 'paused' : 'complete')),
       analysisStatus: analysisError ? 'failed' : (analysisSkipped ? 'skipped' : (analysis ? 'ok' : 'none')),
       budget: budgetReport(),
       pendingUrls: pendingUrls.slice(0, 12),
