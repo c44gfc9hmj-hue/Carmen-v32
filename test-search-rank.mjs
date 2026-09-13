@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence, mergeConceptKnowledge, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence, mergeConceptKnowledge, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -1181,8 +1181,10 @@ console.log('--- v47.3 investigation choices adapt by type ---');
   const extra = investigationChoices('person', { type: 'person', adultContent: 'on', context: 'rope' });
   assert(extra.some(x => x.id === 'context' && /rope/i.test(x.label)), 'person + extra concept gets a context choice');
   const vehicle = investigationChoices('vehicle', { type: 'vehicle', adultContent: 'on' });
-  assert(vehicle.some(x => x.id === 'towing'), 'vehicle has Towing');
+  assert(!vehicle.some(x => x.id === 'towing'), 'vehicle without towing context has no Towing choice');
   assert(vehicle.some(x => x.id === 'repair'), 'vehicle has Repair');
+  const vehicleTow = investigationChoices('vehicle', { type: 'vehicle', adultContent: 'off', context: 'towing' });
+  assert(vehicleTow.some(x => x.id === 'towing'), 'vehicle + towing context still has Towing');
   assert(!vehicle.some(x => /credits|interviews|related people/i.test(x.label)), 'vehicle does not inherit person choices');
   const skill = investigationChoices('skill', { type: 'skill', adultContent: 'on' });
   assert(skill.some(x => x.id === 'tutorials'), 'skill has Tutorials');
@@ -1302,7 +1304,76 @@ console.log('--- v47.3 UI hides engine internals on the primary path ---');
   assert(/PUBLIC ALTERNATIVES FOUND/.test(app), 'UI still names PUBLIC ALTERNATIVES FOUND');
   assert(/continueDiveBtn/.test(app) && /continueFrom/.test(app), 'Continue is still wired');
   assert(/retryAnalysis|Retry analysis/.test(app), 'Retry analysis is still wired');
+  assert(/data-adult="both"/.test(html.split('homeAdultChips')[1] || html), 'home Adult lens includes Both');
+  assert(/data-subject="clothing"/.test(html), 'clothing is a first-class subject chip');
+  assert(/furtherDiveBtn/.test(html) && /Investigate further/.test(html), 'Investigate further is a distinct action');
+  assert(/makeTutorialBtn|Make tutorial/.test(html + app), 'Make tutorial is available');
+  assert(/carmen_measurements_v47/.test(app), 'user measurements persist locally');
+  assert(/FINDINGS|Findings/.test(html + app) && /data-wstab/.test(app), 'dive workspace still uses tabs');
+  assert(/visualCorpus/.test(html) && /More images/.test(app), 'visual corpus and More images are wired');
   assert(!/\bdrea morgan\b/i.test(app), 'frontend does not hardcode Drea Morgan');
+}
+
+console.log('--- v47.4 clothing is a type, not a hardcoded wardrobe ---');
+{
+  const coat = classifyQuery('navy wool coat');
+  assert(coat.type === 'clothing', 'navy wool coat classifies as clothing');
+  const personDress = applyResearchFilter(classifyQuery('Jordan Hale red dress'), 'off', 'Jordan Hale red dress');
+  assert(personDress.type === 'person', 'person + garment context stays a person');
+  assert(/dress/i.test(personDress.context || ''), 'garment remains the requested context on a person');
+  const clothChoices = investigationChoices('clothing', { type: 'clothing', adultContent: 'off' });
+  assert(clothChoices.some(x => x.id === 'fit'), 'clothing has Fit & sizing');
+  assert(clothChoices.some(x => x.id === 'similar'), 'clothing has Similar garments');
+  assert(clothChoices.some(x => x.id === 'visuals'), 'clothing has Visuals');
+  const paths = researchPaths('clothing', { type: 'clothing' });
+  assert(paths.some(p => p.id === 'measurements'), 'clothing paths include measurements');
+  assert(paths.some(p => p.id === 'materials'), 'clothing paths include materials');
+}
+
+console.log('--- v47.4 visual corpus and investigate-further are first-class ---');
+{
+  const person = applyResearchFilter(classifyQuery('Jordan Hale'), 'off', 'Jordan Hale');
+  assert(isVisualSubject(person) === true, 'a person is a visual subject');
+  const skill = applyResearchFilter(classifyQuery('welding a trailer hitch'), 'off', 'welding a trailer hitch');
+  assert(isVisualSubject(skill) === true, 'a physical skill is a visual subject');
+  const broad = discoveryLanes(person, 'broad');
+  assert(broad.lanes.some(l => l.id === 'images' && l.kind === 'image'), 'broad person search still retrieves a visual corpus');
+  assert(broad.lanes.some(l => l.id === 'videos' && l.kind === 'video'), 'broad person search still retrieves videos');
+  const further = investigateFurtherQueries(person, [{ url: 'https://en.wikipedia.org/wiki/Example', title: 'Example' }], []);
+  assert(further.length >= 2, 'Investigate Further produces new queries');
+  assert(further.some(v => /reddit/i.test(v.q)), 'Investigate Further looks at community sources');
+  assert(further.every(v => v.q), 'Investigate Further queries are non-empty');
+  const firstPass = diveExpansionQueries({ classification: person, seed: 'Jordan Hale', resolvedAll: true, adult: 'off', depth: 'broad' });
+  assert(further.some(v => !firstPass.includes(v.q)), 'Investigate Further is not a rerun of the first expansion');
+  const dur = classifyVideoDuration({ title: 'Full-length interview 1:12:00', url: 'https://youtube.com/watch?v=abc' });
+  assert(dur.class === 'full-length' || dur.class === 'extended', 'hour-long video is classified as full-length/extended');
+  const clip = classifyVideoDuration({ title: 'Trailer clip 0:15', url: 'https://youtube.com/watch?v=def' });
+  assert(clip.class === 'very-short' || clip.class === 'short', 'trailer/clip is classified short');
+  const amb = ambiguousInterpretations('zorbith', { type: 'ambiguous', subject: 'zorbith', confidence: 'low' });
+  assert(amb.length >= 2, 'ambiguous input offers competing interpretations');
+  const vis = buildVisualCorpus([
+    { image: 'https://cdn.example/a.jpg?q=1', url: 'https://example.com/a', domain: 'example.com', title: 'A', images: ['https://cdn.example/a.jpg?q=1'] },
+    { image: 'https://cdn.example/a.jpg?q=2', url: 'https://mirror.example/a', domain: 'mirror.example', title: 'A mirror', images: ['https://cdn.example/a.jpg?q=2'] },
+    { image: 'https://cdn.example/b.jpg', url: 'https://example.com/b', domain: 'example.com', title: 'B', images: ['https://cdn.example/b.jpg'] },
+  ], [], person);
+  assert(vis.length === 2, 'visual corpus dedupes identical media URLs without collapsing different examples');
+  assert(vis.every(v => v.visualLikenessIsNotIdentityProof && v.researchObject), 'visuals are research objects, not decoration');
+}
+
+console.log('--- v47.4 premium content is labeled research, not a bypass ---');
+{
+  const personOn = investigationChoices('person', { type: 'person', adultContent: 'on' });
+  assert(personOn.some(x => x.id === 'premium' && /Premium Content/.test(x.label)), 'person has Premium Content choice');
+  const mapped = resolveDivePaths('person', { investigation: 'premium' }, { type: 'person', adultContent: 'on' });
+  assert(mapped.selected.some(p => p.id === 'premium'), 'Premium Content maps onto a premium path');
+  const vars = pathSearchVariants('Jordan Hale', [{ id: 'premium' }], { type: 'person', subject: 'Jordan Hale', adultContent: 'on' });
+  assert(vars.some(v => /subscription|members only|official site|catalog|preview/i.test(v.q)), 'premium variants search public/indexed leads');
+  assert(vars.every(v => !/bypass|defeat|steal/i.test(v.q)), 'premium queries are not bypass commands');
+  assert(vars.some(v => /does not bypass/i.test(v.why)), 'premium research is labeled as not a bypass');
+  const tech = investigationChoices('technique', { type: 'technique', adultContent: 'off' });
+  assert(tech.some(x => x.id === 'terms'), 'technique has Terminology');
+  assert(tech.some(x => x.id === 'variations'), 'technique has Variations');
+  assert(tech.some(x => x.id === 'tutorials'), 'technique has Tutorials');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

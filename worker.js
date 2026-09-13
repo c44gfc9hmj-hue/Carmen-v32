@@ -398,7 +398,8 @@ function attachImageHit(results, seen, hit, diagnosticsKey) {
   });
 }
 
-async function bingImages(q, results, seen, diagnostics) {
+async function bingImages(q, results, seen, diagnostics, limit) {
+  const cap = Math.max(8, Math.min(Number(limit) || 10, 18));
   if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) {
     diagnostics['Bing Images'] = { error: 'skipped (fetch budget)' };
     return;
@@ -411,7 +412,7 @@ async function bingImages(q, results, seen, diagnostics) {
     const html = await r.text();
     const re = /"murl":"([^"]+)","turl":"([^"]+)"[\s\S]{0,400}?"purl":"([^"]+)"[\s\S]{0,200}?"t":"([^"]*)"/g;
     let m, added = 0;
-    while ((m = re.exec(html)) && added < 10) {
+    while ((m = re.exec(html)) && added < cap) {
       const hit = {
         image: unescapeJsonUrl(m[1]),
         thumb: unescapeJsonUrl(m[2]),
@@ -427,9 +428,9 @@ async function bingImages(q, results, seen, diagnostics) {
       const images = [];
       const pages = [];
       let x;
-      while ((x = loose.exec(html)) && images.length < 10) images.push(unescapeJsonUrl(x[1]));
-      while ((x = purl.exec(html)) && pages.length < 10) pages.push(unescapeJsonUrl(x[1]));
-      for (let i = 0; i < images.length && added < 8; i++) {
+      while ((x = loose.exec(html)) && images.length < cap) images.push(unescapeJsonUrl(x[1]));
+      while ((x = purl.exec(html)) && pages.length < cap) pages.push(unescapeJsonUrl(x[1]));
+      for (let i = 0; i < images.length && added < cap; i++) {
         if (attachImageHit(results, seen, { image: images[i], pageUrl: pages[i] || '', title: q, query: q }, 'Bing Images')) added++;
       }
     }
@@ -686,6 +687,8 @@ const SKILL_WORD_RE = /\b(weld|welding|welder|woodwork|woodworking|carpentry|fab
 const INSTRUCTIONAL_HOST_RE = /(youtube\.com|youtu\.be|wikihow\.com|instructables\.com|wikipedia\.org|reddit\.com|khronos|familyhandyman|thisoldhouse|finewoodworking|lincolnelectric|millerwelds|hobart)/i;
 const TECHNIQUE_HINTS = new Set(['technique', 'position', 'instruction']);
 const SKILL_HINTS = new Set(['skill', 'project']);
+const CLOTHING_HINTS = new Set(['clothing', 'garment', 'outfit', 'fashion']);
+const CLOTHING_WORD_RE = /\b(dress|dresses|gown|jacket|coat|coats|jeans|trousers|pants|skirt|blouse|shirt|shirts|outfit|outfits|garment|wardrobe|corset|heels|boots|sneakers|sweater|hoodie|suit|kimono|sari|lingerie|cardigan|blazer|shorts|leggings|jumpsuit|romper|knitwear)\b/i;
 const STOCK_IMAGE_RE = /(shutterstock|gettyimages|istockphoto|adobestock|unsplash\.com|pexels\.com|pixabay\.com|depositphotos)/i;
 const ADULT_HOST_RE = /(^|\.)(onlyfans|manyvids|clips4sale|iwantclips|iafd|adultfilmdatabase|adultdvdtalk|babepedia|boobpedia|indexxx|data18|thenude|freeones)\./i;
 const ADULT_PATH_RE = /\/(models?|performers?|pornstar|photoset|scene|xxx|galleries)(\/|$)/i;
@@ -783,7 +786,7 @@ const CONTEXT_RELATIONS = [
   { id: 'interview', re: /\b(interview|interviews|podcast|talk show|q\s*&\s*a|qanda)\b/i, synonyms: 'interview OR podcast OR talk OR q&a' },
   { id: 'visual', re: /\b(photos?|images?|pics?|gallery|portrait|headshot)\b/i, synonyms: 'photos OR images OR gallery OR portrait' },
   { id: 'video', re: /\b(videos?|youtube|clip|footage|watch)\b/i, synonyms: 'video OR youtube OR clip OR footage' },
-  { id: 'clothing', re: /\b(wearing|outfit|dress|clothing|clothes|costume|wardrobe)\b/i, synonyms: 'wearing OR outfit OR dress OR photos' },
+  { id: 'clothing', re: /\b(wearing|outfit|outfits|dress|dresses|gown|jacket|coat|coats|clothing|clothes|costume|wardrobe|jeans|skirt|blouse|shirt|lingerie|heels|boots|garment)\b/i, synonyms: 'wearing OR outfit OR dress OR photos' },
   { id: 'vehicle', re: /\b(car|truck|vehicle|motorcycle|bike)\b/i, synonyms: 'car OR vehicle OR photos' },
   { id: 'towing', re: /\b(tow|towing|payload)\b/i, synonyms: 'towing OR tow capacity OR payload' },
   { id: 'repair', re: /\b(repair|repairs|fix|service|maintenance)\b/i, synonyms: 'repair OR service OR maintenance' },
@@ -811,7 +814,7 @@ function isKnownInvestigativeContext(w) {
   if (!t || isNameParticle(t)) return false;
   if (detectRelation(t)) return true;
   if (TRAILING_CONTEXT_RE.test(' ' + t)) return true;
-  if (TECHNIQUE_WORD_RE.test(t) || SKILL_WORD_RE.test(t)) return true;
+  if (TECHNIQUE_WORD_RE.test(t) || SKILL_WORD_RE.test(t) || CLOTHING_WORD_RE.test(t)) return true;
   if (STRUCTURAL_FAMILIES.some(f => f.re.test(t))) return true;
   return false;
 }
@@ -879,6 +882,9 @@ function parseQueryContext(q, classification) {
   } else if (type === 'person' && words.length >= 4) {
     subject = words.slice(0, 2).join(' ');
     context = words.slice(2).join(' ');
+  } else if (type === 'clothing') {
+    subject = raw;
+    context = '';
   } else if ((type === 'product' || type === 'vehicle' || type === 'organization') && words.length >= 2) {
     const last = words[words.length - 1];
     if ((detectRelation(last) || isConceptToken(last)) && words.length >= 2) {
@@ -1089,6 +1095,18 @@ function interestLenses(type, classification) {
       { id: 'projects', label: 'Projects', context: 'projects' },
       { id: 'trouble', label: 'Troubleshooting', context: 'troubleshooting' },
     ],
+    clothing: [
+      { id: 'everything', label: 'Everything' },
+      { id: 'visuals', label: 'Visuals', context: 'photos' },
+      { id: 'fit', label: 'Fit & sizing', context: 'fit' },
+      { id: 'materials', label: 'Materials', context: 'fabric' },
+      { id: 'similar', label: 'Similar garments', context: 'similar' },
+    ],
+    place: [
+      { id: 'everything', label: 'Everything' },
+      { id: 'visuals', label: 'Visuals', context: 'photos' },
+      { id: 'history', label: 'History', context: 'history' },
+    ],
     technique: [
       { id: 'everything', label: 'Everything' },
       { id: 'what', label: 'What this is' },
@@ -1130,14 +1148,16 @@ function investigationChoices(type, classification) {
       { id: 'interviews', label: 'Interviews', paths: ['interviews'] },
       { id: 'career', label: adultOn ? 'Career & credits' : 'Career & history', paths: adultOn ? ['career', 'projects', 'timeline'] : ['career', 'timeline', 'presence'] },
       { id: 'related', label: 'Related people', paths: ['related', 'entities'] },
+      { id: 'premium', label: 'Premium Content', paths: ['premium', 'presence', 'sources'] },
     ],
     vehicle: [
       { id: 'everything', label: 'Everything', paths: ['all'] },
       { id: 'specs', label: 'Specifications', paths: ['specs'] },
       { id: 'repair', label: 'Repair', paths: ['maintenance', 'issues'] },
-      { id: 'towing', label: 'Towing', paths: ['specs'] },
       { id: 'reviews', label: 'Reviews', paths: ['reviews'] },
       { id: 'history', label: 'History', paths: ['overview'] },
+      { id: 'images', label: 'Images', paths: ['images'] },
+      { id: 'videos', label: 'Videos', paths: ['videos'] },
     ],
     product: [
       { id: 'everything', label: 'Everything', paths: ['all'] },
@@ -1156,8 +1176,24 @@ function investigationChoices(type, classification) {
     technique: [
       { id: 'everything', label: 'Everything', paths: ['all'] },
       { id: 'visuals', label: 'Visuals', paths: ['visuals', 'images'] },
+      { id: 'terms', label: 'Terminology', paths: ['terms'] },
+      { id: 'variations', label: 'Variations', paths: ['variations'] },
       { id: 'tutorials', label: 'Tutorials', paths: ['tutorials'] },
       { id: 'videos', label: 'Videos', paths: ['videos'] },
+    ],
+    clothing: [
+      { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'visuals', label: 'Visuals', paths: ['visuals', 'images'] },
+      { id: 'fit', label: 'Fit & sizing', paths: ['fit', 'measurements'] },
+      { id: 'materials', label: 'Materials', paths: ['materials'] },
+      { id: 'similar', label: 'Similar garments', paths: ['similar'] },
+      { id: 'videos', label: 'Videos', paths: ['videos'] },
+    ],
+    place: [
+      { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'visuals', label: 'Visuals', paths: ['images'] },
+      { id: 'history', label: 'History', paths: ['overview'] },
+      { id: 'related', label: 'Related places', paths: ['related'] },
     ],
     organization: [
       { id: 'everything', label: 'Everything', paths: ['all'] },
@@ -1176,6 +1212,9 @@ function investigationChoices(type, classification) {
     const label = extra.length > 28 ? extra.slice(0, 26) + '…' : extra;
     list.splice(1, 0, { id: 'context', label: label, paths: ['context', 'projects', 'images'] });
   }
+  if (t === 'vehicle' && /\b(tow|towing|payload|hitch)\b/i.test(extra) && !list.some(function (x) { return x.id === 'towing'; })) {
+    list.splice(3, 0, { id: 'towing', label: 'Towing', paths: ['specs'] });
+  }
   if (!list.some(function (x) { return x.id === 'question'; })) {
     list.push({ id: 'question', label: 'Custom question', question: true, paths: [] });
   }
@@ -1184,6 +1223,130 @@ function investigationChoices(type, classification) {
 
 function extraContext(classification) {
   return String((classification && classification.context) || '').replace(/adult content/gi, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function isVisualSubject(classification) {
+  const t = String((classification && classification.type) || '');
+  if (t === 'person' || t === 'technique' || t === 'product' || t === 'vehicle' || t === 'place' || t === 'clothing' || t === 'skill' || t === 'project' || t === 'social' || t === 'ambiguous') return true;
+  const rel = String((classification && classification.relation) || '');
+  if (rel === 'clothing' || rel === 'visual' || rel === 'technique') return true;
+  if (extraContext(classification)) return true;
+  return false;
+}
+
+function visualDedupeKey(url) {
+  return String(url || '').replace(/[?#].*$/, '').replace(/\/cdn-cgi\/image\/[^/]+\//, '/').toLowerCase();
+}
+
+function buildVisualCorpus(results, retrieved, classification) {
+  const imgs = collectDiveImages(retrieved || [], results || [], classification);
+  const out = [];
+  const seen = new Set();
+  for (const im of imgs) {
+    const key = visualDedupeKey(im.url);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      url: im.url,
+      pageUrl: im.pageUrl || '',
+      domain: im.domain || '',
+      title: im.caption || im.reason || '',
+      source: im.source || '',
+      reason: im.reason || 'Image keeps page provenance. Visual likeness is not identity proof.',
+      caption: im.caption || '',
+      confidence: im.confidence || 'medium',
+      relevance: im.relevance || 0,
+      provenance: im.provenance || 'DISCOVERED',
+      accessState: im.accessState || 'DISCOVERED',
+      relationshipToEntity: im.relationshipToEntity || '',
+      relationshipToContext: im.relationshipToContext || '',
+      visualLikenessIsNotIdentityProof: true,
+      researchObject: true,
+    });
+  }
+  return out.slice(0, 48);
+}
+
+function classifyVideoDuration(item) {
+  const blob = String((item && (item.title || '')) + ' ' + (item && (item.snippet || '')) + ' ' + (item && (item.url || '')) + ' ' + (item && (item.pageUrl || ''))).toLowerCase();
+  let seconds = null;
+  const hm = blob.match(/\b(\d+)\s*(?:h|hr|hours?)\s*(\d+)?\s*(?:m|min|minutes?)?\b/);
+  const mm = blob.match(/\b(\d+)\s*(?:m|min|minutes?)\b/);
+  const clock = blob.match(/\b(\d+):(\d{2})(?::(\d{2}))?\b/);
+  if (hm) seconds = (Number(hm[1]) || 0) * 3600 + (Number(hm[2]) || 0) * 60;
+  else if (clock) {
+    if (clock[3]) seconds = Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3]);
+    else seconds = Number(clock[1]) * 60 + Number(clock[2]);
+  } else if (mm) seconds = (Number(mm[1]) || 0) * 60;
+  if (seconds != null && seconds > 0) {
+    if (seconds < 30) return { class: 'very-short', seconds, label: 'very short' };
+    if (seconds < 120) return { class: 'short', seconds, label: 'short' };
+    if (seconds < 600) return { class: 'medium', seconds, label: 'medium' };
+    if (seconds < 1800) return { class: 'long', seconds, label: 'long' };
+    if (seconds < 3600) return { class: 'full-length', seconds, label: 'full-length' };
+    return { class: 'extended', seconds, label: 'extended' };
+  }
+  if (/\b(short|#shorts|clip|trailer|teaser|preview|promo)\b/i.test(blob)) return { class: 'short', seconds: null, label: 'short' };
+  if (/\b(full[- ]?(?:length|movie|video|scene)|uncut|complete|extended|documentary|featurette|feature)\b/i.test(blob)) return { class: 'full-length', seconds: null, label: 'full-length' };
+  return { class: 'unknown', seconds: null, label: '' };
+}
+
+function investigateFurtherQueries(classification, priorResults, graphLeads) {
+  const subject = String((classification && classification.subject) || '').replace(/"/g, '');
+  const extra = extraContext(classification);
+  const quoted = subject ? '"' + subject + '"' : '';
+  const type = (classification && classification.type) || '';
+  const out = [];
+  const add = (q, why) => {
+    const t = String(q || '').trim();
+    if (!t || out.some(x => x.q === t)) return;
+    out.push({ q: t, why: why || 'second-pass research' });
+  };
+  if (!quoted) return out;
+  add(quoted + ' site:reddit.com', 'community discussion not covered in the first pass');
+  if (type === 'person' || type === 'social') {
+    add(quoted + ' interview OR podcast OR transcript', 'interviews missing from the first pass');
+    add(quoted + ' (credits OR filmography OR "also known")', 'credits and aliases');
+  }
+  if (type === 'technique' || type === 'skill' || type === 'project') {
+    add(quoted + ' tutorial OR demonstration OR "how to"', 'instructional sources');
+    add(quoted + ' (variations OR "also called" OR terminology)', 'terminology and variations');
+  }
+  if (type === 'clothing') {
+    add(quoted + ' (fit OR sizing OR fabric OR lookbook)', 'fit and material sources');
+    add(quoted + ' similar OR inspired OR alternative', 'similar garments');
+  }
+  if (type === 'product' || type === 'vehicle') {
+    add(quoted + ' (manual OR spec OR review OR diagram)', 'spec and demonstration sources');
+  }
+  if (isVisualSubject(classification)) {
+    add(imageSearchQuery(subject, classification), 'additional visual corpus');
+  }
+  if (extra) add(quoted + ' ' + extra + ' (review OR discussion OR explained)', 'deeper entity × concept');
+  for (const l of (graphLeads || []).slice(0, 4)) {
+    if (l && l.q) add(l.q, l.why || 'related lead from the first pass');
+  }
+  const seenHosts = new Set((priorResults || []).map(r => hostOf(r && r.url).replace(/^www\./, '')).filter(Boolean));
+  return out.filter(v => {
+    const hostGuess = String(v.q || '').match(/site:([a-z0-9.-]+)/i);
+    if (hostGuess && seenHosts.has(hostGuess[1].replace(/^www\./, ''))) return true;
+    return true;
+  }).slice(0, 8);
+}
+
+function ambiguousInterpretations(q, classification) {
+  const t = String((classification && classification.type) || '');
+  const conf = String((classification && classification.confidence) || '');
+  if (t !== 'ambiguous' && conf !== 'low') return [];
+  const raw = String(q || (classification && classification.subject) || '').trim();
+  if (!raw) return [];
+  const out = [];
+  const add = (type, why) => { if (!out.some(x => x.type === type)) out.push({ type, why, q: raw }); };
+  add('person', 'Could be a person');
+  add('product', 'Could be a product or brand');
+  add('technique', 'Could be a technique or position');
+  add('topic', 'Could be a topic or community term');
+  return out.slice(0, 4);
 }
 
 function normalizeDepth(v, classification) {
@@ -1714,11 +1877,13 @@ function discoveryLanes(classification, depth) {
       const coreBit = vocab.core[0] ? vocab.core[0] + ' ' : '';
       add('productions', 'productions, credits, and project references', [quoteName(subject) + ' ' + coreBit + vocab.production.slice(0, 2).join(' ')]);
     }
+  }
+  const wantVisual = isVisualSubject(classification) || d !== 'broad';
+  if (wantVisual) {
     const mediaTerms = [...vocab.core, ...vocab.media].filter(Boolean).slice(0, 2);
-    if (mediaTerms.length) {
-      add('images', 'image indexes for entity ∩ context', [quoteName(subject) + ' ' + mediaTerms.join(' ')], 'image');
-      add('videos', 'video metadata for entity ∩ context', [quoteName(subject) + ' ' + mediaTerms.join(' ')], 'video');
-    }
+    const mediaQ = mediaTerms.length ? quoteName(subject) + ' ' + mediaTerms.join(' ') : quoteName(subject);
+    add('images', 'visual corpus for a visually demonstrable subject', [mediaQ], 'image');
+    add('videos', 'video corpus for a visually demonstrable subject', [mediaQ], 'video');
   }
 
   if (type === 'person') {
@@ -1846,6 +2011,7 @@ function classifyQuery(q, hint = '') {
     product: 'product', position: 'technique', other: '', organization: 'organization',
     vehicle: 'vehicle', place: 'place', social: 'social', reddit: 'reddit',
     technique: 'technique', skill: 'skill', project: 'project', instruction: 'technique',
+    clothing: 'clothing', garment: 'clothing', outfit: 'clothing', fashion: 'clothing',
   };
   const hinted = hintMap[String(hint || '').toLowerCase()] || '';
   if (!raw) return done({ type: 'unknown', confidence: 'low', reason: 'Empty query', isUrl: false });
@@ -1879,8 +2045,17 @@ function classifyQuery(q, hint = '') {
   if (TECHNIQUE_HINTS.has(hinted) || (TECHNIQUE_WORD_RE.test(raw) && !SKILL_WORD_RE.test(raw))) {
     return done({ type: 'technique', confidence: hinted ? 'medium' : 'medium', reason: 'Looks like a technique, position, or instructional form', isUrl: false });
   }
-  if (SKILL_HINTS.has(hinted) || ((SKILL_WORD_RE.test(raw) || /\bhow to\b/i.test(raw)) && !['person', 'product', 'vehicle', 'organization'].includes(hinted))) {
+  if (SKILL_HINTS.has(hinted) || ((SKILL_WORD_RE.test(raw) || /\bhow to\b/i.test(raw)) && !['person', 'product', 'vehicle', 'organization', 'clothing'].includes(hinted))) {
     return done({ type: hinted === 'project' ? 'project' : 'skill', confidence: 'medium', reason: 'Looks like a skill, craft, or project to learn', isUrl: false });
+  }
+  if (CLOTHING_HINTS.has(hinted) || (CLOTHING_WORD_RE.test(raw) && !SKILL_WORD_RE.test(raw))) {
+    const words = raw.split(/\s+/).filter(Boolean);
+    const garmentish = (w) => CLOTHING_WORD_RE.test(w) || /^(red|blue|black|white|green|navy|grey|gray|brown|pink|gold|silver|purple|cream|ivory|olive|maroon|burgundy|teal|beige|khaki|wool|silk|cotton|leather|denim|linen|cashmere|suede|velvet|satin|long|short|mini|maxi|midi|vintage|oversized|slim|fitted|tailored)$/i.test(w);
+    const allGarmentish = words.length > 0 && words.every(garmentish);
+    const headName = words.length >= 2 && words.slice(0, 2).every(w => /^[A-Z][A-Za-z.'’-]*$/.test(w)) && !hasVehicleCueIgnoringNameParticles(words.slice(0, 2).join(' ')) && !words.slice(0, 2).some(w => NON_NAME_TOKENS.test(w));
+    if (hinted === 'clothing' || allGarmentish || !headName) {
+      return done({ type: 'clothing', confidence: hinted ? 'medium' : 'medium', reason: 'Looks like a garment, outfit, or clothing query', isUrl: false });
+    }
   }
   if (/^@[\w.]+/.test(raw) || /\b(instagram|tiktok|onlyfans|twitter|linkedin)\b/i.test(raw)) {
     return done({ type: 'social', confidence: 'medium', reason: 'Looks like a social handle or profile query', isUrl: false });
@@ -1929,6 +2104,7 @@ function researchPaths(type, classification) {
       { id: 'images', label: 'Images & visual sources' },
       { id: 'videos', label: 'Videos' },
       { id: 'presence', label: 'Public web presence' },
+      { id: 'premium', label: 'Premium Content' },
       { id: 'timeline', label: 'Timeline' },
       { id: 'related', label: 'Related people' },
       { id: 'entities', label: 'Related entities' },
@@ -2024,6 +2200,17 @@ function researchPaths(type, classification) {
       { id: 'sources', label: 'Sources' },
       { id: 'questions', label: 'Questions' },
     ],
+    clothing: [
+      { id: 'visuals', label: 'Visual references' },
+      { id: 'identification', label: 'Garment identification' },
+      { id: 'fit', label: 'Fit & sizing' },
+      { id: 'measurements', label: 'Measurements' },
+      { id: 'materials', label: 'Materials & construction' },
+      { id: 'similar', label: 'Similar garments' },
+      { id: 'videos', label: 'Videos' },
+      { id: 'sources', label: 'Sources' },
+      { id: 'questions', label: 'Questions' },
+    ],
     organization: [
       { id: 'overview', label: 'Overview' },
       { id: 'official', label: 'Official presence' },
@@ -2073,6 +2260,7 @@ function researchPaths(type, classification) {
       if (!have.has('projects')) more.push({ id: 'projects', label: 'Projects & productions' });
       if (!have.has('interviews')) more.push({ id: 'interviews', label: 'Interviews & features' });
       if (!have.has('organizations')) more.push({ id: 'organizations', label: 'Organizations' });
+      if (!have.has('premium')) more.push({ id: 'premium', label: 'Premium Content' });
     }
     if (more.length) list = list.concat(more);
   }
@@ -2352,6 +2540,10 @@ function diveExpansionQueries(opts) {
   }
   if (classification.type === 'technique') add(seed + ' tutorial OR diagram');
   if (classification.type === 'skill' || classification.type === 'project') add(seed + ' procedure OR safety');
+  if (classification.type === 'clothing') {
+    add(quoted + ' (lookbook OR outfit OR fabric OR fit OR sizing)');
+    add(imageSearchQuery(classification.subject || seed, classification));
+  }
   if (classification.type === 'product' || classification.type === 'vehicle') add(quoted + ' (official OR spec OR manual OR review)');
   if (classification.type === 'organization') add(quoted + ' (official OR about OR website)');
   for (const v of pathSearchVariants(seed, selectedPaths, classification)) add(v.q);
@@ -2562,6 +2754,12 @@ function pathSearchVariants(seed, selectedPaths, classification) {
   if (ids.has('projects') || ids.has('productions')) add('"' + subject.replace(/"/g, '') + '" ' + (ctx && !/adult content/i.test(ctx) ? ctx + ' ' : '') + '(scene OR title OR production)', 'projects and productions');
   if (ids.has('interviews')) add('"' + subject.replace(/"/g, '') + '" interview OR podcast OR feature', 'interviews and features');
   if (ids.has('organizations')) add('"' + subject.replace(/"/g, '') + '" (studio OR production OR company)', 'associated organizations');
+  if (ids.has('premium')) add('"' + String(subject || seed).replace(/"/g, '') + '" (subscription OR "members only" OR "official site" OR catalog OR preview)', 'premium/subscription public leads — Carmen does not bypass access');
+  if (ids.has('fit') || ids.has('measurements')) add(seed + ' (fit OR sizing OR "size chart" OR measurements)', 'fit and sizing');
+  if (ids.has('materials')) add(seed + ' (fabric OR material OR construction OR lining)', 'materials and construction');
+  if (ids.has('similar')) add(seed + ' similar OR alternative OR "look alike" OR inspired', 'similar garments');
+  if (ids.has('terms')) add(seed + ' (terminology OR "also called" OR synonym OR glossary)', 'terminology');
+  if (ids.has('identification')) add(seed + ' (identify OR brand OR designer OR "what is this")', 'garment identification');
   if (ids.has('evidence')) add(seed + ' evidence OR documentation OR source', 'evidence');
   if (ids.has('concepts')) add(seed + ' explained OR concept OR overview', 'concepts');
   if (ids.has('variations') || ids.has('variants')) add(seed + ' variants OR generations OR versions', 'variants');
@@ -2615,9 +2813,16 @@ function collectDiveVideos(retrieved, results, classification) {
     const restrictedHost = /(onlyfans|patreon|substack)\.com/i.test(host);
     const playable = !!embedUrl && !restrictedHost;
     const blob = (String(title || '') + ' ' + url + ' ' + host + ' ' + String(pageUrl || '')).toLowerCase();
+    const dur = classifyVideoDuration({ title, url, pageUrl, snippet: blob });
     let relevance = playable ? 3 : 1;
     let reason = playable ? 'Playable public embed. Not identity proof.' : 'Public video reference. Open the source to watch — Carmen does not invent playback.';
     let confidence = playable ? 'medium' : 'low';
+    if (dur.class === 'full-length' || dur.class === 'extended' || dur.class === 'long') {
+      relevance += 4;
+      reason = 'Longer public video (' + dur.label + '). Open the source to watch.';
+    } else if ((dur.class === 'short' || dur.class === 'very-short') && !/\b(clip|short|trailer|preview)\b/i.test(extraCtx)) {
+      relevance -= 2;
+    }
     if (adult === 'on' || adult === 'both') {
       if (ADULT_HOST_RE.test(host) || ADULT_PATH_RE.test(url) || ADULT_EVIDENCE_RE.test(blob)) {
         relevance += 5;
@@ -2651,6 +2856,9 @@ function collectDiveVideos(retrieved, results, classification) {
       relevance,
       reason,
       confidence,
+      durationClass: dur.class,
+      durationLabel: dur.label,
+      durationSeconds: dur.seconds,
       contextLane: (ADULT_HOST_RE.test(host) || ADULT_EVIDENCE_RE.test(blob)) ? 'adult' : 'general',
     });
   };
@@ -2664,14 +2872,14 @@ function collectDiveVideos(retrieved, results, classification) {
     const text = String(page.textExcerpt || page.text || page.description || '');
     const re = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=[\w-]{6,}|youtu\.be\/[\w-]{6,}|vimeo\.com\/\d+)/gi;
     let m;
-    while ((m = re.exec(text)) && out.length < 12) add(m[0], page.finalUrl || page.url, page.title, page.ogImage);
+    while ((m = re.exec(text)) && out.length < 18) add(m[0], page.finalUrl || page.url, page.title, page.ogImage);
   }
   out.sort((a, b) => (b.relevance || 0) - (a.relevance || 0));
   if (adult === 'on') {
     const contextual = out.filter(x => (x.relevance || 0) >= 5);
-    if (contextual.length) return contextual.slice(0, 12);
+    if (contextual.length) return contextual.slice(0, 18);
   }
-  return out.slice(0, 12);
+  return out.slice(0, 18);
 }
 
 function relatedFromDiscovery(results, candidate) {
@@ -3182,12 +3390,14 @@ function humanizePath(url) {
 
 async function runDiscovery(query, opts = {}) {
   const expanded = opts.expanded === true || opts.expanded === 'true' || opts.expanded === 1;
+  const visualMore = opts.visualMore === true || opts.visualMore === 'true' || opts.visualMore === 1;
+  const further = opts.further === true || opts.investigateFurther === true;
   const adult = normalizeAdult(opts.adult || opts.adultContent);
   const q = String(query || '').trim().slice(0, 500);
   const classification = applyResearchFilter(classifyQuery(q, opts.hint), adult, q);
   const depth = normalizeDepth(opts.depth, classification);
   classification.researchDepth = depth;
-  const defaultCap = expanded ? 32 : (depth === 'deep' ? 28 : depth === 'contextual' ? 22 : 16);
+  const defaultCap = expanded || visualMore || further ? 32 : (depth === 'deep' ? 28 : depth === 'contextual' ? 22 : 16);
   const cap = Math.min(opts.budget || defaultCap, Math.max(8, remainingFetches() - (opts.continueBudget ? 6 : 2)));
   SEARCH_BUDGET = { used: FETCH_COUNT, max: FETCH_COUNT + cap };
   const graph = discoveryLanes(classification, depth);
@@ -3197,7 +3407,13 @@ async function runDiscovery(query, opts = {}) {
     if (!t || variants.some(v => v.q === t)) return;
     variants.push({ q: t, why: why || '', lane: lane || '', kind: kind || 'web' });
   };
-  if (classification.isUrl) {
+  if (further && Array.isArray(opts.extraQueries) && opts.extraQueries.length) {
+    for (const extra of opts.extraQueries) {
+      const t = typeof extra === 'string' ? extra : extra && extra.q;
+      addVar(t, (extra && extra.why) || 'investigate-further', 'further', 'web');
+    }
+    if (isVisualSubject(classification)) addVar(imageSearchQuery(classification.subject || q, classification), 'additional visual corpus', 'images', 'image');
+  } else if (classification.isUrl) {
     for (const v of buildSearchVariants(opts.displayQuery || q, classification)) addVar(v.q, v.why, 'url', 'web');
   } else if (depth === 'broad') {
     for (const v of buildSearchVariants(q, classification)) addVar(v.q, v.why, 'identity', 'web');
@@ -3283,24 +3499,34 @@ async function runDiscovery(query, opts = {}) {
 
   const imgQ = imageSearchQuery(q, classification);
   const mediaVariants = variants.filter(v => v.kind === 'image' || v.kind === 'video');
-  if (expanded) {
+  const wantVisual = isVisualSubject(classification) || visualMore || further;
+  if (expanded || visualMore) {
     const jobs = [];
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(imgQ, results, seen, diagnostics));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(imgQ, results, seen, diagnostics, visualMore ? 18 : 14));
     if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingVideos(imgQ, results, seen, diagnostics));
     if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(google(q, results, seen, diagnostics));
     if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(mojeek(q, results, seen, diagnostics));
     if (jobs.length) await Promise.all(jobs);
     if (classification.context && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
       const extraCtx = extraContext(classification);
-      if (extraCtx) await bingImages(quoteName(classification.subject || q) + ' ' + extraCtx, results, seen, diagnostics);
+      if (extraCtx) await bingImages(quoteName(classification.subject || q) + ' ' + extraCtx, results, seen, diagnostics, 12);
     }
   } else {
     for (const m of mediaVariants) {
       if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
-      if (m.kind === 'image') await bingImages(m.q, results, seen, diagnostics);
+      if (m.kind === 'image') await bingImages(m.q, results, seen, diagnostics, wantVisual ? 14 : 10);
       if (m.kind === 'video') await bingVideos(m.q, results, seen, diagnostics);
     }
-    if (!mediaVariants.length && (classification.type === 'person' || classification.type === 'technique' || classification.context) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 2) {
+    if (wantVisual && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 1) {
+      const alreadyImg = mediaVariants.some(m => m.kind === 'image');
+      if (!alreadyImg) await bingImages(imgQ, results, seen, diagnostics, 14);
+      if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && !mediaVariants.some(m => m.kind === 'video')) {
+        await bingVideos(imgQ, results, seen, diagnostics);
+      }
+      if (adult === 'both' && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
+        await bingImages(quoteName(classification.subject || q) + ' (portrait OR headshot OR official)', results, seen, diagnostics, 10);
+      }
+    } else if (!mediaVariants.length && (classification.type === 'person' || classification.type === 'technique' || classification.context) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 2) {
       await bingImages(imgQ, results, seen, diagnostics);
       if (adult === 'both' && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
         await bingImages(quoteName(classification.subject || q) + ' (portrait OR headshot OR official)', results, seen, diagnostics);
@@ -3395,6 +3621,9 @@ async function runDiscovery(query, opts = {}) {
 
   const identity = buildEntityIdentity(classification, [], ranked, graphLeads);
   const intersectionCount = ranked.filter(r => r.intersection).length;
+  const visualCorpus = (isVisualSubject(classification) || visualMore || further)
+    ? buildVisualCorpus(results, ranked.filter(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'), classification)
+    : [];
 
   let warning = ranked.length ? undefined : 'No public-web results were returned. Provider diagnostics are included for troubleshooting.';
   if (classification.isUrl && diagnostics.DirectURL && !diagnostics.DirectURL.ok) {
@@ -3427,6 +3656,11 @@ async function runDiscovery(query, opts = {}) {
     lenses: interestLenses(classification.type, classification),
     investigationChoices: investigationChoices(classification.type, classification),
     visualCandidates: visualCandidatesFor(ranked, classification),
+    visuals: visualCorpus,
+    visualCorpus,
+    interpretations: ambiguousInterpretations(q, classification),
+    visualMore: !!visualMore,
+    further: !!further,
     selectedEntity: buildSelectedEntity(classification, pickIdentityCandidate(ranked, classification), identity, { originalQuery: q, depth, adultContent: adult, identityAmbiguous: identityIsAmbiguous(ranked, classification), confidence: identityIsAmbiguous(ranked, classification) ? 'low' : undefined }),
     concepts: enrichConceptsFromEvidence((graph.vocab && graph.vocab.concepts) || interpretRequest(classification).concepts, ranked),
     conceptGraph: interpretRequest(classification).graph,
@@ -3466,6 +3700,7 @@ function classifyHandler(req) {
     concepts: interpreted.concepts,
     conceptGraph: interpreted.graph,
     lanes: discoveryLanes(classification, depth).lanes,
+    interpretations: ambiguousInterpretations(q, classification),
   }, 200, req);
 }
 
@@ -3474,11 +3709,12 @@ async function searchWeb(req) {
   const q = (u.searchParams.get('q') || '').trim().slice(0, 500);
   const hint = (u.searchParams.get('type') || u.searchParams.get('subject') || '').trim();
   const expanded = u.searchParams.get('expanded') === '1' || u.searchParams.get('expanded') === 'true';
+  const visualMore = u.searchParams.get('visualMore') === '1' || u.searchParams.get('visualMore') === 'true';
   const adult = normalizeAdult(u.searchParams.get('adult') || u.searchParams.get('adultContent'));
   const depth = u.searchParams.get('depth') || '';
   if (!q) return json({ results: [], query: '', count: 0, providers: {}, classification: applyResearchFilter(classifyQuery(''), adult, ''), expanded: false, adultContent: adult, depth: normalizeDepth(depth) }, 200, req);
   resetFetchBudget();
-  const discovery = await runDiscovery(q, { hint, enrich: true, expanded, adult, depth });
+  const discovery = await runDiscovery(q, { hint, enrich: true, expanded, visualMore, adult, depth });
   return json(discovery, 200, req);
 }
 
@@ -3760,9 +3996,9 @@ function collectDiveImages(retrieved, results, classification) {
   out.sort((a, b) => (b.relevance || 0) - (a.relevance || 0));
   if (adult === 'on') {
     const contextual = out.filter(x => x.relevance >= 5);
-    if (contextual.length) return contextual.slice(0, 36);
+    if (contextual.length) return contextual.slice(0, 48);
   }
-  return out.slice(0, 36);
+  return out.slice(0, 48);
 }
 
 async function deepDiveHandler(req, env) {
@@ -3805,6 +4041,7 @@ async function deepDiveHandler(req, env) {
     classification.concepts = interpreted.concepts;
     const cont = (b.continueFrom && typeof b.continueFrom === 'object') ? b.continueFrom : null;
     const analysisOnly = b.analysisOnly === true || b.retryAnalysis === true;
+    const further = b.further === true || b.investigateFurther === true;
     resetFetchBudget();
     const priorRetrieved = Array.isArray(b.priorRetrieved) ? b.priorRetrieved.slice() : [];
     const retrieved = priorRetrieved.slice();
@@ -3824,7 +4061,7 @@ async function deepDiveHandler(req, env) {
         retrieved.push({ url, status: 'RETRIEVAL_FAILED', accessState: 'UNAVAILABLE', error: String(e && e.message || e).slice(0, 160) });
       }
     };
-    const skipDiscover = analysisOnly || !!(cont && Array.isArray(b.priorResults) && b.priorResults.length);
+    const skipDiscover = analysisOnly || (!further && !!(cont && Array.isArray(b.priorResults) && b.priorResults.length));
     if (evidenceUrl && !skipDiscover && !analysisOnly) await pushRet(evidenceUrl);
     const focus = retrieved[0];
     const ids = (focus && focus.identifiers) || { profiles: [], handles: [], aliases: [] };
@@ -3843,6 +4080,11 @@ async function deepDiveHandler(req, env) {
       adult,
       depth,
     });
+    if (further) {
+      extra.length = 0;
+      const more = investigateFurtherQueries(classification, b.priorResults || [], (cont && cont.graphLeads) || b.graphLeads || []);
+      for (const v of more) extra.push(v.q);
+    }
     const focusBlocked = !!(focus && focus.status !== 'RETRIEVED');
     const plan = {
       subject: classification.subject || seed,
@@ -3902,7 +4144,7 @@ async function deepDiveHandler(req, env) {
       safety: 'Read-only public research. Carmen will not contact anyone, send messages, post, log in, bypass paywalls, or take external actions.',
     };
 
-    const extraLimit = remainingFetches() < 16 ? 4 : (resolved.all || expanded || depth === 'deep' || ((adult === 'on' || adult === 'both') && classification.type === 'person') ? 6 : 4);
+    const extraLimit = remainingFetches() < 16 ? 4 : (further || resolved.all || expanded || depth === 'deep' || ((adult === 'on' || adult === 'both') && classification.type === 'person') ? 8 : 4);
     let discovery;
     if (skipDiscover) {
       const priorRows = b.priorResults || [];
@@ -3924,6 +4166,7 @@ async function deepDiveHandler(req, env) {
         expanded: (expanded || focusBlocked) && remainingFetches() > 18,
         adult,
         depth,
+        further,
         continueBudget: true,
         budget: Math.max(8, remainingFetches() - 8),
       });
@@ -3975,7 +4218,9 @@ async function deepDiveHandler(req, env) {
     }
     const pendingUrls = queue.filter(u => u && !seenUrl.has(u));
     const images = collectDiveImages(retrieved, discovery.results, classification);
-    const videos = (resolved.all || selectedIds.has('videos')) ? collectDiveVideos(retrieved, discovery.results, classification) : [];
+    const videos = (resolved.all || selectedIds.has('videos') || isVisualSubject(classification)) ? collectDiveVideos(retrieved, discovery.results, classification) : [];
+    const tutorials = videos.filter(v => /\b(tutorial|how to|howto|demonstration|lesson|guide|explained|walkthrough)\b/i.test(String(v.title || '') + ' ' + String(v.reason || '')));
+    const visualCorpus = buildVisualCorpus(discovery.results, retrieved, classification);
     const access = summarizeAccess(retrieved, discovery.results);
 
     let analysis = '';
@@ -4093,11 +4338,13 @@ Planning vocabulary is INFERRED, not case evidence. Only treat retrieved co-occu
       extraQueriesDone: extra.slice(0, extraLimit),
       concepts: observedConcepts,
       conceptGraph: interpreted.graph,
+      graphLeads: discovery.graphLeads || [],
       seed,
       originalQuery,
       customQuestion,
       adult,
       depth,
+      further: !!further,
     };
 
     return json({
@@ -4107,6 +4354,9 @@ Planning vocabulary is INFERRED, not case evidence. Only treat retrieved co-occu
       retrieved,
       images,
       videos,
+      tutorials,
+      visuals: visualCorpus,
+      visualCorpus,
       analysis,
       analysisError,
       leads,
@@ -4135,6 +4385,8 @@ Planning vocabulary is INFERRED, not case evidence. Only treat retrieved co-occu
       analysisOnly: !!analysisOnly,
       investigation: resolved.investigation || b.investigation || '',
       investigationChoices: investigationChoices(classification.type, classification),
+      further: !!further,
+      interpretations: ambiguousInterpretations(seed, classification),
     }, 200, req);
   } catch (e) {
     const msg = e?.message || String(e);
@@ -4162,6 +4414,8 @@ async function learnHandler(req, env) {
     const adult = normalizeAdult(b.adult || b.adultContent);
     const classification = applyResearchFilter(classifyQuery(query, hint), adult, query);
     const paths = researchPaths(classification.type, classification);
+    const measurements = (b.measurements && typeof b.measurements === 'object') ? b.measurements : null;
+    const visualUrl = String(b.visualUrl || b.imageUrl || '').trim();
     resetFetchBudget();
     const discovery = await runDiscovery(query, { hint: classification.type, enrich: true, adult });
     const retrieved = [];
@@ -4186,6 +4440,8 @@ async function learnHandler(req, env) {
 
 Entity type: ${classification.type}
 Subject: ${query}
+${visualUrl ? 'Selected visual URL (research seed, not identity proof): ' + visualUrl + '\n' : ''}
+${measurements ? 'USER-PROVIDED MEASUREMENTS (not source-observed):\n' + JSON.stringify(measurements) + '\nLabel these USER-PROVIDED MEASUREMENT. Never treat them as a SOURCE-PROVIDED size chart. Fit conclusions are CALCULATED/INFERRED unless a retrieved source size chart supports them. UNKNOWN if insufficient.\n' : ''}
 ${b.instructions ? 'Learner notes (direction only):\n' + String(b.instructions).slice(0, 1500) + '\n' : ''}
 
 Write using these headings:
@@ -4194,8 +4450,10 @@ ${paths.map(p => p.label).join('\n')}
 Rules:
 - Separate OBSERVED / INFERRED / UNKNOWN inside headings.
 - Ground claims in retrieved excerpts. Never invent steps, measurements, or part numbers.
+- If user measurements are present, label them USER-PROVIDED MEASUREMENT. Source size charts are SOURCE-PROVIDED. Fit conclusions are CALCULATED/INFERRED. UNKNOWN if insufficient.
 - If sources disagree, say so.
 - For skills/projects, include safety as UNKNOWN where sources do not specify it.
+- For sexual/self-restraint subject matter, research and organize public visual/source material but do not produce explicit actionable sexual/self-bondage instructions.
 - Suggest next questions and public references, never actions that contact people or buy things.
 
 Retrieved sources:
@@ -4220,6 +4478,8 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
       providers: discovery.providers,
       query,
       adultContent: adult,
+      measurementsUsed: measurements ? { provenance: 'USER-PROVIDED', measurements } : null,
+      visualUrl: visualUrl || '',
       safety: 'Read-only learning from public sources. Carmen will not contact anyone or take external actions.',
     }, 200, req);
   } catch (e) {
@@ -4236,7 +4496,7 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '47.3',
+        version: '47.4',
         build: 'workspace',
         schemaVersion: 2,
         provider: ai.provider,
@@ -4245,7 +4505,7 @@ export default {
         routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -4592,4 +4852,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations };

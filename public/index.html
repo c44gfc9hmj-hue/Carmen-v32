@@ -120,7 +120,12 @@ details.adv summary::-webkit-details-marker{display:none}
 .thumbs{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;padding-bottom:2px}
 .thumbs img{width:88px;height:88px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#000;flex:0 0 auto}
 .gallery{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
+.gallery.dense{grid-template-columns:repeat(3,1fr)}
 .gallery img{width:100%;height:140px;object-fit:cover;border-radius:10px;background:#000;border:1px solid var(--line)}
+.visual-tile{position:relative;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0b0d11}
+.visual-tile img{width:100%;height:140px;object-fit:cover;display:block;background:#000}
+.visual-tile .vcap{padding:8px 10px;font-size:11px;color:var(--muted);line-height:1.35}
+.measure-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#1a1e25;color:var(--muted);border:1px solid var(--line)}
 .badge.observed{color:var(--observed);border-color:#2a3a44}
 .badge.inferred{color:var(--inferred);border-color:#3a3148}
@@ -201,7 +206,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <p class="kicker">Public research</p>
     <h2>What are you looking for?</h2>
     <div class="searchbox stack">
-      <input id="homeQuery" placeholder="A person, product, vehicle, organization, topic, or URL" enterkeyhint="search" autocapitalize="words">
+      <input id="homeQuery" placeholder="A person, product, clothing, technique, place, or URL" enterkeyhint="search" autocapitalize="words">
       <button class="btn primary" id="homeSearchBtn">Search</button>
     </div>
     <div class="filter-block" style="margin-top:14px">
@@ -209,6 +214,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <div class="chips" id="homeAdultChips" style="margin-top:0">
         <button type="button" class="chip active" data-adult="off">Off</button>
         <button type="button" class="chip" data-adult="on">On</button>
+        <button type="button" class="chip" data-adult="both">Both</button>
       </div>
     </div>
     <button class="quiet-link" id="homeImageBtn" type="button">Inspect an image instead</button>
@@ -226,7 +232,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <div class="card">
     <p class="kicker">Search</p>
     <h3 style="font-size:22px;letter-spacing:-.03em;margin:0 0 12px">What are you looking for?</h3>
-    <textarea id="searchQuery" placeholder="A person, product, vehicle, organization, topic, or URL"></textarea>
+    <textarea id="searchQuery" placeholder="A person, product, clothing, technique, place, or URL"></textarea>
     <div id="lensStack" class="hidden"></div>
     <div class="filter-block">
       <p class="flabel">Adult research lens</p>
@@ -264,6 +270,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
         <button class="chip" data-subject="product">Product</button>
         <button class="chip" data-subject="vehicle">Vehicle</button>
         <button class="chip" data-subject="technique">Technique</button>
+        <button class="chip" data-subject="clothing">Clothing</button>
         <button class="chip" data-subject="skill">Skill / project</button>
         <button class="chip" data-subject="organization">Organization</button>
         <button class="chip" data-subject="place">Place</button>
@@ -292,6 +299,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <div id="selectedBanner"></div>
     <div id="graphTrail" class="graph-trail hidden"></div>
     <div id="personRail"></div>
+    <div id="visualCorpus"></div>
     <div id="results"></div>
     <p id="resultsEmpty" class="muted">Public sources will appear here after Search.</p>
   </div>
@@ -318,7 +326,9 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <div class="row" style="margin-top:8px">
         <button class="btn primary" id="startDiveBtn">Deep Dive</button>
         <button class="btn hidden" id="continueDiveBtn">Continue</button>
+        <button class="btn hidden" id="furtherDiveBtn">Investigate further</button>
         <button class="btn hidden" id="retryAnalysisBtn">Retry analysis</button>
+        <button class="btn ghost hidden" id="makeTutorialBtn">Make tutorial</button>
         <button class="btn ghost" id="cancelDiveBtn">Back to Search</button>
       </div>
     </div>
@@ -336,6 +346,24 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <input id="newCollectionName" placeholder="New collection name">
       <button class="btn primary" id="createCollection" style="flex:0 0 auto">Create</button>
     </div>
+  </div>
+  <div class="card" id="measureCard">
+    <h3>My measurements</h3>
+    <p class="muted">Optional and stored only on this phone. Used when you ask about clothing fit. Labeled USER-PROVIDED — never treated as a source size chart.</p>
+    <div class="measure-grid">
+      <input id="mHeight" placeholder="Height">
+      <input id="mChest" placeholder="Chest / bust">
+      <input id="mWaist" placeholder="Waist">
+      <input id="mHips" placeholder="Hips">
+      <input id="mShoulder" placeholder="Shoulder width">
+      <input id="mInseam" placeholder="Inseam">
+      <input id="mSleeve" placeholder="Sleeve length">
+      <input id="mNeck" placeholder="Neck">
+      <input id="mTorso" placeholder="Torso / rise">
+      <input id="mShoe" placeholder="Shoe size">
+    </div>
+    <input id="mNotes" placeholder="Other garment-specific notes" style="margin-top:8px">
+    <button class="btn primary" id="saveMeasurements" style="margin-top:8px">Save measurements</button>
   </div>
   <div id="collectionList"></div>
   <div id="collectionDetail"></div>
@@ -545,6 +573,9 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <button class="btn" id="lightboxPrev">Prev</button>
     <button class="btn" id="lightboxNext">Next</button>
     <button class="btn" id="lightboxSource">Open source</button>
+    <button class="btn" id="lightboxInvestigate">Investigate</button>
+    <button class="btn" id="lightboxTutorial">Make tutorial</button>
+    <button class="btn" id="lightboxSave">Save</button>
     <button class="btn ghost" id="lightboxClose">Close</button>
   </div>
 </div>
