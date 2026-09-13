@@ -16,7 +16,7 @@ function assert(cond, msg) {
 console.log('--- /health ---');
 { const { status, body } = await call('/health');
   assert(status === 200, 'health 200');
-  assert(body.version === '47.4', 'version 47.4');
+  assert(body.version === '47.5', 'version 47.5');
   assert(body.routes.includes('/retrieve'), 'routes include /retrieve');
   assert(body.routes.includes('/dive'), 'routes include /dive');
   assert(body.routes.includes('/learn'), 'routes include /learn');
@@ -51,6 +51,12 @@ console.log('--- /health ---');
   assert(body.features.includes('premium-content'), 'features include premium-content');
   assert(body.features.includes('tutorials'), 'features include tutorials');
   assert(body.features.includes('measurements'), 'features include measurements');
+  assert(body.features.includes('visual-mode'), 'features include visual-mode');
+  assert(body.features.includes('not-this'), 'features include not-this');
+  assert(body.features.includes('source-class'), 'features include source-class');
+  assert(body.features.includes('identity-expansion'), 'features include identity-expansion');
+  assert(body.features.includes('video-corpus'), 'features include video-corpus');
+  assert(body.features.includes('corpus-scale'), 'features include corpus-scale');
   assert(body.provider === 'openrouter', 'provider openrouter');
   assert(body.model === 'openrouter/free', 'model openrouter/free');
   assert(body.configured === false, 'configured false without key'); }

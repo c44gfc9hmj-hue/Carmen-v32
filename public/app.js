@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '47.4';
+const VERSION = '47.5';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -50,6 +50,9 @@ let lastInvestigationChoices = [];
 let selectedInvestigationId = 'everything';
 let lastVisuals = [];
 let selectedVisual = null;
+let lastVideos = [];
+let lastCorpusScale = null;
+let suppressed = { urls: [], hosts: [], images: [] };
 const MEASURE_KEY = 'carmen_measurements_v47';
 
 const ACCESS_LABELS = {
@@ -627,6 +630,9 @@ function persistSession() {
       selectedEntity,
       visualCandidates: lastVisualCandidates,
       visuals: lastVisuals,
+      videos: lastVideos,
+      corpusScale: lastCorpusScale,
+      suppressed,
       selectedVisual,
       classification: lastClassification,
       paths: lastPaths,
@@ -663,6 +669,8 @@ async function persistDiscoveryIfKept() {
   disc.originalQuery = originalQuery;
   disc.visualCandidates = lastVisualCandidates;
   disc.visuals = lastVisuals;
+  disc.videos = lastVideos;
+  disc.corpusScale = lastCorpusScale;
   disc.concepts = lastConcepts;
   disc.researchState = lastResearchState;
   disc.at = new Date().toISOString();
@@ -740,6 +748,9 @@ function restoreSession() {
     originalQuery = s.originalQuery || s.query || '';
     lastVisualCandidates = Array.isArray(s.visualCandidates) ? s.visualCandidates : [];
     lastVisuals = Array.isArray(s.visuals) ? s.visuals : [];
+    lastVideos = Array.isArray(s.videos) ? s.videos : [];
+    lastCorpusScale = s.corpusScale || lastCorpusScale;
+    if (s.suppressed) suppressed = { urls: s.suppressed.urls || [], hosts: s.suppressed.hosts || [], images: s.suppressed.images || [] };
     selectedVisual = s.selectedVisual || null;
     lastConcepts = Array.isArray(s.concepts) ? s.concepts : lastConcepts;
     lastResearchState = s.researchState || lastResearchState;
@@ -760,6 +771,7 @@ function restoreSession() {
       renderPathChips(lastPaths, 'divePaths');
       renderResults(lastResults, lastDiscoveryMeta?.providers || {});
       renderVisualCorpus();
+      renderVideoCorpus();
       renderGraphTrail(lastDiscoveryMeta);
       if (selectedCandidate) {
         const i = lastResults.findIndex(r => r.url === selectedCandidate.url);
@@ -784,16 +796,20 @@ async function discover(opts = {}) {
   localStorage.setItem(BACKEND_KEY, base);
   const expanded = opts.expanded === true;
   const visualMore = opts.visualMore === true;
+  const visualMode = opts.visualMode || (visualMore ? 'more' : '');
+  const videoMore = opts.videoMore === true;
   expandedMode = expanded;
   const btn = $('discoverBtn');
   btn.disabled = true;
   if ($('expandedBtn')) $('expandedBtn').disabled = true;
-  if (!visualMore) {
+  if (!visualMore && !visualMode && !videoMore) {
     selectedCandidate = null;
     selectedEntity = null;
     lastVisualCandidates = [];
     lastVisuals = [];
+    lastVideos = [];
     selectedVisual = null;
+    suppressed = { urls: [], hosts: [], images: [] };
   }
   originalQuery = q;
   $('results').innerHTML = '<div class="skeleton" style="height:120px;margin-bottom:9px"></div>'.repeat(3);
@@ -801,21 +817,45 @@ async function discover(opts = {}) {
   $('resultsEmpty').classList.add('hidden');
   $('searchDiagnostics').textContent = expanded
     ? 'Expanded Research — looking across more public sources, image and video indexes, and alternatives…'
-    : 'Searching public sources and ranking candidates…';
+    : (visualMode || visualMore || videoMore)
+      ? 'Expanding the visual/video corpus with a new retrieval pass…'
+      : 'Searching public sources and ranking candidates…';
   $('classBar').innerHTML = '';
-  $('selectedBanner').innerHTML = '';
+  if (!visualMore && !visualMode && !videoMore) $('selectedBanner').innerHTML = '';
   updateDeepDiveState();
   try {
-    const r = await fetch(base + '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(currentSubject) + '&adult=' + encodeURIComponent(currentAdult) + '&depth=' + encodeURIComponent(currentDepth) + (expanded ? '&expanded=1' : '') + (visualMore ? '&visualMore=1' : ''), { headers: { accept: 'application/json' } });
+    const params = new URLSearchParams({
+      q,
+      type: currentSubject || '',
+      adult: currentAdult,
+      depth: currentDepth,
+    });
+    if (expanded) params.set('expanded', '1');
+    if (visualMore || visualMode === 'more') params.set('visualMore', '1');
+    if (visualMode) params.set('visualMode', visualMode);
+    if (opts.visualOffset) params.set('visualOffset', String(opts.visualOffset));
+    if (videoMore) params.set('videoMore', '1');
+    const excl = [...new Set([...(suppressed.urls || []), ...(opts.excludeUrls || [])])].filter(Boolean);
+    const hosts = [...new Set([...(suppressed.hosts || []), ...(opts.excludeHosts || [])])].filter(Boolean);
+    if (excl.length) params.set('exclude', excl.slice(0, 12).join(','));
+    if (hosts.length) params.set('excludeHosts', hosts.slice(0, 8).join(','));
+    if (opts.seedVisual) {
+      const sv = opts.seedVisual;
+      params.set('seedVisual', JSON.stringify({ title: sv.title || sv.caption || '', domain: sv.domain || '', caption: sv.caption || '' }));
+    }
+    const r = await fetch(base + '/search?' + params.toString(), { headers: { accept: 'application/json' } });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
     if (!r.ok || data.error) throw Error(data.error || `HTTP ${r.status}`);
-    lastResults = Array.isArray(data.results) ? data.results : [];
-    lastClassification = data.classification || null;
+    if (!visualMore && !visualMode && !videoMore) lastResults = Array.isArray(data.results) ? data.results : [];
+    else if ((!lastResults || !lastResults.length) && Array.isArray(data.results)) lastResults = data.results;
+    lastClassification = data.classification || lastClassification;
     lastDiscoveryMeta = data;
     lastPaths = Array.isArray(data.paths) ? data.paths : lastPaths;
-    lastVisualCandidates = Array.isArray(data.visualCandidates) ? data.visualCandidates : [];
+    lastVisualCandidates = Array.isArray(data.visualCandidates) ? data.visualCandidates : lastVisualCandidates;
     lastVisuals = mergeVisuals(lastVisuals, data.visuals || data.visualCorpus || []);
+    lastVideos = mergeVideos(lastVideos, data.videos || data.videoCorpus || []);
+    lastCorpusScale = data.corpusScale || { images: lastVisuals.length, videos: lastVideos.length, sources: lastResults.length, label: lastVisuals.length + ' images · ' + lastVideos.length + ' videos · ' + lastResults.length + ' sources' };
     lastConcepts = Array.isArray(data.concepts) ? data.concepts : lastConcepts;
     originalQuery = data.query || q;
     if (data.classification && data.classification.subject) researchSubject = data.classification.subject;
@@ -828,11 +868,15 @@ async function discover(opts = {}) {
     renderPathChips(lastPaths, 'divePaths');
     renderResults(lastResults, data.providers || {});
     renderVisualCorpus();
+    renderVideoCorpus();
     renderGraphTrail(data);
     renderExpandedCard(data);
     persistSession();
     updateDeepDiveState();
-    toast(lastResults.length || lastVisuals.length ? (visualMore ? `Loaded more visuals (${lastVisuals.length}).` : (expanded ? `Expanded Research ranked ${lastResults.length} public candidate${lastResults.length === 1 ? '' : 's'}.` : `Ranked ${lastResults.length} public candidate${lastResults.length === 1 ? '' : 's'}.`)) : 'No public results. See diagnostics.');
+    const scale = lastCorpusScale && lastCorpusScale.label ? lastCorpusScale.label : (lastVisuals.length + ' images · ' + lastVideos.length + ' videos · ' + lastResults.length + ' sources');
+    toast(lastResults.length || lastVisuals.length || lastVideos.length
+      ? (visualMode || visualMore || videoMore ? 'Corpus updated — ' + scale : (expanded ? 'Expanded Research — ' + scale : scale))
+      : 'No public results. See diagnostics.');
   } catch (e) {
     $('results').innerHTML = '';
     $('resultsEmpty').textContent = 'Discovery failed: ' + e.message;
@@ -983,6 +1027,18 @@ function mergeVisuals(prior, next) {
     seen.add(key);
     out.push(im);
   }
+  return out.slice(0, 96);
+}
+function mergeVideos(prior, next) {
+  const out = [];
+  const seen = new Set();
+  for (const v of [...(prior || []), ...(next || [])]) {
+    if (!v) continue;
+    const key = visualDedupeKey(v.url || v.pageUrl || v.embedUrl || '');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
   return out.slice(0, 48);
 }
 function loadMeasurements() {
@@ -1039,8 +1095,6 @@ function renderVisualCorpus() {
   if (!el) return;
   const visuals = lastVisuals.length ? lastVisuals : (lastDiscoveryMeta?.visuals || lastDiscoveryMeta?.visualCorpus || []);
   lastVisuals = visuals;
-  const type = lastClassification?.type || '';
-  const visualType = /person|technique|product|vehicle|place|clothing|skill|project|social|ambiguous/.test(type);
   if (!visuals.length) {
     el.innerHTML = '';
     return;
@@ -1053,10 +1107,13 @@ function renderVisualCorpus() {
     title: im.title || im.caption || '',
     domain: im.domain || '',
   }));
+  const scale = (lastCorpusScale && lastCorpusScale.label) ? lastCorpusScale.label : (visuals.length + ' images · ' + lastVideos.length + ' videos · ' + lastResults.length + ' sources');
+  const moreHint = lastCorpusScale && lastCorpusScale.moreAvailable ? ' · more available' : '';
   el.innerHTML = `<div class="card" style="padding-top:12px">
     <h3 style="margin:0 0 6px">Visuals <span class="badge">${visuals.length}</span></h3>
-    <p class="hint">Research objects, not decoration. Visual likeness is not identity proof.</p>
-    <div class="gallery dense">${visuals.slice(0, 24).map((im, i) => {
+    <p class="corpus-scale">${esc(scale)}${moreHint && !/more available/i.test(scale) ? esc(moreHint) : ''}</p>
+    <p class="hint">Research objects, not decoration. Visual likeness is not identity proof. Nothing is saved unless you choose Save.</p>
+    <div class="gallery dense">${visuals.slice(0, 48).map((im, i) => {
       const sel = selectedVisual && visualDedupeKey(selectedVisual.url) === visualDedupeKey(im.url);
       return `<button type="button" class="visual-tile${sel ? ' selected' : ''}" data-visual="${i}" style="padding:0;border:${sel ? '1px solid var(--accent)' : '1px solid var(--line)'};background:transparent;text-align:left">
         <img src="${esc(imgSrc(im.url))}" alt="${esc(im.title || '')}" referrerpolicy="no-referrer" onerror="this.style.display='none'">
@@ -1064,10 +1121,49 @@ function renderVisualCorpus() {
       </button>`;
     }).join('')}</div>
     <div class="row" style="margin-top:10px">
-      <button class="btn" data-visual-more="1">More images</button>
+      <button class="btn" data-visual-act="more">More images</button>
+      <button class="btn" data-visual-act="different">Find different</button>
+      <button class="btn" data-visual-act="similar">Find similar</button>
+      <button class="btn" data-visual-act="sameperson">Same person</button>
+      <button class="btn" data-visual-act="sameconcept">Same concept</button>
+      <button class="btn" data-visual-act="samesource">Same source</button>
     </div>
   </div>`;
   el._gallery = gallery;
+}
+function renderVideoCorpus() {
+  const el = $('videoCorpus');
+  if (!el) return;
+  const videos = lastVideos.length ? lastVideos : (lastDiscoveryMeta?.videos || lastDiscoveryMeta?.videoCorpus || []);
+  lastVideos = videos;
+  if (!videos.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="card" style="padding-top:12px">
+    <h3 style="margin:0 0 6px">Videos <span class="badge">${videos.length}</span></h3>
+    <p class="hint">Longer public material ranks above clips and trailers. Carmen never invents playback.</p>
+    ${videos.slice(0, 18).map((v, i) => {
+      const dur = v.durationLabel ? `<span class="badge">${esc(v.durationLabel)}</span> ` : '';
+      const thumb = v.thumbnail ? `<img src="${esc(imgSrc(v.thumbnail))}" alt="" referrerpolicy="no-referrer">` : '';
+      const open = v.pageUrl || v.url || '';
+      return `<div class="video-tile" data-video="${i}">
+        ${thumb}
+        <div class="vmeta" style="padding:10px 12px">
+          <b>${esc(v.title || v.domain || 'Video')}</b><br>
+          <small>${dur}${esc(v.domain || '')}${v.reason ? ' · ' + esc(v.reason) : ''}</small>
+          <div class="row" style="margin-top:8px">
+            ${v.playable && v.embedUrl ? `<button class="btn primary" data-video-act="play" data-i="${i}">Play</button>` : ''}
+            <a class="btn" href="${esc(open)}" target="_blank" rel="noopener noreferrer" style="text-align:center">Open source</a>
+            <button class="btn" data-video-act="save" data-i="${i}">Save</button>
+            <button class="btn" data-video-act="not" data-i="${i}">Not this</button>
+          </div>
+          ${v.playable && v.embedUrl ? `<div class="hidden" data-video-embed="${i}"><iframe src="${esc(v.embedUrl)}" allow="encrypted-media; picture-in-picture" allowfullscreen title="${esc(v.title || 'Video')}" style="width:100%;aspect-ratio:16/9;border:0;background:#000"></iframe></div>` : ''}
+        </div>
+      </div>`;
+    }).join('')}
+    <div class="row" style="margin-top:10px">
+      <button class="btn" data-video-more="1">More videos</button>
+      <button class="btn" data-video-act="different-set">Find different videos</button>
+    </div>
+  </div>`;
 }
 function renderPersonRail() {
   const el = $('personRail');
@@ -1101,6 +1197,7 @@ function renderPersonRail() {
         <div class="racts">
           <button data-ract="select" data-i="${idx}">${selected ? 'Selected' : 'This is the person'}</button>
           <button data-ract="dive" data-i="${idx}">Deep Dive</button>
+          <button data-ract="notperson" data-i="${idx}">Not this person</button>
         </div>
       </div>
     </article>`;
@@ -1250,17 +1347,59 @@ function showLightboxSlide() {
   if (!item) return;
   $('lightboxImg').src = item.src || item.url || '';
   const n = lightboxGallery.length;
-  const loc = n > 1 ? ` (${lightboxIndex + 1} of ${n})` : '';
-  $('lightboxCap').textContent = (item.cap || item.caption || 'Image keeps its page provenance. Visual consistency is not identity proof.') + loc;
+  const loc = n > 1 ? (lightboxIndex + 1) + ' of ' + n : '';
+  if ($('lightboxPos')) $('lightboxPos').textContent = loc;
+  $('lightboxCap').textContent = (item.cap || item.caption || 'Image keeps its page provenance. Visual consistency is not identity proof.') + (loc ? ' · ' + loc : '');
   lightboxSourceUrl = item.pageUrl || item.sourceUrl || '';
   if ($('lightboxPrev')) $('lightboxPrev').disabled = lightboxIndex <= 0;
   if ($('lightboxNext')) $('lightboxNext').disabled = lightboxIndex >= n - 1;
+  const rel = $('lightboxRelated');
+  if (rel) {
+    rel.innerHTML = lightboxGallery.slice(Math.max(0, lightboxIndex - 4), lightboxIndex + 8).map((x, k) => {
+      const abs = Math.max(0, lightboxIndex - 4) + k;
+      return `<img src="${esc(x.src || x.url || '')}" data-lrel="${abs}" class="${abs === lightboxIndex ? 'on' : ''}" alt="" referrerpolicy="no-referrer">`;
+    }).join('');
+  }
 }
 function lightboxStep(d) {
   const n = lightboxGallery.length;
   if (!n) return;
   lightboxIndex = Math.max(0, Math.min(n - 1, lightboxIndex + d));
   showLightboxSlide();
+}
+function currentLightboxVisual() {
+  const item = lightboxGallery[lightboxIndex] || {};
+  return {
+    url: item.url || item.src || '',
+    pageUrl: item.pageUrl || lightboxSourceUrl || '',
+    title: item.title || item.cap || item.caption || '',
+    caption: item.caption || item.cap || '',
+    domain: item.domain || hostOf(item.pageUrl || lightboxSourceUrl || ''),
+  };
+}
+function rejectVisual(im) {
+  if (!im) return;
+  const url = im.url || im.src || '';
+  if (url) suppressed.urls.push(url);
+  if (im.pageUrl) suppressed.urls.push(im.pageUrl);
+  lastVisuals = lastVisuals.filter(x => visualDedupeKey(x.url) !== visualDedupeKey(url));
+  renderVisualCorpus();
+  discover({ visualMode: 'different', seedVisual: im });
+}
+function rejectPerson(r) {
+  if (!r) return;
+  if (r.url) suppressed.urls.push(r.url);
+  const host = r.domain || hostOf(r.url || r.pageUrl || '');
+  if (host) suppressed.hosts.push(host);
+  lastResults = lastResults.filter(x => x.url !== r.url);
+  lastVisualCandidates = lastVisualCandidates.filter(x => x.url !== r.url);
+  if (selectedCandidate && selectedCandidate.url === r.url) {
+    selectedCandidate = null;
+    selectedEntity = null;
+  }
+  renderResults(lastResults, lastDiscoveryMeta?.providers || {});
+  renderPersonRail();
+  discover({ visualMode: 'different' });
 }
 function closeLightbox() {
   const box = $('lightbox');
@@ -1410,7 +1549,6 @@ async function runDeepDive(opts = {}) {
     || (evidence && evidence.url ? evidence : null)
     || (!selectedEntity && lastResults[0] ? lastResults[0] : null);
   if (!subject && !candidate && !selectedEntity) return toast('Search and select a candidate first.');
-  await keepInvestigation(subject || candidate?.title);
   localStorage.setItem(BACKEND_KEY, base);
   const btn = $('startDiveBtn');
   if (btn) btn.disabled = true;
@@ -1491,47 +1629,50 @@ async function runDeepDive(opts = {}) {
       renderResults(lastResults, data.providers || {});
     }
     renderDeepDivePayload(data, subject);
-    await persistDiscoveryIfKept();
-    const disc = (await all('discoveries')).find(d => d.id === currentProjectId) || { id: currentProjectId, projectId: currentProjectId };
-    disc.deepDiveText = data.analysis || '';
-    disc.deepDiveAt = new Date().toISOString();
-    disc.deepDiveSubject = subject;
-    disc.deepDiveFocusUrl = candidate?.url || selectedEntity?.url || '';
-    disc.selectedEntity = selectedEntity;
-    disc.originalQuery = seed;
-    disc.deepDivePlan = data.plan;
-    disc.deepDiveImages = data.images;
-    disc.deepDiveVideos = data.videos;
-    disc.visuals = data.visuals || data.visualCorpus || disc.visuals;
-    disc.tutorials = data.tutorials;
-    disc.deepDiveRetrieved = data.retrieved;
-    disc.deepDiveRelated = data.related;
-    disc.selectedPathIds = data.selectedPathIds || pathIds;
-    disc.customQuestion = customQuestion;
-    disc.adultContent = currentAdult;
-    disc.paths = data.paths || lastPaths;
-    disc.results = lastResults;
-    disc.classification = data.classification || lastClassification;
-    disc.graphLeads = data.graphLeads || [];
-    disc.concepts = data.concepts || lastConcepts;
-    disc.researchState = data.researchState || lastResearchState;
-    disc.conceptGraph = data.conceptGraph || null;
-    await put('discoveries', disc);
-    const proj = (await all('projects')).find(x => x.id === currentProjectId);
-    if (proj) {
-      proj.selectedPathIds = disc.selectedPathIds;
-      proj.customQuestion = customQuestion;
-      proj.updatedAt = disc.deepDiveAt;
-      proj.lastActivityAt = disc.deepDiveAt;
-      await put('projects', proj);
+    persistSession();
+    if (sessionBoundProject && currentProjectId) {
+      await persistDiscoveryIfKept();
+      const disc = (await all('discoveries')).find(d => d.id === currentProjectId) || { id: currentProjectId, projectId: currentProjectId };
+      disc.deepDiveText = data.analysis || '';
+      disc.deepDiveAt = new Date().toISOString();
+      disc.deepDiveSubject = subject;
+      disc.deepDiveFocusUrl = candidate?.url || selectedEntity?.url || '';
+      disc.selectedEntity = selectedEntity;
+      disc.originalQuery = seed;
+      disc.deepDivePlan = data.plan;
+      disc.deepDiveImages = data.images;
+      disc.deepDiveVideos = data.videos;
+      disc.visuals = data.visuals || data.visualCorpus || disc.visuals;
+      disc.tutorials = data.tutorials;
+      disc.deepDiveRetrieved = data.retrieved;
+      disc.deepDiveRelated = data.related;
+      disc.selectedPathIds = data.selectedPathIds || pathIds;
+      disc.customQuestion = customQuestion;
+      disc.adultContent = currentAdult;
+      disc.paths = data.paths || lastPaths;
+      disc.results = lastResults;
+      disc.classification = data.classification || lastClassification;
+      disc.graphLeads = data.graphLeads || [];
+      disc.concepts = data.concepts || lastConcepts;
+      disc.researchState = data.researchState || lastResearchState;
+      disc.conceptGraph = data.conceptGraph || null;
+      await put('discoveries', disc);
+      const proj = (await all('projects')).find(x => x.id === currentProjectId);
+      if (proj) {
+        proj.selectedPathIds = disc.selectedPathIds;
+        proj.customQuestion = customQuestion;
+        proj.updatedAt = disc.deepDiveAt;
+        proj.lastActivityAt = disc.deepDiveAt;
+        await put('projects', proj);
+      }
+      await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'deep_dive', at: new Date().toISOString(), subject, focusUrl: candidate?.url || '', paths: disc.selectedPathIds });
+      for (const raw of (data.leads || []).slice(0, 8)) {
+        const t = String(raw.text || raw).trim();
+        if (t) await put('leads', { id: 'lead_' + crypto.randomUUID(), projectId: currentProjectId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), text: t, url: raw.url || '', status: 'new', refIds: [] });
+      }
+      await refresh();
     }
-    await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: currentProjectId, type: 'deep_dive', at: new Date().toISOString(), subject, focusUrl: candidate?.url || '', paths: disc.selectedPathIds });
-    for (const raw of (data.leads || []).slice(0, 8)) {
-      const t = String(raw.text || raw).trim();
-      if (t) await put('leads', { id: 'lead_' + crypto.randomUUID(), projectId: currentProjectId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), text: t, url: raw.url || '', status: 'new', refIds: [] });
-    }
-    await refresh();
-    toast(data.paused ? 'Research paused — more evidence available to continue.' : 'Deep dive complete.');
+    toast(data.paused ? 'Research paused — more evidence available to continue. Nothing was auto-saved.' : 'Deep dive complete. Save if you want to keep this research.');
   } catch (e) {
     const msg = String(e.message || e);
     const isConfig = /API_KEY|not configured|provider is not configured/i.test(msg);
@@ -1560,6 +1701,10 @@ function renderDeepDivePayload(data, subject) {
   lastResearchState = data.researchState || lastResearchState;
   if (data.paused) lastResearchState = data.researchState || lastResearchState;
   if (Array.isArray(data.investigationChoices) && data.investigationChoices.length) lastInvestigationChoices = data.investigationChoices;
+  if (Array.isArray(data.videos) || Array.isArray(data.videoCorpus)) lastVideos = mergeVideos(lastVideos, data.videos || data.videoCorpus || []);
+  if (Array.isArray(data.visuals) || Array.isArray(data.visualCorpus) || Array.isArray(data.images)) {
+    lastVisuals = mergeVisuals(lastVisuals, data.visuals || data.visualCorpus || data.images || []);
+  }
   persistSession();
   $('deepDiveProgress').innerHTML = '';
   const contBtn = $('continueDiveBtn');
@@ -1635,9 +1780,9 @@ function renderDiveWorkspace(data, subject) {
     lastDivePayload._gallery = gallery;
     body = imgs.length ? `<div class="gallery dense">${imgs.map((im, i) => `<img src="${esc(imgSrc(im.url || im))}" data-g="${i}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>
       <p class="hint">Images keep page provenance. A picture is not proof of identity.</p>
-      <button class="btn" data-save-images="1">Save images</button>` : '<p class="hint">No public images were retrieved.</p>';
+      <div class="row"><button class="btn" data-save-images="1">Save images</button><button class="btn" data-visual-act="more">More images</button><button class="btn" data-visual-act="different">Find different</button></div>` : '<p class="hint">No public images were retrieved.</p>';
   } else if (diveWorkspaceTab === 'videos') {
-    body = videos.length ? videos.map(videoCard).join('') : '<p class="hint">No public videos were retrieved.</p>';
+    body = videos.length ? videos.map(videoCard).join('') + '<div class="row" style="margin-top:10px"><button class="btn" data-video-more="1">More videos</button></div>' : '<p class="hint">No public videos were retrieved.</p>';
   } else if (diveWorkspaceTab === 'tutorials') {
     body = (tutorials.length ? tutorials.map(videoCard).join('') : '<p class="hint">No public instructional videos were retrieved yet.</p>')
       + '<div class="row" style="margin-top:10px"><button class="btn primary" data-make-tutorial="1">Make tutorial from this research</button></div>';
@@ -1664,7 +1809,8 @@ function renderDiveWorkspace(data, subject) {
   const ctx = extraContextText(plan.context ? { context: plan.context } : lastClassification);
   $('deepDiveResult').innerHTML = `
     <div class="selbar"><b>${esc(name)}</b>${currentAdult !== 'off' ? ' ' + adultBadge(plan.adultContent || data.adultContent || currentAdult) : ''}${ctx ? ' <span class="badge">' + esc(ctx) + '</span>' : ''}<br>
-    <small>${esc(plan.safety || 'Read-only public research.')}</small></div>
+    <small>${esc(plan.safety || 'Read-only public research.')} Nothing is saved unless you choose Save.</small>
+    <div class="row" style="margin-top:8px"><button class="btn primary" data-keep-dive="1">Save this research</button></div></div>
     ${accessHtml}${suggestHtml}${tabHtml}${body}`;
 }
 function renderAdaptiveWriteup(text, paths, subject) {
@@ -1820,7 +1966,7 @@ async function renderInvestigations() {
         <button class="btn" data-invstat="completed" data-id="${esc(p.id)}">Complete</button>
       </div>
     </div>
-  </div>`).join('') || '<p class="empty">Investigations appear here after you Keep a search or run Deep Dive.</p>';
+  </div>`).join('') || '<p class="empty">Investigations appear here after you Keep or Save a search. Deep Dive never auto-saves.</p>';
   const cur = ps.find(p => p.id === currentProjectId);
   if ($('projectMeta')) $('projectMeta').textContent = cur ? `${cur.name} · ${cur.status} · notes stay on this phone.` : 'No investigation selected.';
   if ($('appSub') && cur) $('appSub').textContent = cur.name;
@@ -1842,25 +1988,13 @@ async function resumeInvestigation(id) {
 
 async function branchInvestigation(rel) {
   if (!rel || !rel.label) return toast('Nothing to branch into.');
-  const parentId = currentProjectId;
-  const parentName = (await all('projects')).find(x => x.id === parentId)?.name || '';
-  sessionBoundProject = false;
-  currentProjectId = null;
   $('searchQuery').value = rel.label;
   if (rel.kind && ['person', 'technique', 'product', 'place', 'skill', 'organization', 'website'].includes(String(rel.kind).toLowerCase())) {
     currentSubject = String(rel.kind).toLowerCase();
     document.querySelectorAll('#subjectChips .chip').forEach(x => x.classList.toggle('active', x.dataset.subject === currentSubject));
   }
-  const p = await keepInvestigation(rel.label);
-  p.parentId = parentId;
-  p.relation = rel.kind || 'related';
-  p.relatedFrom = parentName;
-  p.query = rel.label;
-  p.adultContent = currentAdult;
-  await put('projects', p);
-  await put('events', { id: 'evt_' + crypto.randomUUID(), projectId: p.id, type: 'branched', at: new Date().toISOString(), parentId, label: rel.label, kind: rel.kind || '' });
   setTab('search');
-  toast('Branched into “' + rel.label + '” without discarding the original investigation.');
+  toast('Following “' + rel.label + '”. Original research stays in this session — Save if you want to keep it.');
   await discover();
 }
 
@@ -2216,6 +2350,62 @@ function wire() {
     const item = lightboxGallery[lightboxIndex] || {};
     openSaveSheet({ kind: 'image', title: item.title || item.cap || 'Visual', url: item.pageUrl || lightboxSourceUrl || '', image: item.url || item.src || $('lightboxImg')?.src || '', sourceUrl: item.pageUrl || lightboxSourceUrl || '', domain: item.domain || hostOf(item.pageUrl || '') });
   };
+  if ($('lightboxSimilar')) $('lightboxSimilar').onclick = () => {
+    const item = currentLightboxVisual();
+    closeLightbox();
+    discover({ visualMode: 'similar', seedVisual: item });
+  };
+  if ($('lightboxSearchVisual')) $('lightboxSearchVisual').onclick = () => {
+    const item = currentLightboxVisual();
+    closeLightbox();
+    const q = [lastClassification?.subject, item.title || item.caption, item.domain].filter(Boolean).join(' ');
+    if (q && $('searchQuery')) $('searchQuery').value = q;
+    discover({ visualMode: 'similar', seedVisual: item });
+  };
+  if ($('lightboxNotImage')) $('lightboxNotImage').onclick = () => {
+    const item = currentLightboxVisual();
+    closeLightbox();
+    rejectVisual(item);
+  };
+  if ($('lightboxNotPerson')) $('lightboxNotPerson').onclick = () => {
+    const item = currentLightboxVisual();
+    closeLightbox();
+    rejectPerson({ url: item.pageUrl || item.url, domain: item.domain || hostOf(item.pageUrl || item.url || '') });
+  };
+  if ($('lightboxRelated')) $('lightboxRelated').onclick = e => {
+    const im = e.target.closest('[data-lrel]');
+    if (!im) return;
+    lightboxIndex = Number(im.dataset.lrel) || 0;
+    showLightboxSlide();
+  };
+  if ($('videoCorpus')) $('videoCorpus').addEventListener('click', e => {
+    if (e.target.closest('[data-video-more]') || e.target.closest('[data-video-act="different-set"]')) {
+      discover({ videoMore: true, visualMode: e.target.closest('[data-video-act="different-set"]') ? 'different' : 'more' });
+      return;
+    }
+    const play = e.target.closest('[data-video-act="play"]');
+    if (play) {
+      const wrap = document.querySelector('[data-video-embed="' + play.dataset.i + '"]');
+      if (wrap) wrap.classList.remove('hidden');
+      return;
+    }
+    const save = e.target.closest('[data-video-act="save"]');
+    if (save) {
+      const v = lastVideos[+save.dataset.i];
+      if (v) openSaveSheet({ kind: 'video', title: v.title, url: v.pageUrl || v.url, image: v.thumbnail, domain: v.domain, sourceUrl: v.pageUrl || v.url });
+      return;
+    }
+    const not = e.target.closest('[data-video-act="not"]');
+    if (not) {
+      const v = lastVideos[+not.dataset.i];
+      if (v) {
+        suppressed.urls.push(v.url || v.pageUrl);
+        lastVideos = lastVideos.filter((_, i) => i !== +not.dataset.i);
+        renderVideoCorpus();
+        discover({ visualMode: 'different', videoMore: true });
+      }
+    }
+  });
   if ($('saveMeasurements')) $('saveMeasurements').onclick = () => {
     const m = saveMeasurementsFromForm();
     toast(m ? 'Measurements saved on this phone (USER-PROVIDED).' : 'Measurements cleared.');
@@ -2346,6 +2536,22 @@ function wire() {
     }
   });
   $('deepDiveResult').addEventListener('click', e => {
+    if (e.target.closest('[data-keep-dive]')) {
+      keepInvestigation(selectedEntity?.canonicalName || lastClassification?.subject || $('searchQuery')?.value).then(p => {
+        toast(p ? 'Research saved on this phone.' : 'Nothing to save yet.');
+        refresh();
+      });
+      return;
+    }
+    if (e.target.closest('[data-visual-act]')) {
+      const mode = e.target.closest('[data-visual-act]').dataset.visualAct;
+      discover({ visualMode: mode, visualMore: mode === 'more', visualOffset: lastVisuals.length });
+      return;
+    }
+    if (e.target.closest('[data-video-more]')) {
+      discover({ videoMore: true, visualMode: 'more' });
+      return;
+    }
     if (e.target.closest('[data-expand-dive]')) {
       if ($('diveExpanded')) $('diveExpanded').checked = true;
       expandedMode = true;
@@ -2416,8 +2622,15 @@ function wire() {
     if (full) openLightbox(full.dataset.full, full.dataset.cap || '');
   });
   if ($('visualCorpus')) $('visualCorpus').addEventListener('click', e => {
+    const act = e.target.closest('[data-visual-act]');
+    if (act) {
+      const mode = act.dataset.visualAct;
+      const seed = selectedVisual || lastVisuals[0] || null;
+      discover({ visualMode: mode, visualMore: mode === 'more', seedVisual: seed, visualOffset: mode === 'more' ? lastVisuals.length : 0 });
+      return;
+    }
     if (e.target.closest('[data-visual-more]')) {
-      discover({ visualMore: true });
+      discover({ visualMore: true, visualMode: 'more', visualOffset: lastVisuals.length });
       return;
     }
     const tile = e.target.closest('[data-visual]');
@@ -2426,7 +2639,7 @@ function wire() {
     const im = lastVisuals[i];
     if (!im) return;
     selectedVisual = im;
-    const gallery = ($('visualCorpus')._gallery) || lastVisuals.map(x => ({ src: imgSrc(x.url), cap: [x.title || x.caption, x.domain, x.pageUrl || x.url].filter(Boolean).join(' · '), pageUrl: x.pageUrl || x.url || '', url: x.url, title: x.title || '' }));
+    const gallery = ($('visualCorpus')._gallery) || lastVisuals.map(x => ({ src: imgSrc(x.url), cap: [x.title || x.caption, x.domain, x.pageUrl || x.url].filter(Boolean).join(' · '), pageUrl: x.pageUrl || x.url || '', url: x.url, title: x.title || '', domain: x.domain || '' }));
     openLightbox(imgSrc(im.url), [im.title || im.caption, im.domain, im.pageUrl || im.url].filter(Boolean).join(' · '), gallery, i, im.pageUrl || im.url);
     persistSession();
   });
@@ -2467,6 +2680,7 @@ function wire() {
     if (hit.act === 'queue') { await queueFromResult(hit.r); return; }
     selectCandidate(hit.r, hit.i);
     if (hit.act === 'dive') goToDive();
+    if (hit.act === 'notperson') rejectPerson(hit.r);
   };
   if ($('personRail')) $('personRail').onclick = async e => {
     const thumb = e.target.closest('.thumbs img[data-full]');
@@ -2485,6 +2699,7 @@ function wire() {
     if (hit.act === 'save') { await openSaveSheet({ kind: 'page', title: hit.r.title, url: hit.r.url, image: hit.r.image, domain: hit.r.domain, provenance: hit.r.provenance, sourceUrl: hit.r.url }); return; }
     selectCandidate(hit.r, hit.i);
     if (hit.act === 'dive') goToDive();
+    if (hit.act === 'notperson') rejectPerson(hit.r);
   };
   if ($('graphTrail')) $('graphTrail').onclick = e => {
     const gq = e.target.closest('[data-graph-q]');

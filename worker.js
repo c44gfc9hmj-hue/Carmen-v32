@@ -398,18 +398,20 @@ function attachImageHit(results, seen, hit, diagnosticsKey) {
   });
 }
 
-async function bingImages(q, results, seen, diagnostics, limit) {
-  const cap = Math.max(8, Math.min(Number(limit) || 10, 18));
+async function bingImages(q, results, seen, diagnostics, limit, visualHits, first) {
+  const cap = Math.max(12, Math.min(Number(limit) || 24, 36));
+  const offset = Math.max(0, Number(first) || 0);
+  const hits = Array.isArray(visualHits) ? visualHits : null;
   if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) {
     diagnostics['Bing Images'] = { error: 'skipped (fetch budget)' };
     return;
   }
   SEARCH_BUDGET.used++;
   try {
-    const r = await fetchText('https://www.bing.com/images/search?q=' + encodeURIComponent(q) + '&adlt=off', { headers: BROWSER_HEADERS });
-    diagnostics['Bing Images'] = { status: r.status, ok: r.ok };
+    const r = await fetchText('https://www.bing.com/images/search?q=' + encodeURIComponent(q) + '&adlt=off' + (offset ? ('&first=' + (offset + 1)) : ''), { headers: BROWSER_HEADERS });
+    diagnostics['Bing Images'] = { status: r.status, ok: r.ok, first: offset };
     if (!r.ok) return;
-    const html = await r.text();
+    const html = decodeEntities(await r.text());
     const re = /"murl":"([^"]+)","turl":"([^"]+)"[\s\S]{0,400}?"purl":"([^"]+)"[\s\S]{0,200}?"t":"([^"]*)"/g;
     let m, added = 0;
     while ((m = re.exec(html)) && added < cap) {
@@ -420,10 +422,12 @@ async function bingImages(q, results, seen, diagnostics, limit) {
         title: unescapeJsonUrl(m[4]),
         query: q,
       };
-      if (attachImageHit(results, seen, hit, 'Bing Images')) added++;
+      const toHits = hits ? pushVisualHit(hits, hit, 'Bing Images') : false;
+      const toResults = added < 4 ? attachImageHit(results, seen, hit, 'Bing Images') : false;
+      if (toHits || toResults) added++;
     }
     if (!added) {
-      const loose = /"murl":"([^"]+)"/g;
+      const loose = /"murl"\s*:\s*"([^"]+)"/g;
       const purl = /"purl":"([^"]+)"/g;
       const images = [];
       const pages = [];
@@ -431,7 +435,10 @@ async function bingImages(q, results, seen, diagnostics, limit) {
       while ((x = loose.exec(html)) && images.length < cap) images.push(unescapeJsonUrl(x[1]));
       while ((x = purl.exec(html)) && pages.length < cap) pages.push(unescapeJsonUrl(x[1]));
       for (let i = 0; i < images.length && added < cap; i++) {
-        if (attachImageHit(results, seen, { image: images[i], pageUrl: pages[i] || '', title: q, query: q }, 'Bing Images')) added++;
+        const hit = { image: images[i], pageUrl: pages[i] || '', title: q, query: q };
+        const toHits = hits ? pushVisualHit(hits, hit, 'Bing Images') : false;
+        const toResults = added < 4 ? attachImageHit(results, seen, hit, 'Bing Images') : false;
+        if (toHits || toResults) added++;
       }
     }
     diagnostics['Bing Images'].added = added;
@@ -450,12 +457,48 @@ async function bingVideos(q, results, seen, diagnostics) {
     const r = await fetchText('https://www.bing.com/videos/search?q=' + encodeURIComponent(q) + '&adlt=off', { headers: BROWSER_HEADERS });
     diagnostics['Bing Videos'] = { status: r.status, ok: r.ok };
     if (!r.ok) return;
-    const html = await r.text();
+    const html = decodeEntities(await r.text());
     const before = results.length;
-    parseAnchors(html, 'Bing Videos', results, seen, MAX_RESULTS);
+    parseAnchors(html, 'Bing Videos', results, seen, 40);
     diagnostics['Bing Videos'].added = Math.max(0, results.length - before);
   } catch (e) {
     diagnostics['Bing Videos'] = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 200) };
+  }
+}
+
+async function yahooImages(q, results, seen, diagnostics, limit, visualHits) {
+  const cap = Math.max(10, Math.min(Number(limit) || 20, 28));
+  const hits = Array.isArray(visualHits) ? visualHits : null;
+  if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) {
+    diagnostics['Yahoo Images'] = { error: 'skipped (fetch budget)' };
+    return;
+  }
+  SEARCH_BUDGET.used++;
+  try {
+    const r = await fetchText('https://images.search.yahoo.com/search/images?p=' + encodeURIComponent(q), { headers: BROWSER_HEADERS });
+    diagnostics['Yahoo Images'] = { status: r.status, ok: r.ok };
+    if (!r.ok) return;
+    const html = decodeEntities(await r.text());
+    let added = 0;
+    const re = /"iurl":"([^"]+)"[\s\S]{0,240}?"rurl":"([^"]*)"/g;
+    let m;
+    while ((m = re.exec(html)) && added < cap) {
+      const hit = { image: unescapeJsonUrl(m[1]), pageUrl: unescapeJsonUrl(m[2]), title: q, query: q };
+      const toHits = hits ? pushVisualHit(hits, hit, 'Yahoo Images') : false;
+      const toResults = added < 4 ? attachImageHit(results, seen, hit, 'Yahoo Images') : false;
+      if (toHits || toResults) added++;
+    }
+    if (!added) {
+      const loose = /(?:imgurl|iurl|data-src)=["']?(https?:\/\/[^"'&\s]+)/gi;
+      let x;
+      while ((x = loose.exec(html)) && added < cap) {
+        const hit = { image: unescapeJsonUrl(x[1]), pageUrl: '', title: q, query: q };
+        if (hits && pushVisualHit(hits, hit, 'Yahoo Images')) added++;
+      }
+    }
+    diagnostics['Yahoo Images'].added = added;
+  } catch (e) {
+    diagnostics['Yahoo Images'] = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 200) };
   }
 }
 
@@ -834,11 +877,25 @@ function detectRelation(text) {
   return '';
 }
 
+function plusSplitQuery(q) {
+  const full = String(q || '').trim();
+  if (!full || /^https?:\/\//i.test(full)) return { head: full, concepts: [], full };
+  const parts = full.split(/\s*\+\s*|\s+;\s+|\s+\/\s+/).map(s => s.trim()).filter(s => s.length > 1);
+  if (parts.length >= 2) return { head: parts[0], concepts: parts.slice(1).slice(0, 6), full };
+  return { head: full, concepts: [], full };
+}
+
 function parseQueryContext(q, classification) {
   const raw = String(q || '').trim().replace(/\s+/g, ' ');
   const empty = { subject: raw, context: '', relation: '', full: raw };
   if (!raw || (classification && classification.isUrl)) return empty;
   const type = classification && classification.type;
+  const plus = plusSplitQuery(raw);
+  if (plus.concepts.length) {
+    const context = plus.concepts.join(' ');
+    const relation = detectRelation(context) || detectRelation(plus.concepts[0]) || 'context';
+    return { subject: plus.head, context, relation, full: raw, conceptsList: plus.concepts };
+  }
   const words = raw.split(/\s+/);
   let subject = raw, context = '';
   const trail = raw.match(TRAILING_CONTEXT_RE);
@@ -919,6 +976,12 @@ function attachContext(q, classification) {
   } else if (ctx.subject) {
     out.subject = out.subject || ctx.subject;
   }
+  if (Array.isArray(ctx.conceptsList) && ctx.conceptsList.length) {
+    out.conceptsList = ctx.conceptsList.slice(0, 6);
+  } else {
+    const listed = splitContextConcepts(out);
+    if (listed.length) out.conceptsList = listed;
+  }
   return out;
 }
 
@@ -973,9 +1036,10 @@ function adultSemanticVariants(subject, extraContext) {
     const syn = contextualSynonyms(extra, detectRelation(extra));
     if (syn) add('"' + sub + '" ' + syn, 'adult-context synonyms');
   } else {
-    add('"' + sub + '" (credits OR filmography OR scene)', 'adult-industry career and credits');
+    add('"' + sub + '" (credits OR filmography OR scene OR database)', 'adult-industry career, credits, and databases');
     add('"' + sub + '" (interview OR feature) (performer OR "official site")', 'adult-context interviews/features');
     add('"' + sub + '" (studio OR production OR collaborator)', 'adult-industry collaborators');
+    add('"' + sub + '" (aka OR "stage name" OR "also known as")', 'public aliases and identifiers');
   }
   return out.slice(0, 5);
 }
@@ -1225,6 +1289,28 @@ function extraContext(classification) {
   return String((classification && classification.context) || '').replace(/adult content/gi, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function splitContextConcepts(classification) {
+  if (Array.isArray(classification && classification.conceptsList) && classification.conceptsList.length) {
+    return classification.conceptsList.map(s => String(s || '').trim()).filter(s => s.length > 1).slice(0, 6);
+  }
+  const extra = extraContext(classification);
+  if (!extra) return [];
+  const plus = extra.split(/\s*(?:\+|\/|,|;|\band\b)\s*/i).map(s => s.trim()).filter(s => s.length > 1);
+  if (plus.length >= 2) return [...new Set(plus)].slice(0, 6);
+  const words = extra.split(/\s+/).filter(Boolean);
+  const out = [];
+  let buf = [];
+  for (const w of words) {
+    const atom = isKnownInvestigativeContext(w) || !!detectRelation(w) || CLOTHING_WORD_RE.test(w) || TECHNIQUE_WORD_RE.test(w);
+    if (atom && buf.length) {
+      out.push(buf.join(' '));
+      buf = [w];
+    } else buf.push(w);
+  }
+  if (buf.length) out.push(buf.join(' '));
+  return [...new Set(out.filter(s => s && s.length > 1))].slice(0, 6);
+}
+
 function isVisualSubject(classification) {
   const t = String((classification && classification.type) || '');
   if (t === 'person' || t === 'technique' || t === 'product' || t === 'vehicle' || t === 'place' || t === 'clothing' || t === 'skill' || t === 'project' || t === 'social' || t === 'ambiguous') return true;
@@ -1238,33 +1324,159 @@ function visualDedupeKey(url) {
   return String(url || '').replace(/[?#].*$/, '').replace(/\/cdn-cgi\/image\/[^/]+\//, '/').toLowerCase();
 }
 
-function buildVisualCorpus(results, retrieved, classification) {
+function pushVisualHit(hits, hit, source) {
+  if (!Array.isArray(hits) || !hit) return false;
+  const image = usableImage(hit.image) || usableImage(hit.thumb);
+  if (!image) return false;
+  const key = visualDedupeKey(image);
+  if (!key) return false;
+  if (hits.some(h => visualDedupeKey(h.url) === key)) return false;
+  const pageUrl = unwrap(hit.pageUrl || '') || '';
+  hits.push({
+    url: image,
+    thumb: usableImage(hit.thumb) || image,
+    pageUrl,
+    domain: hostOf(pageUrl || image).replace(/^www\./, ''),
+    title: cleanTitle(hit.title) || '',
+    source: source || 'Image index',
+    queryVariant: hit.query || '',
+    imageOrigin: 'image-index',
+    researchObject: true,
+    visualLikenessIsNotIdentityProof: true,
+    provenance: 'DISCOVERED',
+    accessState: 'DISCOVERED',
+    reason: 'Public image-index result. Attribution is the hosting page — visual likeness is not identity proof.',
+    caption: cleanTitle(hit.title) || '',
+    confidence: 'medium',
+    relevance: 2,
+  });
+  return true;
+}
+
+function classifySourceClass(item, classification) {
+  const url = String(item && (item.url || item.pageUrl) || '');
+  const host = hostOf(url).replace(/^www\./, '');
+  const adult = classification && (classification.adultContent === 'on' || classification.adultContent === 'both');
+  const person = classification && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous');
+  if (GENERIC_BIO_HOST_RE.test(host)) return 'ENCYCLOPEDIA';
+  if (isAggregatorPage(item) || TUBE_INDEX_RE.test(host)) return 'AGGREGATOR';
+  if (/(^|\.)reddit\.com$/.test(host)) return 'COMMUNITY';
+  if (PROFILE_HOST_RE.test(host)) return 'PUBLIC_PROFILE';
+  if (ADULT_HOST_RE.test(host)) {
+    if (/(iafd|adultfilmdatabase|data18|indexxx|babepedia|boobpedia|freeones|thenude|adultdvdtalk)/i.test(host)) return 'DATABASE';
+    return 'ADULT_PLATFORM';
+  }
+  if (isSpecialistSource(item) || INSTRUCTIONAL_HOST_RE.test(host)) return 'PRIMARY';
+  if (adult && person && isAdultishSource(item)) return 'ADULT_PLATFORM';
+  return 'UNKNOWN';
+}
+
+function applyExclusions(list, opts) {
+  opts = opts || {};
+  const urls = new Set((opts.excludeUrls || []).map(u => visualDedupeKey(u)).filter(Boolean));
+  const hosts = new Set((opts.excludeHosts || []).map(h => String(h).replace(/^www\./, '').toLowerCase()).filter(Boolean));
+  if (!urls.size && !hosts.size) return list || [];
+  return (list || []).filter(item => {
+    const u = visualDedupeKey(item && (item.url || item.image));
+    const h = hostOf(item && (item.url || item.pageUrl || '')).replace(/^www\./, '').toLowerCase();
+    if (u && urls.has(u)) return false;
+    if (h && hosts.has(h)) return false;
+    return true;
+  });
+}
+
+function visualQueryVariants(classification, opts) {
+  opts = opts || {};
+  const subject = String((classification && classification.subject) || '').replace(/"/g, '');
+  const extra = extraContext(classification);
+  const concepts = splitContextConcepts(classification);
+  const mode = String(opts.mode || 'more').toLowerCase();
+  const quoted = subject ? '"' + subject + '"' : '';
+  const out = [];
+  const add = (q, why) => {
+    const t = String(q || '').trim();
+    if (!t || out.some(x => x.q === t)) return;
+    out.push({ q: t, why: why || mode });
+  };
+  if (!quoted) return out;
+  if (mode === 'similar' && opts.seedVisual) {
+    const t = String((opts.seedVisual && (opts.seedVisual.title || opts.seedVisual.caption)) || extra || 'photos').replace(/"/g, '').slice(0, 48);
+    add(quoted + ' ' + t, 'similar to the selected visual');
+    if (opts.seedVisual.domain) add(quoted + ' site:' + String(opts.seedVisual.domain).replace(/^www\./, ''), 'same source as the selected visual');
+  } else if (mode === 'samesource' && opts.seedVisual && opts.seedVisual.domain) {
+    add(quoted + ' site:' + String(opts.seedVisual.domain).replace(/^www\./, ''), 'same source');
+  } else if (mode === 'sameperson') {
+    add(quoted + ' (portrait OR photos OR gallery OR photoset)', 'same person, broader visuals');
+  } else if (mode === 'sameconcept' && extra) {
+    add(quoted + ' ' + extra, 'same concept intersection');
+    add(extra + ' (photos OR gallery OR diagram)', 'concept visuals without collapsing to identity');
+  } else if (mode === 'sameproduction' && opts.seedVisual) {
+    add(quoted + ' ' + String((opts.seedVisual.title || extra || 'scene')).replace(/"/g, '').slice(0, 48), 'same production/visual');
+  } else if (mode === 'different') {
+    add(quoted + (extra ? ' ' + extra : '') + ' (gallery OR stills OR photoset OR lookbook) -wikipedia', 'different visual providers');
+    const neg = (opts.excludeHosts || []).slice(0, 3).map(h => '-site:' + String(h).replace(/^www\./, '')).join(' ');
+    if (neg) add(quoted + ' ' + (extra || 'photos') + ' ' + neg, 'exclude rejected sources');
+    if (concepts[1]) add(quoted + ' ' + concepts[1] + ' (photos OR gallery)', 'alternate concept visual lane');
+  } else {
+    add(imageSearchQuery(subject, classification), 'primary visual corpus');
+    if (extra) add(quoted + ' ' + extra + ' (gallery OR photos OR stills)', 'entity × concept visuals');
+    add(quoted + ' (photos OR images OR gallery)', 'broad visual index');
+    for (const c of concepts.slice(0, 3)) add(quoted + ' ' + c, 'concept visual lane');
+  }
+  return out.slice(0, 6);
+}
+
+function identityExpansionQueries(classification) {
+  const subject = String((classification && classification.subject) || '').replace(/"/g, '');
+  const type = (classification && classification.type) || '';
+  const adult = (classification && classification.adultContent) || 'off';
+  if (!subject || (type !== 'person' && type !== 'social' && type !== 'ambiguous')) return [];
+  const out = [];
+  const add = (q, why) => {
+    const t = String(q || '').trim();
+    if (!t || out.some(x => x.q === t)) return;
+    out.push({ q: t, why });
+  };
+  add('"' + subject + '" (aka OR "also known as" OR "stage name" OR alias OR "real name")', 'public aliases and identifiers');
+  add('"' + subject + '" (profile OR credits OR filmography OR "official site")', 'identity surfaces');
+  if (adult === 'on' || adult === 'both') {
+    add('"' + subject + '" (performer OR "adult film" OR photoset OR models OR credits)', 'adult-industry identity surfaces');
+  }
+  return out;
+}
+
+function buildVisualCorpus(results, retrieved, classification, extraHits) {
   const imgs = collectDiveImages(retrieved || [], results || [], classification);
   const out = [];
   const seen = new Set();
-  for (const im of imgs) {
-    const key = visualDedupeKey(im.url);
-    if (!key || seen.has(key)) continue;
+  const push = (im) => {
+    if (!im) return;
+    const key = visualDedupeKey(im.url || im.image);
+    if (!key || seen.has(key)) return;
     seen.add(key);
     out.push({
-      url: im.url,
+      url: im.url || im.image,
+      thumb: im.thumb || im.url || im.image,
       pageUrl: im.pageUrl || '',
       domain: im.domain || '',
-      title: im.caption || im.reason || '',
+      title: im.title || im.caption || im.reason || '',
       source: im.source || '',
       reason: im.reason || 'Image keeps page provenance. Visual likeness is not identity proof.',
-      caption: im.caption || '',
+      caption: im.caption || im.title || '',
       confidence: im.confidence || 'medium',
       relevance: im.relevance || 0,
       provenance: im.provenance || 'DISCOVERED',
       accessState: im.accessState || 'DISCOVERED',
       relationshipToEntity: im.relationshipToEntity || '',
       relationshipToContext: im.relationshipToContext || '',
+      queryVariant: im.queryVariant || '',
       visualLikenessIsNotIdentityProof: true,
       researchObject: true,
     });
-  }
-  return out.slice(0, 48);
+  };
+  for (const h of extraHits || []) push(h);
+  for (const im of imgs) push(im);
+  return out.slice(0, 96);
 }
 
 function classifyVideoDuration(item) {
@@ -1751,9 +1963,12 @@ function contextVocabulary(classification) {
   if ((type === 'vehicle' || type === 'product') && /\bhitch\b/i.test(extra) && !pack.related) {
     pack = RELATION_VOCAB.towing || pack;
   }
-  const userTerms = extra
-    ? extra.split(/[\/,&+|]| or /i).map(s => s.trim()).filter(s => s.length > 2 && !/^(and|the|for|with|adult|content)$/i.test(s))
-    : [];
+  const listed = splitContextConcepts(classification);
+  const userTerms = listed.length
+    ? listed.map(s => String(s).trim()).filter(s => s.length > 2 && !/^(and|the|for|with|adult|content)$/i.test(s))
+    : extra
+      ? extra.split(/[\/,&+|]| or /i).map(s => s.trim()).filter(s => s.length > 2 && !/^(and|the|for|with|adult|content)$/i.test(s))
+      : [];
   const core = [...new Set(userTerms.length ? userTerms : (rel && rel !== 'adult' && rel !== 'context' ? [rel] : []))];
   const interpreted = (core.length ? core : (extra ? [extra] : [])).map(t => interpretConcept(t, classification && classification.type, classification && classification.adultContent));
   const fromConcepts = interpreted.flatMap(c => c.related || []);
@@ -1855,6 +2070,14 @@ function discoveryLanes(classification, depth) {
     add('intersection', 'entity in adult-industry public sources', adultSemanticVariants(subject, '').map(v => v.q).slice(0, 2));
   }
 
+  const concepts = splitContextConcepts(classification);
+  if (concepts.length >= 2) {
+    add('pair', 'entity ∩ first two requested concepts independently', [quoteName(subject) + ' ' + concepts[0] + ' ' + concepts[1]]);
+    for (const c of concepts.slice(0, 3)) {
+      add('concept-' + String(c).replace(/\s+/g, '-').slice(0, 24), 'entity ∩ independent concept lane', [quoteName(subject) + ' ' + c]);
+    }
+  }
+
   const relatedCap = d === 'deep' ? 4 : d === 'contextual' ? 2 : 0;
   if (d !== 'broad') {
     if (vocab.interview.length) {
@@ -1898,10 +2121,10 @@ function discoveryLanes(classification, depth) {
     add('collaborators', 'people publicly associated with the entity in this context', [quoteName(subject) + ' ' + (vocab.core[0] || '') + ' (with OR directed OR studio)']);
   }
   if ((adult === 'on' || adult === 'both') && type === 'person' && lanes.length > 1) {
-    const prefer = { intersection: 0, productions: 1, images: 2, videos: 3, interviews: 4, specialist: 5, collaborators: 6, organizations: 7 };
+    const prefer = { intersection: 0, pair: 0.4, productions: 1, images: 2, videos: 3, interviews: 4, specialist: 5, collaborators: 6, organizations: 7 };
     lanes.sort((a, b) => {
-      const ia = Object.prototype.hasOwnProperty.call(prefer, a.id) ? prefer[a.id] : (/^term-/.test(a.id) ? 2.5 : a.id === 'identity' ? 9 : 8);
-      const ib = Object.prototype.hasOwnProperty.call(prefer, b.id) ? prefer[b.id] : (/^term-/.test(b.id) ? 2.5 : b.id === 'identity' ? 9 : 8);
+      const ia = Object.prototype.hasOwnProperty.call(prefer, a.id) ? prefer[a.id] : (/^(term-|concept-)/.test(a.id) ? 0.6 : a.id === 'identity' ? 9 : 8);
+      const ib = Object.prototype.hasOwnProperty.call(prefer, b.id) ? prefer[b.id] : (/^(term-|concept-)/.test(b.id) ? 0.6 : b.id === 'identity' ? 9 : 8);
       return ia - ib;
     });
   }
@@ -2001,6 +2224,8 @@ function classifyQuery(q, hint = '') {
   const split = splitSourceRestriction(q);
   const raw = split.text;
   const restrictedDomain = split.domain;
+  const plus = plusSplitQuery(raw);
+  const typeSource = plus.head || raw;
   const done = (obj) => {
     const attached = attachContext(raw, obj);
     if (restrictedDomain) attached.requestedSourceDomain = restrictedDomain;
@@ -2025,10 +2250,10 @@ function classifyQuery(q, hint = '') {
     }
     return done({ type: 'website', confidence: 'high', reason: 'Direct URL', isUrl: true, url, isImage });
   }
-  const trailEarly = raw.match(TRAILING_CONTEXT_RE);
+  const trailEarly = typeSource.match(TRAILING_CONTEXT_RE);
   if (trailEarly && !hinted) {
-    const rel = detectRelation(trailEarly[1]) || detectRelation(raw);
-    const head = raw.slice(0, raw.length - trailEarly[0].length).trim();
+    const rel = detectRelation(trailEarly[1]) || detectRelation(typeSource);
+    const head = typeSource.slice(0, typeSource.length - trailEarly[0].length).trim();
     const headWords = head.split(/\s+/).filter(Boolean);
     const headNameLike = headWords.length >= 2 && headWords.every(w => /^[A-Za-z][A-Za-z.'’-]*$/.test(w));
     const headLooksLikePerson = headNameLike && !hasVehicleCueIgnoringNameParticles(head) && !headWords.some(w => NON_NAME_TOKENS.test(w));
@@ -2042,14 +2267,14 @@ function classifyQuery(q, hint = '') {
       return done({ type: 'product', confidence: 'medium', reason: 'Product-like subject with a repair/service context', isUrl: false });
     }
   }
-  if (TECHNIQUE_HINTS.has(hinted) || (TECHNIQUE_WORD_RE.test(raw) && !SKILL_WORD_RE.test(raw))) {
+  if (TECHNIQUE_HINTS.has(hinted) || (TECHNIQUE_WORD_RE.test(typeSource) && !SKILL_WORD_RE.test(typeSource))) {
     return done({ type: 'technique', confidence: hinted ? 'medium' : 'medium', reason: 'Looks like a technique, position, or instructional form', isUrl: false });
   }
-  if (SKILL_HINTS.has(hinted) || ((SKILL_WORD_RE.test(raw) || /\bhow to\b/i.test(raw)) && !['person', 'product', 'vehicle', 'organization', 'clothing'].includes(hinted))) {
+  if (SKILL_HINTS.has(hinted) || ((SKILL_WORD_RE.test(typeSource) || /\bhow to\b/i.test(typeSource)) && !['person', 'product', 'vehicle', 'organization', 'clothing'].includes(hinted))) {
     return done({ type: hinted === 'project' ? 'project' : 'skill', confidence: 'medium', reason: 'Looks like a skill, craft, or project to learn', isUrl: false });
   }
-  if (CLOTHING_HINTS.has(hinted) || (CLOTHING_WORD_RE.test(raw) && !SKILL_WORD_RE.test(raw))) {
-    const words = raw.split(/\s+/).filter(Boolean);
+  if (CLOTHING_HINTS.has(hinted) || (CLOTHING_WORD_RE.test(typeSource) && !SKILL_WORD_RE.test(typeSource))) {
+    const words = typeSource.split(/\s+/).filter(Boolean);
     const garmentish = (w) => CLOTHING_WORD_RE.test(w) || /^(red|blue|black|white|green|navy|grey|gray|brown|pink|gold|silver|purple|cream|ivory|olive|maroon|burgundy|teal|beige|khaki|wool|silk|cotton|leather|denim|linen|cashmere|suede|velvet|satin|long|short|mini|maxi|midi|vintage|oversized|slim|fitted|tailored)$/i.test(w);
     const allGarmentish = words.length > 0 && words.every(garmentish);
     const headName = words.length >= 2 && words.slice(0, 2).every(w => /^[A-Z][A-Za-z.'’-]*$/.test(w)) && !hasVehicleCueIgnoringNameParticles(words.slice(0, 2).join(' ')) && !words.slice(0, 2).some(w => NON_NAME_TOKENS.test(w));
@@ -2057,29 +2282,29 @@ function classifyQuery(q, hint = '') {
       return done({ type: 'clothing', confidence: hinted ? 'medium' : 'medium', reason: 'Looks like a garment, outfit, or clothing query', isUrl: false });
     }
   }
-  if (/^@[\w.]+/.test(raw) || /\b(instagram|tiktok|onlyfans|twitter|linkedin)\b/i.test(raw)) {
+  if (/^@[\w.]+/.test(typeSource) || /\b(instagram|tiktok|onlyfans|twitter|linkedin)\b/i.test(typeSource)) {
     return done({ type: 'social', confidence: 'medium', reason: 'Looks like a social handle or profile query', isUrl: false });
   }
-  if (/\b(reddit|r\/[a-z0-9_]+)/i.test(raw)) {
+  if (/\b(reddit|r\/[a-z0-9_]+)/i.test(typeSource)) {
     return done({ type: hinted || 'reddit', confidence: 'medium', reason: 'Reddit/community query', isUrl: false });
   }
-  if (/\b(inc|llc|corp|company|university|hospital|foundation)\b/i.test(raw)) {
+  if (/\b(inc|llc|corp|company|university|hospital|foundation)\b/i.test(typeSource)) {
     return done({ type: 'organization', confidence: 'medium', reason: 'Organization language in the query', isUrl: false });
   }
-  if (/\b(19|20)\d{2}\b/.test(raw) && /\b(toyota|honda|ford|chevy|chevrolet|nissan|bmw|runner|civic|f-?150|mustang|iphone|ipad)\b/i.test(raw)) {
+  if (/\b(19|20)\d{2}\b/.test(typeSource) && /\b(toyota|honda|ford|chevy|chevrolet|nissan|bmw|runner|civic|f-?150|mustang|iphone|ipad)\b/i.test(typeSource)) {
     return done({ type: 'vehicle', confidence: 'medium', reason: 'Year + vehicle/product tokens', isUrl: false });
   }
-  if (/\b(iphone|ipad|pixel \d|playstation|xbox|macbook)\b/i.test(raw)) {
+  if (/\b(iphone|ipad|pixel \d|playstation|xbox|macbook)\b/i.test(typeSource)) {
     return done({ type: 'product', confidence: 'medium', reason: 'Product-like query', isUrl: false });
   }
-  const words = raw.split(/\s+/);
+  const words = typeSource.split(/\s+/);
   const nameLike = words.length >= 2 && words.length <= 4 && words.every(w => /^[A-Za-z][A-Za-z.'’-]*$/.test(w));
   const looksLikeProductPhrase = words.some(w => NON_NAME_TOKENS.test(w));
   if (nameLike && looksLikeProductPhrase && !hinted) {
     return done({ type: 'topic', confidence: 'low', reason: 'Phrase looks like a product/topic, not a personal name', isUrl: false });
   }
   if (nameLike && (!hinted || hinted === 'person') && !looksLikeProductPhrase) {
-    if (!hinted && hasVehicleCueIgnoringNameParticles(raw)) {
+    if (!hinted && hasVehicleCueIgnoringNameParticles(typeSource)) {
       return done({ type: 'vehicle', confidence: 'medium', reason: 'Vehicle cues in the query', isUrl: false });
     }
     const last = words[words.length - 1];
@@ -2089,7 +2314,7 @@ function classifyQuery(q, hint = '') {
     }
     return done({ type: 'person', confidence: words.length === 1 ? 'low' : 'medium', reason: 'Name-like query — treating as a person candidate search', isUrl: false });
   }
-  if (words.length === 1 && /^[A-Za-z]{2,}$/.test(raw)) {
+  if (words.length === 1 && /^[A-Za-z]{2,}$/.test(typeSource)) {
     return done({ type: hinted || 'ambiguous', confidence: 'low', reason: 'Single token — many people/entities could match', isUrl: false });
   }
   if (hinted) return done({ type: hinted, confidence: 'medium', reason: 'Using the selected subject type as a search hint', isUrl: false });
@@ -2872,14 +3097,14 @@ function collectDiveVideos(retrieved, results, classification) {
     const text = String(page.textExcerpt || page.text || page.description || '');
     const re = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=[\w-]{6,}|youtu\.be\/[\w-]{6,}|vimeo\.com\/\d+)/gi;
     let m;
-    while ((m = re.exec(text)) && out.length < 18) add(m[0], page.finalUrl || page.url, page.title, page.ogImage);
+    while ((m = re.exec(text)) && out.length < 36) add(m[0], page.finalUrl || page.url, page.title, page.ogImage);
   }
   out.sort((a, b) => (b.relevance || 0) - (a.relevance || 0));
   if (adult === 'on') {
     const contextual = out.filter(x => (x.relevance || 0) >= 5);
-    if (contextual.length) return contextual.slice(0, 18);
+    if (contextual.length) return contextual.slice(0, 36);
   }
-  return out.slice(0, 18);
+  return out.slice(0, 36);
 }
 
 function relatedFromDiscovery(results, candidate) {
@@ -3194,6 +3419,7 @@ function rankResults(query, results, classification) {
     const s = scoreResult(query, item, classification);
     const host = hostOf(item.url);
     const sourceType = (host === 'reddit.com' || host.endsWith('.reddit.com')) ? 'reddit' : 'web';
+    const sourceClass = classifySourceClass(item, classification);
     return {
       ...item,
       sourceType,
@@ -3209,6 +3435,7 @@ function rankResults(query, results, classification) {
       intersection: !!s.intersection,
       discoveryLane: item.discoveryLane || '',
       resultKind: s.resultKind || 'WEAK_MATCH',
+      sourceClass,
     };
   }).filter(r => r.score > 10 && (r.signals || []).length);
   ranked.sort((a, b) => b.score - a.score || String(a.domain).localeCompare(String(b.domain)));
@@ -3217,6 +3444,14 @@ function rankResults(query, results, classification) {
     const n = seenHost.get(r.domain) || 0;
     if (n >= 3) r.score -= 12;
     seenHost.set(r.domain, n + 1);
+  }
+  const adultPerson = classification && (classification.adultContent === 'on' || classification.adultContent === 'both') && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous');
+  if (adultPerson) {
+    for (const r of ranked) {
+      if (r.sourceClass === 'DATABASE' || r.sourceClass === 'ADULT_PLATFORM' || r.sourceClass === 'PRIMARY') r.score += 12;
+      else if (r.sourceClass === 'ENCYCLOPEDIA') r.score -= 10;
+      else if (r.sourceClass === 'AGGREGATOR') r.score -= 4;
+    }
   }
   ranked.sort((a, b) => b.score - a.score);
   return ranked.slice(0, MAX_RESULTS);
@@ -3392,12 +3627,19 @@ async function runDiscovery(query, opts = {}) {
   const expanded = opts.expanded === true || opts.expanded === 'true' || opts.expanded === 1;
   const visualMore = opts.visualMore === true || opts.visualMore === 'true' || opts.visualMore === 1;
   const further = opts.further === true || opts.investigateFurther === true;
+  const visualMode = String(opts.visualMode || (visualMore ? 'more' : '') || '').toLowerCase();
+  const visualOffset = Math.max(0, Number(opts.visualOffset) || 0);
+  const videoMore = opts.videoMore === true || opts.videoMore === 'true' || opts.videoMore === 1;
+  const excludeUrls = [].concat(opts.excludeUrls || opts.exclude || []).map(String).filter(Boolean);
+  const excludeHosts = [].concat(opts.excludeHosts || []).map(String).filter(Boolean);
+  const seedVisual = opts.seedVisual && typeof opts.seedVisual === 'object' ? opts.seedVisual : null;
+  const visualOnly = (visualMore || !!visualMode || videoMore) && !further && !expanded;
   const adult = normalizeAdult(opts.adult || opts.adultContent);
   const q = String(query || '').trim().slice(0, 500);
   const classification = applyResearchFilter(classifyQuery(q, opts.hint), adult, q);
   const depth = normalizeDepth(opts.depth, classification);
   classification.researchDepth = depth;
-  const defaultCap = expanded || visualMore || further ? 32 : (depth === 'deep' ? 28 : depth === 'contextual' ? 22 : 16);
+  const defaultCap = expanded || visualMore || further || visualMode ? 32 : (depth === 'deep' ? 28 : depth === 'contextual' ? 24 : (isVisualSubject(classification) ? 24 : 16));
   const cap = Math.min(opts.budget || defaultCap, Math.max(8, remainingFetches() - (opts.continueBudget ? 6 : 2)));
   SEARCH_BUDGET = { used: FETCH_COUNT, max: FETCH_COUNT + cap };
   const graph = discoveryLanes(classification, depth);
@@ -3476,7 +3718,7 @@ async function runDiscovery(query, opts = {}) {
         reddit(variant.q, results, seen, diagnostics),
       ]);
     }
-  } else {
+  } else if (!visualOnly) {
     const webVariants = variants.filter(v => (v.kind || 'web') === 'web');
     const cap = expanded ? 10 : (depth === 'deep' ? 10 : depth === 'contextual' ? 8 : 5);
     const extraActive = !!extraContext(classification);
@@ -3486,8 +3728,9 @@ async function runDiscovery(query, opts = {}) {
       : adultOnPerson
         ? new Set(['intersection', 'productions', 'interviews', 'primary'])
         : new Set(['primary', 'intersection', 'identity']);
+    const visualReserve = isVisualSubject(classification) ? 4 : 0;
     for (let i = 0; i < Math.min(webVariants.length, cap); i++) {
-      if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
+      if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max - visualReserve) break;
       await runVariant(webVariants[i], i === 0);
       const remainingMust = webVariants.slice(i + 1).some(v => mustRun.has(v.lane));
       if (depth === 'broad' && !expanded && results.length >= MAX_RESULTS && !remainingMust) break;
@@ -3498,53 +3741,65 @@ async function runDiscovery(query, opts = {}) {
   }
 
   const imgQ = imageSearchQuery(q, classification);
+  const visualHits = [];
   const mediaVariants = variants.filter(v => v.kind === 'image' || v.kind === 'video');
-  const wantVisual = isVisualSubject(classification) || visualMore || further;
-  if (expanded || visualMore) {
+  const wantVisual = isVisualSubject(classification) || visualMore || further || !!visualMode || videoMore;
+  const mode = visualMode || (visualMore ? 'more' : (further ? 'different' : 'more'));
+  if (wantVisual) {
+    const vq = visualQueryVariants(classification, { mode, seedVisual, excludeHosts });
+    const primary = (vq[0] && vq[0].q) || imgQ;
+    const imgCap = visualOnly || visualMore || visualMode ? 32 : (expanded ? 28 : 24);
     const jobs = [];
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(imgQ, results, seen, diagnostics, visualMore ? 18 : 14));
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingVideos(imgQ, results, seen, diagnostics));
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(google(q, results, seen, diagnostics));
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(mojeek(q, results, seen, diagnostics));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(primary, results, seen, diagnostics, imgCap, visualHits, visualOffset));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(yahooImages(primary, results, seen, diagnostics, visualOnly ? 24 : 18, visualHits));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && (videoMore || wantVisual)) jobs.push(bingVideos(primary, results, seen, diagnostics));
+    if (expanded && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(google(q, results, seen, diagnostics));
+    if (expanded && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(mojeek(q, results, seen, diagnostics));
     if (jobs.length) await Promise.all(jobs);
-    if (classification.context && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
-      const extraCtx = extraContext(classification);
-      if (extraCtx) await bingImages(quoteName(classification.subject || q) + ' ' + extraCtx, results, seen, diagnostics, 12);
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && vq[1] && (visualOnly || extraContext(classification) || further || expanded)) {
+      await bingImages(vq[1].q, results, seen, diagnostics, 20, visualHits, visualOffset ? visualOffset + 20 : 0);
     }
-  } else {
+    if (adult === 'both' && SEARCH_BUDGET.used < SEARCH_BUDGET.max && !visualOnly) {
+      await bingImages(quoteName(classification.subject || q) + ' (portrait OR headshot OR official)', results, seen, diagnostics, 12, visualHits);
+    }
+  } else if (mediaVariants.length) {
     for (const m of mediaVariants) {
       if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
-      if (m.kind === 'image') await bingImages(m.q, results, seen, diagnostics, wantVisual ? 14 : 10);
+      if (m.kind === 'image') await bingImages(m.q, results, seen, diagnostics, 14, visualHits);
       if (m.kind === 'video') await bingVideos(m.q, results, seen, diagnostics);
-    }
-    if (wantVisual && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 1) {
-      const alreadyImg = mediaVariants.some(m => m.kind === 'image');
-      if (!alreadyImg) await bingImages(imgQ, results, seen, diagnostics, 14);
-      if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && !mediaVariants.some(m => m.kind === 'video')) {
-        await bingVideos(imgQ, results, seen, diagnostics);
-      }
-      if (adult === 'both' && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
-        await bingImages(quoteName(classification.subject || q) + ' (portrait OR headshot OR official)', results, seen, diagnostics, 10);
-      }
-    } else if (!mediaVariants.length && (classification.type === 'person' || classification.type === 'technique' || classification.context) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 2) {
-      await bingImages(imgQ, results, seen, diagnostics);
-      if (adult === 'both' && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
-        await bingImages(quoteName(classification.subject || q) + ' (portrait OR headshot OR official)', results, seen, diagnostics);
-      }
-      if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && (adult === 'on' || adult === 'both' || classification.relation === 'video' || classification.relation === 'interview')) {
-        await bingVideos(imgQ, results, seen, diagnostics);
-      }
     }
   }
 
   let ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
-  if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
+  if (opts.enrich !== false && !visualOnly) ranked = await enrichTopResults(ranked, classification);
+
+  if (!visualOnly && !classification.isUrl && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous') && remainingFetches() > 4) {
+    const hasIdentitySurface = ranked.some(r => {
+      const sc = r.sourceClass || classifySourceClass(r, classification);
+      if (sc === 'DATABASE' || sc === 'PRIMARY' || sc === 'PUBLIC_PROFILE') return true;
+      if (adult === 'off' && sc === 'ENCYCLOPEDIA') return true;
+      return false;
+    });
+    if (ranked.length < 5 || !hasIdentitySurface) {
+      SEARCH_BUDGET.max = Math.min(FETCH_HARD_CAP, SEARCH_BUDGET.max + 8);
+      diagnostics.IdentityExpansion = { reason: 'thin identity surface — expanding aliases, credits, and public profiles (generic, not a hardcoded name)' };
+      const idq = identityExpansionQueries(classification);
+      for (const v of idq.slice(0, 2)) {
+        if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
+        addVar(v.q, v.why, 'identity-expand', 'web');
+        await Promise.all([ddg(v.q, results, seen, diagnostics), bing(v.q, results, seen, diagnostics)]);
+      }
+      if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages((idq[0] && idq[0].q) || imgQ, results, seen, diagnostics, 18, visualHits);
+      ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
+      if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
+    }
+  }
 
   const retrievedN = ranked.filter(r => r.retrievalStatus === 'RETRIEVED' || r.provenance === 'RETRIEVED').length;
   const restricted = ranked.filter(r => r.accessState === 'PAYWALLED' || r.accessState === 'AUTHENTICATION_REQUIRED' || r.accessState === 'AGE_RESTRICTED' || r.accessState === 'BLOCKED').length;
   const intersectionCountEarly = ranked.filter(r => r.intersection).length;
   const extraActive = extraContext(classification);
-  if (!expanded && extraActive && intersectionCountEarly === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+  if (!visualOnly && !expanded && extraActive && intersectionCountEarly === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
     diagnostics.ContinuedSearch = {
       reason: 'first-pass intersection was thin — broadening the entity ∩ context lane, not dumping biography',
       philosophy: 'Progressive intersection retrieval. Semantic variants are planning knowledge, not case evidence.',
@@ -3556,10 +3811,10 @@ async function runDiscovery(query, opts = {}) {
       addVar(q2, 'broadened entity ∩ context', 'intersection', 'web');
       await Promise.all([ddg(q2, results, seen, diagnostics), bing(q2, results, seen, diagnostics)]);
     }
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages(imgQ, results, seen, diagnostics);
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages(imgQ, results, seen, diagnostics, 16, visualHits);
     ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
     if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
-  } else if (!expanded && (ranked.length < 3 || retrievedN === 0 || restricted >= Math.max(2, ranked.length - 1)) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+  } else if (!visualOnly && !expanded && (ranked.length < 3 || retrievedN === 0 || restricted >= Math.max(2, ranked.length - 1)) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
     diagnostics.ContinuedSearch = {
       reason: ranked.length < 3 ? 'few public results on the first pass' : (restricted ? 'obvious sources were restricted' : 'obvious sources were not retrievable'),
       philosophy: 'Escalating to public alternatives — not retrying the same wall.',
@@ -3570,13 +3825,13 @@ async function runDiscovery(query, opts = {}) {
       addVar(v.q, v.why, 'expanded', 'web');
       await Promise.all([ddg(v.q, results, seen, diagnostics), bing(v.q, results, seen, diagnostics)]);
     }
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages(imgQ, results, seen, diagnostics);
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages(imgQ, results, seen, diagnostics, 16, visualHits);
     ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
     if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
   }
 
   let graphLeads = [];
-  if (depth !== 'broad' && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+  if (!visualOnly && depth !== 'broad' && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
     graphLeads = extractGraphLeads(
       ranked.filter(r => r.provenance === 'RETRIEVED' || r.textExcerpt).map(r => ({
         title: r.title,
@@ -3615,17 +3870,29 @@ async function runDiscovery(query, opts = {}) {
       r.accessState = r.retrievalStatus === 'RETRIEVED' ? 'DIRECTLY_RETRIEVED' : (r.retrievalStatus === 'RETRIEVAL_FAILED' ? 'REFERENCED' : 'UNVERIFIED');
     }
     if (!r.images) r.images = r.image ? [r.image] : [];
+    if (!r.sourceClass) r.sourceClass = classifySourceClass(r, classification);
     r.observedAt = r.observedAt || new Date().toISOString();
     r.adultContent = adult;
   }
 
+  ranked = applyExclusions(ranked, { excludeUrls, excludeHosts });
+  const filteredHits = applyExclusions(visualHits, { excludeUrls, excludeHosts });
+
   const identity = buildEntityIdentity(classification, [], ranked, graphLeads);
   const intersectionCount = ranked.filter(r => r.intersection).length;
-  const visualCorpus = (isVisualSubject(classification) || visualMore || further)
-    ? buildVisualCorpus(results, ranked.filter(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'), classification)
+  const visualCorpus = (isVisualSubject(classification) || visualMore || further || !!visualMode)
+    ? buildVisualCorpus(results, ranked.filter(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'), classification, filteredHits)
     : [];
+  const videoCorpus = collectDiveVideos(ranked.filter(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'), ranked, classification);
+  const corpusScale = {
+    images: visualCorpus.length,
+    videos: videoCorpus.length,
+    sources: ranked.length,
+    moreAvailable: filteredHits.length >= 12 || visualCorpus.length >= 12 || !!visualMore || !!visualMode,
+    label: visualCorpus.length + ' images · ' + videoCorpus.length + ' videos · ' + ranked.length + ' sources' + ((filteredHits.length >= 20 || visualCorpus.length >= 24) ? ' · more available' : ''),
+  };
 
-  let warning = ranked.length ? undefined : 'No public-web results were returned. Provider diagnostics are included for troubleshooting.';
+  let warning = ranked.length || visualCorpus.length ? undefined : 'No public-web results were returned. Provider diagnostics are included for troubleshooting.';
   if (classification.isUrl && diagnostics.DirectURL && !diagnostics.DirectURL.ok) {
     const fail = 'Submitted URL could not be retrieved (' + (diagnostics.DirectURL.accessState ? accessLabel(diagnostics.DirectURL.accessState) : (diagnostics.DirectURL.error || 'blocked or failed')) + '). Carmen did not pretend to inspect it and kept looking for public alternatives.';
     warning = warning ? fail + ' ' + warning : fail;
@@ -3658,8 +3925,13 @@ async function runDiscovery(query, opts = {}) {
     visualCandidates: visualCandidatesFor(ranked, classification),
     visuals: visualCorpus,
     visualCorpus,
+    videos: videoCorpus,
+    videoCorpus,
+    corpusScale,
     interpretations: ambiguousInterpretations(q, classification),
     visualMore: !!visualMore,
+    visualMode: visualMode || '',
+    visualOffset,
     further: !!further,
     selectedEntity: buildSelectedEntity(classification, pickIdentityCandidate(ranked, classification), identity, { originalQuery: q, depth, adultContent: adult, identityAmbiguous: identityIsAmbiguous(ranked, classification), confidence: identityIsAmbiguous(ranked, classification) ? 'low' : undefined }),
     concepts: enrichConceptsFromEvidence((graph.vocab && graph.vocab.concepts) || interpretRequest(classification).concepts, ranked),
@@ -3710,11 +3982,20 @@ async function searchWeb(req) {
   const hint = (u.searchParams.get('type') || u.searchParams.get('subject') || '').trim();
   const expanded = u.searchParams.get('expanded') === '1' || u.searchParams.get('expanded') === 'true';
   const visualMore = u.searchParams.get('visualMore') === '1' || u.searchParams.get('visualMore') === 'true';
+  const visualMode = (u.searchParams.get('visualMode') || '').trim();
+  const visualOffset = u.searchParams.get('visualOffset') || '0';
+  const videoMore = u.searchParams.get('videoMore') === '1' || u.searchParams.get('videoMore') === 'true';
+  const excludeUrls = (u.searchParams.get('exclude') || u.searchParams.get('excludeUrls') || '').split(',').map(s => s.trim()).filter(Boolean);
+  const excludeHosts = (u.searchParams.get('excludeHosts') || '').split(',').map(s => s.trim()).filter(Boolean);
+  let seedVisual = null;
+  try {
+    if (u.searchParams.get('seedVisual')) seedVisual = JSON.parse(u.searchParams.get('seedVisual'));
+  } catch {}
   const adult = normalizeAdult(u.searchParams.get('adult') || u.searchParams.get('adultContent'));
   const depth = u.searchParams.get('depth') || '';
   if (!q) return json({ results: [], query: '', count: 0, providers: {}, classification: applyResearchFilter(classifyQuery(''), adult, ''), expanded: false, adultContent: adult, depth: normalizeDepth(depth) }, 200, req);
   resetFetchBudget();
-  const discovery = await runDiscovery(q, { hint, enrich: true, expanded, visualMore, adult, depth });
+  const discovery = await runDiscovery(q, { hint, enrich: true, expanded, visualMore, visualMode, visualOffset, videoMore, excludeUrls, excludeHosts, seedVisual, adult, depth });
   return json(discovery, 200, req);
 }
 
@@ -4220,7 +4501,7 @@ async function deepDiveHandler(req, env) {
     const images = collectDiveImages(retrieved, discovery.results, classification);
     const videos = (resolved.all || selectedIds.has('videos') || isVisualSubject(classification)) ? collectDiveVideos(retrieved, discovery.results, classification) : [];
     const tutorials = videos.filter(v => /\b(tutorial|how to|howto|demonstration|lesson|guide|explained|walkthrough)\b/i.test(String(v.title || '') + ' ' + String(v.reason || '')));
-    const visualCorpus = buildVisualCorpus(discovery.results, retrieved, classification);
+    const visualCorpus = buildVisualCorpus(discovery.results, retrieved, classification, discovery.visuals || discovery.visualCorpus);
     const access = summarizeAccess(retrieved, discovery.results);
 
     let analysis = '';
@@ -4496,16 +4777,16 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '47.4',
+        version: '47.5',
         build: 'workspace',
         schemaVersion: 2,
         provider: ai.provider,
         model: ai.model,
         configured: ai.configured,
         routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
-        searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
+        searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -4852,4 +5133,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery };

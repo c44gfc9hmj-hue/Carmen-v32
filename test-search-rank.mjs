@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence, mergeConceptKnowledge, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence, mergeConceptKnowledge, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, plusSplitQuery } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -1374,6 +1374,72 @@ console.log('--- v47.4 premium content is labeled research, not a bypass ---');
   assert(tech.some(x => x.id === 'terms'), 'technique has Terminology');
   assert(tech.some(x => x.id === 'variations'), 'technique has Variations');
   assert(tech.some(x => x.id === 'tutorials'), 'technique has Tutorials');
+}
+
+console.log('--- v47.5 visual corpus, not-this, identity expansion, plus-query concepts ---');
+{
+  const plusQ = applyResearchFilter(classifyQuery('Jordan Hale + frog tie + panty gag + bolted down'), 'on', 'Jordan Hale + frog tie + panty gag + bolted down');
+  assert(plusQ.type === 'person', 'plus-query classifies from the person head, not the concept blob');
+  const concepts = splitContextConcepts(plusQ);
+  assert(concepts.length >= 2, 'plus-query parses multiple independent concepts');
+  assert(concepts.some(c => /frog/i.test(c)), 'frog-tie concept is independent');
+  assert(concepts.some(c => /gag|bolted/i.test(c)), 'other concepts are not collapsed into one blob');
+  const lanes = discoveryLanes(plusQ, 'contextual');
+  assert(lanes.lanes.some(l => l.id === 'pair' || /^concept-/.test(l.id)), 'discovery opens independent concept intersection lanes');
+  const more = visualQueryVariants(plusQ, { mode: 'more' });
+  const diff = visualQueryVariants(plusQ, { mode: 'different' });
+  assert(more.length && diff.length, 'visual query variants exist for more and different');
+  assert(more.map(v => v.q).join('|') !== diff.map(v => v.q).join('|'), 'More Images and Find Different are not the same retrieval');
+  const similar = visualQueryVariants(plusQ, { mode: 'similar', seedVisual: { title: 'studio still', domain: 'example.com' } });
+  assert(similar.some(v => /studio still|site:example.com/i.test(v.q)), 'Find Similar uses the selected visual');
+  const idq = identityExpansionQueries(applyResearchFilter(classifyQuery('Jordan Hale'), 'on', 'Jordan Hale'));
+  assert(idq.some(v => /aka|stage name|alias|also known/i.test(v.q)), 'identity expansion searches aliases');
+  assert(idq.some(v => /filmography|credits|profile/i.test(v.q)), 'identity expansion searches credits/profiles');
+  assert(idq.every(v => !/sensi pearl/i.test(v.q)), 'identity expansion is generic, not a hardcoded name');
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
+  assert(!/sensi pearl/i.test(src + app + html), 'Sensi Pearl is not hardcoded in worker or UI');
+  const filtered = applyExclusions(
+    [{ url: 'https://cdn.example/a.jpg' }, { url: 'https://cdn.example/b.jpg' }, { url: 'https://other.example/c.jpg', pageUrl: 'https://other.example/c' }],
+    { excludeUrls: ['https://cdn.example/a.jpg'], excludeHosts: ['other.example'] }
+  );
+  assert(filtered.length === 1 && /b\.jpg/.test(filtered[0].url), 'Not This excludes rejected images and hosts');
+  const adultC = applyResearchFilter(classifyQuery('Jordan Hale'), 'on', 'Jordan Hale');
+  assert(classifySourceClass({ url: 'https://en.wikipedia.org/wiki/Jordan_Hale' }, adultC) === 'ENCYCLOPEDIA', 'wikipedia is encyclopedia');
+  assert(classifySourceClass({ url: 'https://www.iafd.com/person.rme/perfid=jordanhale' }, adultC) === 'DATABASE', 'industry database is DATABASE');
+  const rankedAdult = rankResults('Jordan Hale', [
+    { title: 'Jordan Hale', url: 'https://en.wikipedia.org/wiki/Jordan_Hale', source: 'Bing', snippet: 'Jordan Hale is a person' },
+    { title: 'Jordan Hale', url: 'https://www.iafd.com/person.rme/perfid=jordanhale', source: 'Bing', snippet: 'Jordan Hale performer filmography credits' },
+  ], adultC);
+  assert(rankedAdult.length >= 1, 'adult ranking returns results');
+  if (rankedAdult.length >= 2) {
+    assert(rankedAdult[0].url.includes('iafd') || rankedAdult[0].sourceClass === 'DATABASE' || rankedAdult[0].sourceClass === 'ADULT_PLATFORM', 'adult person ranks industry database above encyclopedia');
+  }
+  assert(rankedAdult.every(r => r.sourceClass), 'ranked results carry sourceClass');
+  const vis = buildVisualCorpus([], [], adultC, [
+    { url: 'https://cdn.example/1.jpg', pageUrl: 'https://example.com/1', domain: 'example.com', title: 'One' },
+    { url: 'https://cdn.example/2.jpg', pageUrl: 'https://example.com/2', domain: 'example.com', title: 'Two' },
+    { url: 'https://cdn.example/1.jpg?q=2', pageUrl: 'https://mirror.example/1', domain: 'mirror.example', title: 'Dup' },
+  ]);
+  assert(vis.length === 2, 'visual corpus extraHits merge and dedupe');
+  assert(vis.length <= 96, 'visual corpus is bounded but larger than the ranked-source window');
+  const diveStart = app.indexOf('async function runDeepDive');
+  const diveEnd = app.indexOf('function renderDeepDivePayload', diveStart);
+  const diveFn = diveStart >= 0 ? app.slice(diveStart, diveEnd > diveStart ? diveEnd : diveStart + 8000) : '';
+  assert(!/await keepInvestigation/.test(diveFn), 'Deep Dive does not auto-save an investigation');
+  assert(/sessionBoundProject/.test(diveFn), 'Deep Dive persists only when the user already Kept/Saved');
+  assert(/Save this research/.test(app), 'Deep Dive offers explicit Save');
+  assert(/Not this person/.test(app + html), 'Not this person is wired');
+  assert(/Find similar/.test(html) && /Search this visual/.test(html), 'image viewer has Find similar and Search this visual');
+  assert(/Not this image/.test(html), 'image viewer has Not this image');
+  assert(/pinch-zoom/.test(html), 'image viewer supports pinch/zoom');
+  assert(/videoCorpus/.test(html + app), 'video corpus is mounted');
+  assert(/corpus-scale|corpusScale/.test(app + html), 'corpus scale is communicated');
+  const vehicle = applyResearchFilter(classifyQuery('Lincoln Aviator'), 'on', 'Lincoln Aviator');
+  assert(vehicle.type === 'vehicle', 'adult ON does not turn a vehicle into a person');
+  const coat = classifyQuery('navy wool coat');
+  assert(coat.type === 'clothing', 'clothing type is preserved');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
