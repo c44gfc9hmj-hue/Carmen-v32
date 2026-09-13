@@ -16,7 +16,7 @@ function assert(cond, msg) {
 console.log('--- /health ---');
 { const { status, body } = await call('/health');
   assert(status === 200, 'health 200');
-  assert(body.version === '47.5', 'version 47.5');
+  assert(body.version === '47.8', 'version 47.8');
   assert(body.routes.includes('/retrieve'), 'routes include /retrieve');
   assert(body.routes.includes('/dive'), 'routes include /dive');
   assert(body.routes.includes('/learn'), 'routes include /learn');
@@ -57,6 +57,10 @@ console.log('--- /health ---');
   assert(body.features.includes('identity-expansion'), 'features include identity-expansion');
   assert(body.features.includes('video-corpus'), 'features include video-corpus');
   assert(body.features.includes('corpus-scale'), 'features include corpus-scale');
+  assert(body.features.includes('source-first'), 'features include source-first');
+  assert(body.features.includes('query-class-memory'), 'features include query-class-memory');
+  assert(body.features.includes('knowledge-model'), 'features include knowledge-model');
+  assert(body.features.includes('no-auto-save'), 'features include no-auto-save');
   assert(body.provider === 'openrouter', 'provider openrouter');
   assert(body.model === 'openrouter/free', 'model openrouter/free');
   assert(body.configured === false, 'configured false without key'); }
@@ -97,5 +101,5 @@ console.log('--- /chat without key ---');
 { const { status, body } = await call('/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }) });
   assert(status === 500, 'chat 500 without key');
   assert(/API_KEY|not configured/i.test(body.error || ''), 'clear config error'); }
-console.log(`\nResults: ${passed} passed, ${failed} failed`);
+console.log(` + '`\nResults: ${passed} passed, ${failed} failed`' + `);
 process.exit(failed ? 1 : 0);
