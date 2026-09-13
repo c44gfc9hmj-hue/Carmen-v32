@@ -656,11 +656,12 @@ async function wikipedia(q, results, seen, diagnostics, classification) {
 }
 
 const SEO_JUNK_RE = /(nameberry|howmanyofme|houseofnames|behindthename|urbandictionary|quizlet\.com|coursehero|chegg\.com|slideplayer|scribd\.com|pinterest\.com|fandom\.com\/wiki\/Special)/i;
-const TUBE_INDEX_RE = /(nudevista|xvideos|pornhub|xnxx|spankbang|xhamster|redtube|youporn|alohatube|tubepornstars|heavyfetish|bdsmx\.tube|thothub|fapello|erome|tnaflix|hdzog|xgroovy|eporner|tubebdsm|porntrex|ixxx)\./i;
+const TUBE_INDEX_RE = /(nudevista|xvideos|pornhub|xnxx|spankbang|xhamster|redtube|youporn|alohatube|tubepornstars|heavyfetish|bdsmx\.tube|thothub|fapello|erome|tnaflix|hdzog|xgroovy|eporner|tubebdsm|porntrex|ixxx|fapality|hqporner|pornone)\./i;
 const RETAILER_RE = /(bestbuy|walmart|amazon|ebay|target|newegg|bhphotovideo|costco)\./i;
 const NAV_TITLE_RE = /^(blog|community|newsletter|home|login|sign in|search|menu)$/i;
 const SKIP_IMAGE_RE = /(favicon|sprite|1x1|pixel|tracking|badge\.svg|logo\.(png|svg|jpg|gif)|icon-?\d+|apple-touch-icon|join\.(jpg|png|gif)|play\.(png|gif|jpg)|spinner|placeholder|blank\.(gif|png)|custom_assets|\/icons?\/)/i;
 const NON_NAME_TOKENS = /^(workers?|iphone|ipad|server|engine|cloud|docs?|api|sdk|framework|protocol|database|linux|windows|android|ios|iphones?)$/i;
+const VEHICLE_CUE_RE = /\b(toyota|honda|ford|chevy|chevrolet|nissan|bmw|lincoln|aviator|runner|civic|f-?150|mustang|ram|dodge|jeep|gmc|tesla|hyundai|kia|mazda|subaru|volkswagen|\bvw\b|audi|mercedes|porsche|lexus|acura|cadillac|buick|chrysler|volvo|jaguar|wrangler|silverado|sierra|tacoma|tundra|camry|accord|corolla|truck|suv|pickup|sedan|van|coupe|minivan)\b/i;
 const PROFILE_HOST_RE = /(^|\.)(linkedin|instagram|twitter|x|onlyfans)\.com$/i;
 const TECHNIQUE_WORD_RE = /\b(technique|techniques|position|positions|tutorial|tutorials|how[- ]to|howto|knot|knots|tie|ties|pose|poses|grip|stance|method|procedure|form|hitch|splice|joinery|jig)\b/i;
 const SKILL_WORD_RE = /\b(weld|welding|welder|woodwork|woodworking|carpentry|fabricat(?:e|ion)|repair|repairs|solder|soldering|machin(?:e|ing)|plumbing|electrical|diy|craft|crafts|build(?:ing)?|project)\b/i;
@@ -928,8 +929,9 @@ function isAggregatorPage(item) {
   if (TUBE_INDEX_RE.test(host)) return true;
   if (ADULT_HOST_RE.test(host)) return false;
   if (/\/(top|playlists?|search|tags?|browse|categor(?:y|ies))(\/|\?|$)/i.test(url)) return true;
-  if (/\b(tube search|search results?|videos to watch|watch free porn|most relevant porn|free sex vids?)\b/i.test(title)) return true;
+  if (/\b(tube search|search results?|videos to watch|watch free porn|most relevant porn|free sex vids?|tube videos?|free \w+ tube)\b/i.test(title)) return true;
   if (/^['""].+['""]\s*search\b/i.test(title)) return true;
+  if (/\b(free \w+ videos?|watch .+ videos?)\b/i.test(title) && !/\(([12][0-9]{3})\)/.test(title) && !/\bin\s+[A-Z]/.test(title)) return true;
   if (/\b(porn videos?|xxx videos?)\b/i.test(title) && !/\b((?:19|20)\d{2})\b/.test(title) && !/\bin\s+[A-Z]/.test(title)) return true;
   return false;
 }
@@ -1181,7 +1183,7 @@ function morphologicalNeighbors(term) {
       add(w.slice(0, -1));
     } else if (w.endsWith('tion') && w.length > 6) {
       add(w.replace(/tion$/, 't'));
-    } else if (w.length > 7) {
+    } else if (w.length > 7 && !/(ing|tion|phy|graphy|ness|ment|ology)$/i.test(w)) {
       add(w + 'ing');
     }
   }
@@ -1269,7 +1271,10 @@ function interpretConcept(rawTerm, entityType, adult) {
     return { term: '', family: 'none', aliases: [], related: [], broader: [], narrower: [], sourceTypes: [], production: [], interview: [], media: [], confidence: 'unknown', provenance: 'UNKNOWN', entityType: type, adult: lens };
   }
   const family = inferFamily(term, type, lens);
-  const pack = (family.vocabKey && RELATION_VOCAB[family.vocabKey]) || {};
+  let pack = (family.vocabKey && RELATION_VOCAB[family.vocabKey]) || {};
+  if (type === 'person' && (family.vocabKey === 'towing' || family.id === 'capability') && family.vocabKey === 'towing') {
+    pack = { related: [], production: [], interview: ['interview'], media: ['video'], specialist: [], org: [] };
+  }
   const related = [];
   const add = (x, into) => {
     const s = String(x || '').trim();
@@ -1306,7 +1311,7 @@ function interpretConcept(rawTerm, entityType, adult) {
   }
   if ((type === 'skill' || type === 'technique') && !media.length) media.push('video', 'diagram');
   if ((type === 'vehicle' || type === 'product') && !media.length) media.push('video');
-  const confidence = family.applied === 'unknown' || family.id === 'open' ? 'inferred' : (family.applied === 'cue' ? 'observed' : 'inferred');
+  const confidence = family.applied === 'unknown' || family.id === 'open' ? 'inferred' : 'inferred';
   return {
     term,
     family: family.id,
@@ -1323,7 +1328,8 @@ function interpretConcept(rawTerm, entityType, adult) {
     org: [...(pack.org || [])].slice(0, 4),
     platformKinds: adultOn ? [...new Set(PLATFORM_IA.map(p => p.kind))] : [],
     confidence,
-    provenance: confidence === 'observed' ? 'OBSERVED' : (term ? 'INFERRED' : 'UNKNOWN'),
+    provenance: term ? 'INFERRED' : 'UNKNOWN',
+    knowledge: 'planning',
     entityType: type,
     adult: lens,
     visualLikenessIsNotIdentityProof: true,
@@ -1379,7 +1385,19 @@ function enrichConceptsFromEvidence(concepts, results) {
     for (const w of observed) {
       if (!related.some(x => String(x).toLowerCase() === w)) related.push(w);
     }
-    return { ...c, related: related.slice(0, 10), observedRelated: observed, provenance: observed.length ? 'OBSERVED' : c.provenance, confidence: observed.length ? 'observed' : c.confidence };
+    const seedSeen = (results || []).some(r => {
+      const blob = [r.title, r.snippet, r.reason].filter(Boolean).join(' ').toLowerCase();
+      return blob.includes(seed);
+    });
+    const evidenced = seedSeen && observed.length > 0;
+    return {
+      ...c,
+      related: related.slice(0, 10),
+      observedRelated: observed,
+      provenance: evidenced ? 'OBSERVED' : (c.provenance || 'INFERRED'),
+      confidence: evidenced ? 'observed' : (c.confidence || 'inferred'),
+      knowledge: evidenced ? 'evidence' : (c.knowledge || 'planning'),
+    };
   });
 }
 
@@ -1421,6 +1439,56 @@ function quoteName(s) {
   return '"' + String(s || '').replace(/"/g, '').trim() + '"';
 }
 
+function intersectionFormulations(subject, concept, classification) {
+  const quoted = quoteName(subject);
+  const extra = String(concept || '').trim();
+  const type = (classification && classification.type) || '';
+  const adult = (classification && classification.adultContent) || 'off';
+  const adultOn = adult === 'on' || adult === 'both';
+  const out = [];
+  const add = (q) => {
+    const t = String(q || '').trim();
+    if (t && out.indexOf(t) < 0) out.push(t);
+  };
+  if (!extra) return out;
+  add(quoted + ' ' + extra);
+  if (type === 'person') {
+    if (adultOn) {
+      add(quoted + ' ' + extra + ' (photoset OR scene OR gallery OR video)');
+      add(quoted + ' ' + extra + ' (credits OR filmography OR database)');
+      add(quoted + ' ' + extra + ' (interview OR podcast OR feature)');
+    } else {
+      add(quoted + ' ' + extra + ' (interview OR article OR feature)');
+      add(quoted + ' ' + extra + ' (work OR credits OR project)');
+    }
+  } else if (type === 'vehicle' || type === 'product') {
+    add(quoted + ' ' + extra + ' (capacity OR spec OR rating OR manual)');
+    add(quoted + ' ' + extra + ' (review OR owner OR test)');
+  } else if (type === 'skill' || type === 'technique') {
+    add(quoted + ' ' + extra + ' (tutorial OR "how to" OR procedure)');
+    add(quoted + ' ' + extra + ' (install OR fabrication OR safety)');
+  } else {
+    add(quoted + ' ' + extra + ' (overview OR source OR article)');
+  }
+  return out;
+}
+
+function intersectionBroadenQueries(classification) {
+  const subject = String((classification && classification.subject) || '').trim();
+  const extra = extraContext(classification);
+  const out = extra ? intersectionFormulations(subject, extra, classification) : [];
+  const adult = (classification && classification.adultContent) || 'off';
+  if ((adult === 'on' || adult === 'both') && extra) {
+    for (const v of adultSemanticVariants(subject, extra)) out.push(v.q);
+  }
+  const vocab = contextVocabulary(classification);
+  for (const t of (vocab.related || []).slice(0, 3)) {
+    const q = quoteName(subject) + ' ' + t;
+    if (out.indexOf(q) < 0) out.push(q);
+  }
+  return out.filter(Boolean);
+}
+
 function discoveryLanes(classification, depth) {
   const d = normalizeDepth(depth, classification);
   const subject = String((classification && classification.subject) || '').trim();
@@ -1436,9 +1504,42 @@ function discoveryLanes(classification, depth) {
   if (!subject) return { depth: d, vocab, lanes };
 
   if (vocab.core.length) {
-    add('intersection', 'exact entity ∩ requested context', vocab.core.map(t => quoteName(subject) + ' ' + t));
+    const forms = [];
+    for (const t of vocab.core) {
+      for (const q of intersectionFormulations(subject, t, classification)) forms.push(q);
+    }
+    add('intersection', 'exact entity ∩ requested context across source types', [...new Set(forms)].slice(0, 4));
   } else if (adult === 'on' || adult === 'both') {
     add('intersection', 'entity in adult-industry public sources', adultSemanticVariants(subject, '').map(v => v.q).slice(0, 2));
+  }
+
+  const relatedCap = d === 'deep' ? 4 : d === 'contextual' ? 2 : 0;
+  if (d !== 'broad') {
+    if (vocab.interview.length) {
+      add('interviews', 'interviews and discussions about the entity in this context', [quoteName(subject) + ' ' + (vocab.core[0] || '') + ' ' + vocab.interview[0]]);
+    }
+    if (vocab.specialist.length) {
+      add('specialist', 'specialist publications and public databases', [quoteName(subject) + ' ' + vocab.specialist.slice(0, 2).join(' ') + (vocab.core[0] ? ' ' + vocab.core[0] : '')]);
+    }
+  }
+  for (const t of vocab.related.slice(0, relatedCap)) {
+    add('term-' + String(t).replace(/\s+/g, '-'), 'related terminology for the requested context', [quoteName(subject) + ' ' + t]);
+  }
+  const inferred = (vocab.concepts || []).filter(c => c && (c.family === 'open' || c.familyApplied === 'unknown'));
+  if (inferred.length && d !== 'broad') {
+    add('concept-sense', 'what the requested concept means in public sources', inferred.map(c => '"' + String(c.term).replace(/"/g, '') + '" (meaning OR glossary OR terminology OR "also called")').slice(0, 1));
+  }
+
+  if (d !== 'broad') {
+    if (vocab.production.length) {
+      const coreBit = vocab.core[0] ? vocab.core[0] + ' ' : '';
+      add('productions', 'productions, credits, and project references', [quoteName(subject) + ' ' + coreBit + vocab.production.slice(0, 2).join(' ')]);
+    }
+    const mediaTerms = [...vocab.core, ...vocab.media].filter(Boolean).slice(0, 2);
+    if (mediaTerms.length) {
+      add('images', 'image indexes for entity ∩ context', [quoteName(subject) + ' ' + mediaTerms.join(' ')], 'image');
+      add('videos', 'video metadata for entity ∩ context', [quoteName(subject) + ' ' + mediaTerms.join(' ')], 'video');
+    }
   }
 
   if (type === 'person') {
@@ -1448,31 +1549,6 @@ function discoveryLanes(classification, depth) {
     add('identity', 'entity identity', [quoteName(subject)]);
   }
 
-  const relatedCap = d === 'deep' ? 4 : d === 'contextual' ? 2 : 0;
-  for (const t of vocab.related.slice(0, relatedCap)) {
-    add('term-' + String(t).replace(/\s+/g, '-'), 'related terminology for the requested context', [quoteName(subject) + ' ' + t]);
-  }
-  const inferred = (vocab.concepts || []).filter(c => c && (c.family === 'open' || c.provenance === 'INFERRED'));
-  if (inferred.length && d !== 'broad') {
-    add('concept-sense', 'what the requested concept means in public sources', inferred.map(c => '"' + String(c.term).replace(/"/g, '') + '" (meaning OR glossary OR terminology OR "also called")').slice(0, 1));
-  }
-
-  if (d !== 'broad') {
-    if (vocab.interview.length) {
-      add('interviews', 'interviews and discussions about the entity in this context', [quoteName(subject) + ' ' + (vocab.core[0] || '') + ' ' + vocab.interview[0]]);
-    }
-    if (vocab.production.length) {
-      add('productions', 'productions, credits, and project references', [quoteName(subject) + ' ' + vocab.production.slice(0, 2).join(' ')]);
-    }
-    if (vocab.specialist.length) {
-      add('specialist', 'specialist publications and public databases', [quoteName(subject) + ' ' + vocab.specialist.slice(0, 2).join(' ') + (vocab.core[0] ? ' ' + vocab.core[0] : '')]);
-    }
-    const mediaTerms = [...vocab.core, ...vocab.media].filter(Boolean).slice(0, 2);
-    if (mediaTerms.length) {
-      add('images', 'image indexes for entity ∩ context', [quoteName(subject) + ' ' + mediaTerms.join(' ')], 'image');
-      add('videos', 'video metadata for entity ∩ context', [quoteName(subject) + ' ' + mediaTerms.join(' ')], 'video');
-    }
-  }
   if (d === 'deep' && vocab.org.length) {
     add('organizations', 'organizations associated with the requested context', [quoteName(subject) + ' ' + vocab.org[0] + (vocab.core[0] ? ' ' + vocab.core[0] : '')]);
     add('collaborators', 'people publicly associated with the entity in this context', [quoteName(subject) + ' ' + (vocab.core[0] || '') + ' (with OR directed OR studio)']);
@@ -1594,10 +1670,13 @@ function classifyQuery(q, hint = '') {
   if (trailEarly && !hinted) {
     const rel = detectRelation(trailEarly[1]) || detectRelation(raw);
     const head = raw.slice(0, raw.length - trailEarly[0].length).trim();
-    if (head && (rel === 'towing' || rel === 'vehicle')) {
+    const headWords = head.split(/\s+/).filter(Boolean);
+    const headNameLike = headWords.length >= 2 && headWords.every(w => /^[A-Za-z][A-Za-z.'’-]*$/.test(w));
+    const headLooksLikePerson = headNameLike && !VEHICLE_CUE_RE.test(head) && !headWords.some(w => NON_NAME_TOKENS.test(w));
+    if (head && (rel === 'towing' || rel === 'vehicle') && !headLooksLikePerson) {
       return done({ type: 'vehicle', confidence: 'medium', reason: 'Vehicle-like subject with a technical context', isUrl: false });
     }
-    if (head && rel === 'repair' && !/\b(weld|welding|woodwork|solder|plumbing|electrical|diy)\b/i.test(head)) {
+    if (head && rel === 'repair' && !headLooksLikePerson && !/\b(weld|welding|woodwork|solder|plumbing|electrical|diy)\b/i.test(head)) {
       return done({ type: 'product', confidence: 'medium', reason: 'Product-like subject with a repair/service context', isUrl: false });
     }
   }
@@ -1629,6 +1708,11 @@ function classifyQuery(q, hint = '') {
     return done({ type: 'topic', confidence: 'low', reason: 'Phrase looks like a product/topic, not a personal name', isUrl: false });
   }
   if (nameLike && (!hinted || hinted === 'person') && !looksLikeProductPhrase) {
+    const last = words[words.length - 1];
+    const familyCue = STRUCTURAL_FAMILIES.some(f => f.re.test(last));
+    if (familyCue && words.length === 2 && !hinted) {
+      return done({ type: 'topic', confidence: 'low', reason: 'Unknown subject with a conceptual context', isUrl: false });
+    }
     return done({ type: 'person', confidence: words.length === 1 ? 'low' : 'medium', reason: 'Name-like query — treating as a person candidate search', isUrl: false });
   }
   if (words.length === 1 && /^[A-Za-z]{2,}$/.test(raw)) {
@@ -2041,12 +2125,20 @@ function diveRetrievalQueue(opts) {
     out.push(url);
   };
   push(evidenceUrl);
-  const rows = opts.discoveryResults || [];
+  const pri = (r) => {
+    const k = String((r && r.resultKind) || '');
+    if (k === 'INTERSECTION_MATCH' || k === 'INTERVIEW_MATCH') return 0;
+    if (r && r.intersection) return 1;
+    if (k === 'MEDIA_MATCH' || (r && isSpecialistSource(r))) return 2;
+    if (k === 'AGGREGATOR' || k === 'GENERIC_BACKGROUND' || k === 'WEAK_MATCH') return 8;
+    return 4;
+  };
+  const rows = [...(opts.discoveryResults || [])].sort((a, b) => pri(a) - pri(b) || (b.score || 0) - (a.score || 0));
   for (const r of rows) {
     if (out.length >= cap) break;
     if (!r || !r.url) continue;
     const h = hostOf(r.url).replace(/^www\./, '');
-    if (TUBE_INDEX_RE.test(h) && r.url !== evidenceUrl && adult === 'off') continue;
+    if ((TUBE_INDEX_RE.test(h) || isAggregatorPage(r)) && r.url !== evidenceUrl && adult === 'off') continue;
     if (evidenceHost && h === evidenceHost) continue;
     push(r.url);
   }
@@ -2054,7 +2146,7 @@ function diveRetrievalQueue(opts) {
     if (out.length >= cap) break;
     if (!r || !r.url) continue;
     const h = hostOf(r.url).replace(/^www\./, '');
-    if (TUBE_INDEX_RE.test(h) && r.url !== evidenceUrl && adult === 'off') continue;
+    if ((TUBE_INDEX_RE.test(h) || isAggregatorPage(r)) && r.url !== evidenceUrl && adult === 'off') continue;
     push(r.url);
   }
   for (const p of (opts.profileUrls || []).slice(0, 3)) push(p);
@@ -2434,6 +2526,13 @@ function scoreResult(query, item, classification) {
   if (/official site|official website/i.test(item.snippet || '') || /\/models\/|\/about|\/profile/i.test(url)) {
     score += 16; bits.push('likely official or profile page');
   }
+  if (classification.type === 'person' && nameTokens.length >= 2) {
+    const missingName = nameTokens.filter(t => t.length > 2 && !title.includes(t) && !url.includes(t) && !snip.includes(t));
+    if (missingName.length) {
+      score -= 28;
+      bits.push('incomplete name tokens — possible different person');
+    }
+  }
   if (host.endsWith('wikipedia.org')) {
     const missing = nameTokens.filter(t => t.length > 2 && !title.includes(t) && !url.includes(t) && !snip.includes(t));
     if (classification.type === 'person' && missing.length) { score -= 36; bits.push('encyclopedia hit missing name tokens'); }
@@ -2474,10 +2573,10 @@ function scoreResult(query, item, classification) {
         else if (specific) { score += 10; bits.push('specific production/title/project evidence'); }
       }
     } else if (ctxTerms.length && hasEntity && classification.adultContent !== 'both') {
-      score -= 18; bits.push('entity without requested context');
+      score -= 28; bits.push('entity without requested context');
       contextPenalized = true;
     } else if (ctxTerms.length && hasContext && !hasEntity) {
-      score -= 12; bits.push('context without the entity');
+      score -= 16; bits.push('context without the entity');
     }
   }
   const adult = (classification && classification.adultContent) || 'off';
@@ -2485,7 +2584,10 @@ function scoreResult(query, item, classification) {
   const genericBio = GENERIC_BIO_HOST_RE.test(host);
   let contextLane = (adultish && !genericBio) ? 'adult' : 'general';
   if (adult === 'on' || adult === 'both') {
-    if (adultish && !genericBio) { score += 24; bits.push('adult-context source'); }
+    if (adultish && !genericBio) {
+      score += contextPenalized ? 8 : 24;
+      bits.push(contextPenalized ? 'adult-context source, missing requested concept' : 'adult-context source');
+    }
     if (genericBio && adult === 'on') {
       score -= contextPenalized ? 8 : 24;
       bits.push('generic biography, weak for adult-context research');
@@ -2825,7 +2927,10 @@ async function runDiscovery(query, opts = {}) {
   } else {
     const webVariants = variants.filter(v => (v.kind || 'web') === 'web');
     const cap = expanded ? 10 : (depth === 'deep' ? 10 : depth === 'contextual' ? 8 : 5);
-    const mustRun = new Set(['primary', 'intersection', 'identity']);
+    const extraActive = !!extraContext(classification);
+    const mustRun = extraActive
+      ? new Set(['primary', 'intersection', 'interviews', 'specialist'])
+      : new Set(['primary', 'intersection', 'identity']);
     for (let i = 0; i < Math.min(webVariants.length, cap); i++) {
       if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
       await runVariant(webVariants[i], i === 0);
@@ -2872,7 +2977,24 @@ async function runDiscovery(query, opts = {}) {
 
   const retrievedN = ranked.filter(r => r.retrievalStatus === 'RETRIEVED' || r.provenance === 'RETRIEVED').length;
   const restricted = ranked.filter(r => r.accessState === 'PAYWALLED' || r.accessState === 'AUTHENTICATION_REQUIRED' || r.accessState === 'AGE_RESTRICTED' || r.accessState === 'BLOCKED').length;
-  if (!expanded && (ranked.length < 3 || retrievedN === 0 || restricted >= Math.max(2, ranked.length - 1)) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+  const intersectionCountEarly = ranked.filter(r => r.intersection).length;
+  const extraActive = extraContext(classification);
+  if (!expanded && extraActive && intersectionCountEarly === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+    diagnostics.ContinuedSearch = {
+      reason: 'first-pass intersection was thin — broadening the entity ∩ context lane, not dumping biography',
+      philosophy: 'Progressive intersection retrieval. Semantic variants are planning knowledge, not case evidence.',
+    };
+    const already = new Set(variants.map(v => v.q));
+    const more = intersectionBroadenQueries(classification).filter(q2 => q2 && !already.has(q2)).slice(0, 4);
+    for (const q2 of more) {
+      if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
+      addVar(q2, 'broadened entity ∩ context', 'intersection', 'web');
+      await Promise.all([ddg(q2, results, seen, diagnostics), bing(q2, results, seen, diagnostics)]);
+    }
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages(imgQ, results, seen, diagnostics);
+    ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
+    if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
+  } else if (!expanded && (ranked.length < 3 || retrievedN === 0 || restricted >= Math.max(2, ranked.length - 1)) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
     diagnostics.ContinuedSearch = {
       reason: ranked.length < 3 ? 'few public results on the first pass' : (restricted ? 'obvious sources were restricted' : 'obvious sources were not retrievable'),
       philosophy: 'Escalating to public alternatives — not retrying the same wall.',
@@ -3289,9 +3411,14 @@ async function deepDiveHandler(req, env) {
     const customQuestion = resolved.custom || String(b.customQuestion || b.instructions || '').trim();
     const instruction = parseInvestigativeQuestion(customQuestion, classification);
     for (const id of instruction.paths) selectedIds.add(id);
+    if (instruction.topic && !extraContext(classification)) {
+      classification.context = instruction.topic;
+      classification.relation = detectRelation(instruction.topic) || classification.relation || 'context';
+    }
     const interpreted = interpretRequest(classification, customQuestion);
     classification.concepts = interpreted.concepts;
     const cont = (b.continueFrom && typeof b.continueFrom === 'object') ? b.continueFrom : null;
+    const analysisOnly = b.analysisOnly === true || b.retryAnalysis === true || (cont && cont.stage === 'analyze');
     resetFetchBudget();
     const retrieved = Array.isArray(b.priorRetrieved) ? b.priorRetrieved.slice() : [];
     const seenUrl = new Set(retrieved.map(x => x && (x.url || x.finalUrl)).filter(Boolean));
@@ -3308,8 +3435,8 @@ async function deepDiveHandler(req, env) {
         retrieved.push({ url, status: 'RETRIEVAL_FAILED', accessState: 'UNAVAILABLE', error: String(e && e.message || e).slice(0, 160) });
       }
     };
-    const skipDiscover = !!(cont && (cont.stage === 'retrieve' || cont.stage === 'synthesize') && Array.isArray(b.priorResults) && b.priorResults.length);
-    if (evidenceUrl && !skipDiscover) await pushRet(evidenceUrl);
+    const skipDiscover = analysisOnly || !!(cont && (cont.stage === 'retrieve' || cont.stage === 'synthesize' || cont.stage === 'analyze') && Array.isArray(b.priorResults) && b.priorResults.length);
+    if (evidenceUrl && !skipDiscover && !analysisOnly) await pushRet(evidenceUrl);
     const focus = retrieved[0];
     const ids = (focus && focus.identifiers) || { profiles: [], handles: [], aliases: [] };
     const graph = discoveryLanes(classification, depth);
@@ -3420,6 +3547,10 @@ async function deepDiveHandler(req, env) {
         if (String(a.title || '').toLowerCase().includes(ctx) || String(a.snippet || '').toLowerCase().includes(ctx)) sa += 8;
         if (String(b.title || '').toLowerCase().includes(ctx) || String(b.snippet || '').toLowerCase().includes(ctx)) sb += 8;
       }
+      if (a.resultKind === 'INTERSECTION_MATCH' || a.resultKind === 'INTERVIEW_MATCH') sa += 16;
+      if (b.resultKind === 'INTERSECTION_MATCH' || b.resultKind === 'INTERVIEW_MATCH') sb += 16;
+      if (a.resultKind === 'AGGREGATOR' || a.resultKind === 'GENERIC_BACKGROUND') sa -= 10;
+      if (b.resultKind === 'AGGREGATOR' || b.resultKind === 'GENERIC_BACKGROUND') sb -= 10;
       if (adult === 'on' || adult === 'both') {
         if (a.contextLane === 'adult' || isAdultishSource(a)) sa += 10;
         if (b.contextLane === 'adult' || isAdultishSource(b)) sb += 10;
@@ -3436,7 +3567,7 @@ async function deepDiveHandler(req, env) {
     });
     const pendingFirst = (cont && Array.isArray(cont.pendingUrls)) ? cont.pendingUrls : [];
     const queue = [...new Set([...pendingFirst, ...retrieveQueue])];
-    if (!(cont && cont.stage === 'synthesize')) {
+    if (!analysisOnly && !(cont && (cont.stage === 'synthesize' || cont.stage === 'analyze'))) {
       for (const url of queue) {
         if (remainingFetches() < 3) break;
         await pushRet(url);
@@ -3450,10 +3581,10 @@ async function deepDiveHandler(req, env) {
     let analysis = '';
     let analysisError = '';
     let analysisSkipped = false;
-    const excerpts = retrieved.filter(x => x.status === 'RETRIEVED').map(x => ({
+    const excerpts = retrieved.filter(x => x.status === 'RETRIEVED').slice(0, 6).map(x => ({
       title: x.title, url: x.url, provenance: 'RETRIEVED',
       accessState: x.accessState || 'DIRECTLY_RETRIEVED',
-      excerpt: String(x.textExcerpt || x.text || '').slice(0, 1800),
+      excerpt: String(x.textExcerpt || x.text || '').slice(0, 700),
     }));
     const inaccessible = (access.inaccessible || []).map(x => ({
       title: x.title, url: x.url, accessState: x.accessState, label: x.label, note: x.note, publicEvidence: x.publicEvidence,
@@ -3510,7 +3641,8 @@ Inaccessible sources (do not treat as retrieved evidence):
 ${JSON.stringify(inaccessible)}
 
 Discovery results (may be snippets only):
-${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: r.url, source: r.source, snippet: r.snippet, reason: r.reason, provenance: r.provenance, accessState: r.accessState })))}` },
+${JSON.stringify(discovery.results.slice(0, 5).map(r => ({ title: r.title, url: r.url, snippet: String(r.snippet || '').slice(0, 220), reason: r.reason, resultKind: r.resultKind, intersection: !!r.intersection })))}
+Planning vocabulary is INFERRED, not case evidence. Only treat retrieved co-occurrence as OBSERVED.` },
       ], 0.2);
         analysis = extractMessageContent(j);
       }
@@ -3540,8 +3672,10 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
     if (!expanded && (access.paywalled || access.authenticationRequired)) suggestions.push('Protected sources were not retrieved. Public alternatives and references are labeled honestly.');
     const paused = analysisSkipped || (pendingUrls.length > 0 && remainingFetches() < 3);
     if (paused) suggestions.push('Research paused — more evidence available to continue. Carmen reached the per-request research budget; this is not a failed analysis.');
+    if (analysisError) suggestions.push('Research collected. Analysis unavailable — retry analysis. Retrieved sources, images, videos, and leads are kept.');
     const researchState = {
-      stage: paused ? 'paused' : 'complete',
+      stage: analysisError ? 'analyze' : (paused ? 'paused' : 'complete'),
+      analysisStatus: analysisError ? 'failed' : (analysisSkipped ? 'skipped' : (analysis ? 'ok' : 'none')),
       budget: budgetReport(),
       pendingUrls: pendingUrls.slice(0, 12),
       seenUrls: [...seenUrl].slice(0, 40),
@@ -3587,6 +3721,7 @@ ${JSON.stringify(discovery.results.slice(0, 8).map(r => ({ title: r.title, url: 
       budget: budgetReport(),
       analysisSkipped,
       paused,
+      analysisOnly: !!analysisOnly,
     }, 200, req);
   } catch (e) {
     const msg = e?.message || String(e);
@@ -3688,7 +3823,7 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '47',
+        version: '47.1',
         build: 'workspace',
         schemaVersion: 2,
         provider: ai.provider,
@@ -3697,7 +3832,7 @@ export default {
         routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -4001,4 +4136,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP };

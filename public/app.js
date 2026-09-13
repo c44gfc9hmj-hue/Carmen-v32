@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '47';
+const VERSION = '47.1';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -1300,6 +1300,7 @@ async function deepDive(focusResult) {
 }
 async function runDeepDive(opts = {}) {
   const continueFrom = opts.continueFrom || null;
+  const analysisOnly = opts.analysisOnly === true;
   const base = backendUrl();
   if (!base) return toast('Set the Carmen Worker URL in Capture → Connection.');
   const subject = selectedEntity?.canonicalName || $('searchQuery').value.trim() || $('projectQuestion').value.trim();
@@ -1314,6 +1315,7 @@ async function runDeepDive(opts = {}) {
   const btn = $('startDiveBtn');
   if (btn) btn.disabled = true;
   if ($('continueDiveBtn')) $('continueDiveBtn').disabled = true;
+  if ($('retryAnalysisBtn')) $('retryAnalysisBtn').disabled = true;
   $('deepDiveBtn').disabled = true;
   if (candidate) selectCandidateKeepPlanner(candidate);
   setTab('dive');
@@ -1322,7 +1324,9 @@ async function runDeepDive(opts = {}) {
   const pathIds = diveAll ? ['all'] : selectedDivePathIds.slice();
   const useExpanded = expandedMode || !!$('diveExpanded')?.checked;
   const ctx = selectedEntity?.context || extraContextText(lastClassification) || '';
-  const waitSteps = continueFrom
+  const waitSteps = analysisOnly
+    ? ['Retrying analysis of already-retrieved sources…', 'Keeping collected evidence…', 'Synthesizing findings…']
+    : continueFrom
     ? ['Continuing research…', 'Retrieving the next evidence batch…', 'Comparing accumulated sources…', 'Synthesizing findings…']
     : ['Planning research…', 'Understanding concepts…', 'Finding independent sources…', 'Checking interviews…', 'Checking media…', 'Expanding related concepts…', 'Comparing evidence…', 'Synthesizing findings…'];
   $('deepDiveProgress').innerHTML = waitSteps.map((s, i) => '<p class="dive-step' + (i < 2 ? ' on' : '') + '">' + esc(s) + '</p>').join('');
@@ -1354,6 +1358,13 @@ async function runDeepDive(opts = {}) {
       body.continueFrom = continueFrom;
       body.priorResults = lastDivePayload?.results || lastResults || [];
       body.priorRetrieved = lastDivePayload?.retrieved || [];
+    }
+    if (analysisOnly) {
+      body.analysisOnly = true;
+      body.retryAnalysis = true;
+      body.priorResults = lastDivePayload?.results || lastResults || [];
+      body.priorRetrieved = lastDivePayload?.retrieved || [];
+      if (!body.continueFrom) body.continueFrom = { ...(lastResearchState || lastDivePayload?.researchState || {}), stage: 'analyze' };
     }
     const r = await fetch(base + '/dive', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -1414,6 +1425,7 @@ async function runDeepDive(opts = {}) {
   } finally {
     if (btn) btn.disabled = false;
     if ($('continueDiveBtn')) $('continueDiveBtn').disabled = false;
+    if ($('retryAnalysisBtn')) $('retryAnalysisBtn').disabled = false;
     updateDeepDiveState();
   }
 }
@@ -1441,6 +1453,11 @@ function renderDeepDivePayload(data, subject) {
   if (contBtn) {
     const paused = !!(data.paused || (data.researchState && data.researchState.stage === 'paused'));
     contBtn.classList.toggle('hidden', !paused);
+  }
+  const retryBtn = $('retryAnalysisBtn');
+  if (retryBtn) {
+    const fail = !!(data.analysisError && !data.analysis);
+    retryBtn.classList.toggle('hidden', !fail);
   }
   diveWorkspaceTab = 'overview';
   renderDiveIdentity();
@@ -1552,7 +1569,7 @@ function renderDiveWorkspace(data, subject) {
     if (writeup) analysisHtml = renderAdaptiveWriteup(writeup, data.paths || lastPaths, subject);
     else if (data.paused || data.analysisSkipped || (data.researchState && data.researchState.stage === 'paused')) {
       analysisHtml = `<div class="claim inferred"><b>Research paused — more evidence available to continue</b><br>Carmen reached the per-request research budget. Findings so far are kept. Continue research to retrieve the next batch. This is not a failed analysis.</div>`;
-    } else if (data.analysisError) analysisHtml = `<div class="claim unknown"><b>Analysis unavailable</b><br>${esc(data.analysisError)}</div>`;
+    } else if (data.analysisError) analysisHtml = `<div class="claim unknown"><b>Research collected. Analysis unavailable — retry analysis.</b><br>${esc(data.analysisError)}<br><span class="hint">Retrieved sources, images, videos, and leads are kept. Analysis can continue without repeating web research.</span><div class="row" style="margin-top:8px"><button class="btn" data-retry-analysis="1">Retry analysis</button></div></div>`;
     const ins = instruction.intent ? `<p class="hint">Investigative instruction: ${esc(instruction.intent)}${instruction.topic ? ' · ' + esc(instruction.topic) : ''}. Carmen chose research lanes from this — it did not dump the sentence into a search box.</p>` : '';
     body = (ins + (analysisHtml || '<p class="muted">Findings will appear here after Deep Dive finishes.</p>'));
   }
@@ -2017,6 +2034,10 @@ function wire() {
     if (!state) return toast('Nothing to continue yet.');
     runDeepDive({ continueFrom: state });
   };
+  if ($('retryAnalysisBtn')) $('retryAnalysisBtn').onclick = () => {
+    if (!lastDivePayload) return toast('Nothing to re-analyze yet.');
+    runDeepDive({ analysisOnly: true });
+  };
   if ($('cancelDiveBtn')) $('cancelDiveBtn').onclick = () => setTab('search');
   if ($('diveCustom')) $('diveCustom').addEventListener('input', persistSession);
   if ($('diveSelectChips')) $('diveSelectChips').onclick = e => {
@@ -2165,6 +2186,10 @@ function wire() {
       if ($('diveExpanded')) $('diveExpanded').checked = true;
       expandedMode = true;
       runDeepDive();
+      return;
+    }
+    if (e.target.closest('[data-retry-analysis]')) {
+      runDeepDive({ analysisOnly: true });
       return;
     }
     const tab = e.target.closest('[data-wstab]');

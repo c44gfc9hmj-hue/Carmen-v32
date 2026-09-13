@@ -10,6 +10,14 @@ V33/V34/V35 builds — those accumulated during earlier development and have bee
 consolidated into this one project.
 
 
+## Investigation workspace (v47.1)
+
+v47.1 is a surgical hardening pass on live v47 retrieval. It does not replace the v38–v47 architecture.
+
+If the user supplies **entity + concept**, Carmen immediately plans **ENTITY × CONCEPT × LENS** before retrieval. Semantic vocabulary is **planning knowledge**. Observed co-occurrence on retrieved pages is **case evidence**. Intersection retrieval uses multiple formulations and keeps the concept on every contextual lane. Generic identity runs after intersection/interviews/specialist. Thin first-pass intersection broadens that lane instead of dumping biography.
+
+Ranking: intersection evidence outranks generic identity; aggregator/index keyword overlap is not verified intersection; incomplete personal names are penalized as possible different people. Deep Dive keeps retrieved sources if analysis times out. **Retry analysis** re-synthesizes already-retrieved evidence without repeating web research.
+
 ## Investigation workspace (v47)
 
 v47 adds a general semantic concept layer and bounded staged research. It does not replace the v38 engine, v40 planner, v42 adult filter, v43 discovery graph, v44 interest lenses, v45 visual identification, or v46 entity/source separation.

@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -856,6 +856,101 @@ console.log('--- v47 fetch budget and staged continue ---');
   assert(/more evidence available to continue/i.test(app), 'UI distinguishes paused research from failed analysis');
   assert(/continueDiveBtn/.test(app), 'Continue research control is wired');
   assert(/continueFrom/.test(app), 'client posts continueFrom on resume');
+  assert(/retryAnalysis|Retry analysis/.test(app), 'Retry analysis is wired');
+  assert(/analysisOnly/.test(src), 'Deep Dive accepts analysisOnly retry');
+}
+
+console.log('--- v47.1 planning knowledge is not case evidence ---');
+{
+  const bondage = interpretConcept('bondage', 'person', 'on');
+  assert(bondage.provenance === 'INFERRED', 'typed concept is planning/INFERRED before retrieval');
+  assert(bondage.knowledge === 'planning', 'semantic vocabulary is marked planning knowledge');
+  assert((bondage.related || []).length >= 1, 'planning still expands related terminology');
+  const rope = interpretConcept('rope', 'person', 'on');
+  assert(rope.family !== 'bondage', 'rope is not remapped to bondage');
+  assert(!(rope.related || []).some(x => /bondage|shibari|kinbaku|bdsm/i.test(x)), 'rope does not dump bondage synonyms');
+  const observed = enrichConceptsFromEvidence([rope], [
+    { title: 'Jordan Hale rope photoset', snippet: 'rope session gallery', reason: 'entity ∩ context (rope)' },
+    { title: 'Jordan Hale in rope', snippet: 'rope photoset credits', reason: '' },
+  ]);
+  assert(observed[0].knowledge === 'evidence' || observed[0].provenance === 'OBSERVED', 'co-occurrence on retrieved sources becomes evidence');
+  const planningOnly = enrichConceptsFromEvidence([rope], [
+    { title: 'Unrelated gallery', snippet: 'stock photos', reason: '' },
+  ]);
+  assert(planningOnly[0].knowledge !== 'evidence', 'unrelated pages do not promote planning knowledge to evidence');
+}
+
+console.log('--- v47.1 intersection formulations keep the concept ---');
+{
+  const personOn = applyResearchFilter(classifyQuery('Jordan Hale bondage'), 'on', 'Jordan Hale bondage');
+  const forms = intersectionFormulations('Jordan Hale', 'bondage', personOn);
+  assert(forms.length >= 2, 'multiple intersection formulations');
+  assert(forms.every(q => /Jordan Hale/i.test(q) && /bondage/i.test(q)), 'every formulation is entity × concept');
+  assert(forms.some(q => /photoset|scene|credits|interview|database|gallery/i.test(q)), 'source-type variants sit on the intersection, not beside it');
+  const lanes = discoveryLanes(personOn, 'contextual');
+  const ids = lanes.lanes.map(l => l.id);
+  assert(ids.indexOf('intersection') < ids.indexOf('identity'), 'intersection is planned before identity');
+  assert(ids.indexOf('interviews') < ids.indexOf('identity'), 'interviews are planned before generic identity');
+  const prod = lanes.lanes.find(l => l.id === 'productions');
+  assert(prod && prod.queries.some(q => /bondage/i.test(q)), 'productions lane keeps the requested concept');
+  const ropeOn = applyResearchFilter(classifyQuery('Jordan Hale rope'), 'on', 'Jordan Hale rope');
+  const ropeLanes = discoveryLanes(ropeOn, 'contextual');
+  const ropeQs = ropeLanes.lanes.flatMap(l => l.queries);
+  assert(ropeQs.filter(q => /rope/i.test(q) && /Jordan Hale/i.test(q)).length >= 2, 'person+rope has multiple entity × rope queries');
+  assert(ropeLanes.lanes.find(l => l.id === 'productions').queries.some(q => /rope/i.test(q)), 'rope productions keep rope');
+  const veh = intersectionFormulations('Lincoln Aviator', 'towing', { type: 'vehicle', adultContent: 'off' });
+  assert(veh.every(q => /towing/i.test(q)), 'vehicle formulations keep towing');
+  assert(veh.some(q => /capacity|spec|rating|manual/i.test(q)), 'vehicle intersection uses spec/capacity source types');
+  const skill = intersectionFormulations('welding a trailer', 'hitch', { type: 'skill', adultContent: 'off' });
+  assert(skill.every(q => /hitch/i.test(q)), 'skill formulations keep hitch');
+  assert(skill.some(q => /tutorial|procedure|install|fabrication|safety/i.test(q)), 'skill intersection uses instructional source types');
+}
+
+console.log('--- v47.1 person name wins over vehicle trailing context ---');
+{
+  const personTow = classifyQuery('Jordan Hale towing');
+  assert(personTow.type === 'person', 'two-word personal name + towing stays a person');
+  assert(/towing/i.test(personTow.context || ''), 'towing is still the requested concept');
+  const av = classifyQuery('Lincoln Aviator towing');
+  assert(av.type === 'vehicle', 'known vehicle cues still classify as vehicle');
+  const hist = classifyQuery('zorbith history');
+  assert(hist.type !== 'person', 'unknown token + history is not treated as a personal name');
+  assert(/history/i.test(hist.context || ''), 'history remains the concept');
+}
+
+console.log('--- v47.1 ranking: aggregator titles and name collisions ---');
+{
+  const raw = 'Jordan Hale bondage';
+  const c = applyResearchFilter(classifyQuery(raw), 'on', raw);
+  const tubeTitle = { title: 'Bondage videos / Free Bondage tube videos', url: 'https://m.fapality.com/bondage', snippet: 'Jordan Hale bondage videos' };
+  assert(isAggregatorPage(tubeTitle) === true, 'generic tube-index title/host is an aggregator');
+  const scoredTube = scoreResult(raw, tubeTitle, c);
+  assert(scoredTube.resultKind === 'AGGREGATOR', 'tube index is not INTERSECTION_MATCH');
+  assert(scoredTube.intersection !== true, 'keyword overlap on a tube index is not verified intersection');
+  const specific = { title: 'Jordan Hale in Rope Session (2014)', url: 'https://www.iafd.com/title.rme/title=ropesession', snippet: 'bondage scene credits performer' };
+  const scoredSpec = scoreResult(raw, specific, c);
+  assert(scoredSpec.score > scoredTube.score, 'specific intersection outranks tube-index title');
+  const profile = { title: 'Jordan Hale', url: 'https://www.babepedia.com/babe/Jordan_Hale', snippet: 'performer profile filmography' };
+  const scoredProfile = scoreResult(raw, profile, c);
+  assert(scoredSpec.score > scoredProfile.score, 'generic identity profile ranks below intersection evidence');
+  const collision = scoreResult('Jordan Hale rope', { title: 'Jordan Blake', url: 'https://people.example/jordan-blake', snippet: 'American actress' }, applyResearchFilter(classifyQuery('Jordan Hale rope'), 'on', 'Jordan Hale rope'));
+  assert((collision.signals || []).some(s => /incomplete name|different person/i.test(s)), 'partial name is penalized as a possible different person');
+}
+
+console.log('--- v47.1 retrieval queue prefers intersection ---');
+{
+  const q = diveRetrievalQueue({
+    evidenceUrl: 'https://source-a.example/j',
+    retrieveCap: 4,
+    adult: 'on',
+    discoveryResults: [
+      { url: 'https://wiki.example/jordan', resultKind: 'GENERIC_BACKGROUND', score: 90, title: 'Jordan Hale' },
+      { url: 'https://studio.example/title', resultKind: 'INTERSECTION_MATCH', score: 40, title: 'Jordan Hale in Scene', intersection: true },
+      { url: 'https://press.example/interview', resultKind: 'INTERVIEW_MATCH', score: 30, title: 'Jordan Hale interview' },
+    ],
+  });
+  assert(q[0] === 'https://source-a.example/j', 'identifying source is still first (provenance)');
+  assert(q.indexOf('https://studio.example/title') < q.indexOf('https://wiki.example/jordan'), 'intersection URL is retrieved before generic biography');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
