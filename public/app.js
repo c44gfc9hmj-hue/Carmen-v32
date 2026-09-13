@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '47.5';
+const VERSION = '47.8';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';

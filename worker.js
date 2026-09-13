@@ -4777,7 +4777,7 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '47.5',
+        version: '47.8',
         build: 'workspace',
         schemaVersion: 2,
         provider: ai.provider,
@@ -4786,7 +4786,7 @@ export default {
         routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
