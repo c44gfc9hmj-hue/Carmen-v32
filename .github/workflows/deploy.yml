@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: deploy-carmen
@@ -18,6 +18,48 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Stamp v47.8 version strings if still on 47.5
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          worker = Path('worker.js')
+          text = worker.read_text()
+          text = text.replace("version: '47.5'", "version: '47.8'")
+          old = "'corpus-scale']"
+          new = "'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save']"
+          if "'source-first'" not in text:
+              text = text.replace(old, new, 1)
+          worker.write_text(text)
+
+          app = Path('public/app.js')
+          app.write_text(app.read_text().replace("const VERSION = '47.5';", "const VERSION = '47.8';", 1))
+
+          sw = Path('public/sw.js')
+          sw.write_text(sw.read_text().replace("const CACHE = 'carmen-v47.5';", "const CACHE = 'carmen-v47.8';", 1))
+          print('stamped')
+          PY
+
+      - name: Commit stamped sources and tag v47.8
+        run: |
+          git config user.name "c44gfc9hmj-hue"
+          git config user.email "c44gfc9hmj@privaterelay.appleid.com"
+          git add worker.js public/app.js public/sw.js
+          if git diff --cached --quiet; then
+            echo "no source stamp changes"
+          else
+            git commit -m "Carmen v47.8: worker and app version present in repo"
+            git push origin HEAD:main
+          fi
+          if git rev-parse v47.8 >/dev/null 2>&1; then
+            echo "tag v47.8 already exists"
+          else
+            git tag v47.8
+            git push origin v47.8
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -27,7 +69,6 @@ jobs:
       - name: Install Wrangler
         run: npm install --no-save wrangler@4
 
-      # Prints secret NAMES only (never values)
       - name: List Worker secret names (before deploy)
         run: |
           echo "=== secret list (names only) ==="
