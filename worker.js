@@ -922,7 +922,8 @@ function applyResearchFilter(classification, adultMode, q) {
   out.adultContent = adult;
   const raw = String(q || '').trim();
   if (!out.subject) out.subject = out.context ? String(raw).replace(TRAILING_CONTEXT_RE, '').trim() : raw;
-  if ((adult === 'on' || adult === 'both') && !out.context) {
+  const adultLensEntity = out.type === 'person' || out.type === 'social' || out.type === 'ambiguous';
+  if ((adult === 'on' || adult === 'both') && !out.context && adultLensEntity) {
     if (adult === 'on') {
       out.context = 'adult content';
       out.relation = out.relation || 'adult';
@@ -966,9 +967,11 @@ function adultSemanticVariants(subject, extraContext) {
     const syn = contextualSynonyms(extra, detectRelation(extra));
     if (syn) add('"' + sub + '" ' + syn, 'adult-context synonyms');
   } else {
+    add('"' + sub + '" (credits OR filmography OR scene)', 'adult-industry career and credits');
     add('"' + sub + '" (interview OR feature) (performer OR "official site")', 'adult-context interviews/features');
+    add('"' + sub + '" (studio OR production OR collaborator)', 'adult-industry collaborators');
   }
-  return out.slice(0, 3);
+  return out.slice(0, 5);
 }
 
 function imageSearchQuery(q, classification) {
@@ -976,9 +979,10 @@ function imageSearchQuery(q, classification) {
   const adult = (classification && classification.adultContent) || 'off';
   const ctx = (classification && classification.context) || '';
   const extra = /adult content/i.test(ctx) ? '' : ctx;
+  const adultLensEntity = classification && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous');
   if ((adult === 'on' || adult === 'both') && extra) return '"' + subject + '" ' + extra;
-  if (adult === 'on') return '"' + subject + '" (photoset OR scene OR models OR gallery)';
-  if (adult === 'both') return '"' + subject + '" (photoset OR scene OR models OR gallery OR portrait)';
+  if (adult === 'on' && adultLensEntity) return '"' + subject + '" (photoset OR scene OR models OR gallery)';
+  if (adult === 'both' && adultLensEntity) return '"' + subject + '" (photoset OR scene OR models OR gallery OR portrait)';
   if (extra) return '"' + subject + '" ' + extra;
   return subject;
 }
@@ -1113,6 +1117,70 @@ function interestLenses(type, classification) {
   return list;
 }
 
+function investigationChoices(type, classification) {
+  const t = String(type || (classification && classification.type) || 'topic');
+  const adult = (classification && classification.adultContent) || 'off';
+  const adultOn = adult === 'on' || adult === 'both';
+  const extra = extraContext(classification);
+  const byType = {
+    person: [
+      { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'videos', label: 'Videos', paths: ['videos'] },
+      { id: 'images', label: 'Images', paths: ['images'] },
+      { id: 'interviews', label: 'Interviews', paths: ['interviews'] },
+      { id: 'career', label: adultOn ? 'Career & credits' : 'Career & history', paths: adultOn ? ['career', 'projects', 'timeline'] : ['career', 'timeline', 'presence'] },
+      { id: 'related', label: 'Related people', paths: ['related', 'entities'] },
+    ],
+    vehicle: [
+      { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'specs', label: 'Specifications', paths: ['specs'] },
+      { id: 'repair', label: 'Repair', paths: ['maintenance', 'issues'] },
+      { id: 'towing', label: 'Towing', paths: ['specs'] },
+      { id: 'reviews', label: 'Reviews', paths: ['reviews'] },
+      { id: 'history', label: 'History', paths: ['overview'] },
+    ],
+    product: [
+      { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'repair', label: 'Repair', paths: ['manuals'] },
+      { id: 'specs', label: 'Specifications', paths: ['specs'] },
+      { id: 'reviews', label: 'Reviews', paths: ['reviews'] },
+      { id: 'history', label: 'History', paths: ['pricing', 'overview'] },
+    ],
+    skill: [
+      { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'tutorials', label: 'Tutorials', paths: ['steps', 'tutorials'] },
+      { id: 'tools', label: 'Tools', paths: ['tools'] },
+      { id: 'safety', label: 'Safety', paths: ['safety'] },
+      { id: 'history', label: 'Background', paths: ['goal'] },
+    ],
+    technique: [
+      { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'visuals', label: 'Visuals', paths: ['visuals', 'images'] },
+      { id: 'tutorials', label: 'Tutorials', paths: ['tutorials'] },
+      { id: 'videos', label: 'Videos', paths: ['videos'] },
+    ],
+    organization: [
+      { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'official', label: 'Official presence', paths: ['official'] },
+      { id: 'people', label: 'People', paths: ['people'] },
+      { id: 'history', label: 'History', paths: ['history'] },
+    ],
+    topic: [
+      { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'overview', label: 'Overview', paths: ['overview'] },
+      { id: 'sources', label: 'Sources', paths: ['sources'] },
+    ],
+  };
+  const list = (byType[t] || byType.topic).map(function (x) { return Object.assign({}, x); });
+  if (extra && t === 'person' && !list.some(function (x) { return x.id === 'context'; })) {
+    const label = extra.length > 28 ? extra.slice(0, 26) + '…' : extra;
+    list.splice(1, 0, { id: 'context', label: label, paths: ['context', 'projects', 'images'] });
+  }
+  if (!list.some(function (x) { return x.id === 'question'; })) {
+    list.push({ id: 'question', label: 'Custom question', question: true, paths: [] });
+  }
+  return list;
+}
 
 function extraContext(classification) {
   return String((classification && classification.context) || '').replace(/adult content/gi, ' ').replace(/\s+/g, ' ').trim();
@@ -1425,7 +1493,7 @@ function interpretRequest(classification, customQuestion) {
   if (instruction && instruction.topic) pushTerm(instruction.topic);
   if (instruction && instruction.intent === 'interviews') pushTerm('interview');
   const concepts = terms.map(t => interpretConcept(t, type, adult));
-  if (!concepts.length && (adult === 'on' || adult === 'both')) {
+  if (!concepts.length && (adult === 'on' || adult === 'both') && (type === 'person' || type === 'social' || type === 'ambiguous')) {
     concepts.push(interpretConcept('adult content', type, adult));
   }
   const nodes = concepts.map(x => ({ id: x.term, family: x.family, confidence: x.confidence, provenance: x.provenance }));
@@ -1506,11 +1574,15 @@ function contextVocabulary(classification) {
   const extra = extraContext(classification);
   const rel = (classification && classification.relation) || '';
   const type = (classification && classification.type) || '';
+  const adultLensEntity = type === 'person' || type === 'social' || type === 'ambiguous';
   let pack = RELATION_VOCAB[rel] || {};
   if ((type === 'skill' || type === 'technique') && (rel === 'towing' || rel === 'repair' || rel === 'vehicle')) {
     pack = RELATION_VOCAB.skill || {};
   }
   if (type === 'person' && (rel === 'towing' || rel === 'vehicle' || rel === 'repair')) {
+    pack = {};
+  }
+  if (!adultLensEntity && (rel === 'adult' || (!extra && (classification && (classification.adultContent === 'on' || classification.adultContent === 'both'))))) {
     pack = {};
   }
   if ((type === 'vehicle' || type === 'product') && /\bhitch\b/i.test(extra) && !pack.related) {
@@ -1616,7 +1688,7 @@ function discoveryLanes(classification, depth) {
       for (const q of intersectionFormulations(subject, t, classification)) forms.push(q);
     }
     add('intersection', 'exact entity ∩ requested context across source types', [...new Set(forms)].slice(0, 4));
-  } else if (adult === 'on' || adult === 'both') {
+  } else if ((adult === 'on' || adult === 'both') && (type === 'person' || type === 'social' || type === 'ambiguous')) {
     add('intersection', 'entity in adult-industry public sources', adultSemanticVariants(subject, '').map(v => v.q).slice(0, 2));
   }
 
@@ -1659,6 +1731,14 @@ function discoveryLanes(classification, depth) {
   if (d === 'deep' && vocab.org.length) {
     add('organizations', 'organizations associated with the requested context', [quoteName(subject) + ' ' + vocab.org[0] + (vocab.core[0] ? ' ' + vocab.core[0] : '')]);
     add('collaborators', 'people publicly associated with the entity in this context', [quoteName(subject) + ' ' + (vocab.core[0] || '') + ' (with OR directed OR studio)']);
+  }
+  if ((adult === 'on' || adult === 'both') && type === 'person' && lanes.length > 1) {
+    const prefer = { intersection: 0, productions: 1, images: 2, videos: 3, interviews: 4, specialist: 5, collaborators: 6, organizations: 7 };
+    lanes.sort((a, b) => {
+      const ia = Object.prototype.hasOwnProperty.call(prefer, a.id) ? prefer[a.id] : (/^term-/.test(a.id) ? 2.5 : a.id === 'identity' ? 9 : 8);
+      const ib = Object.prototype.hasOwnProperty.call(prefer, b.id) ? prefer[b.id] : (/^term-/.test(b.id) ? 2.5 : b.id === 'identity' ? 9 : 8);
+      return ia - ib;
+    });
   }
   return { depth: d, vocab, lanes };
 }
@@ -2068,6 +2148,12 @@ function parseInvestigativeQuestion(question, classification) {
     topic = '';
   }
   if (topic.length > 72) topic = topic.slice(0, 72).trim();
+  topic = topic
+    .replace(/^(?:what|how|why|when|where|who)\s+(?:are|is|were|was|do|does|did|can|the)?\s*/i, '')
+    .replace(/^(?:the\s+)?(?:public\s+)?(?:facts?|information|info|details)\b(?:\s+(?:about|on|for))?\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/^(?:public facts?|facts?|information|info|details?|everything|all|sources?|find|show|tell|give)$/i.test(topic)) topic = '';
   if (restrictedDomain && !/interview|podcast|discuss|photo|image|video|clip|connect|related/i.test(t)) {
     out.intent = 'sources';
     out.paths.push('sources', 'evidence');
@@ -2243,6 +2329,7 @@ function diveExpansionQueries(opts) {
   const quoted = subject ? ('"' + subject + '"') : '';
   const instruction = opts.instruction || { variants: [] };
   const adult = classification.adultContent || opts.adult || 'off';
+  const adultOnPerson = (adult === 'on' || adult === 'both') && classification.type === 'person';
   const selectedPaths = opts.selectedPaths || [];
   const selectedIds = opts.selectedIds instanceof Set ? opts.selectedIds : new Set((selectedPaths || []).map(p => p && p.id).filter(Boolean));
   const resolvedAll = opts.resolvedAll === true;
@@ -2250,10 +2337,14 @@ function diveExpansionQueries(opts) {
   const identifiers = opts.identifiers || { handles: [] };
   const evidenceHost = String(opts.evidenceHost || '').replace(/^www\./, '');
   const customQuestion = opts.customQuestion || '';
+  const extraCtx = extraContext(classification);
 
+  if (adultOnPerson) {
+    for (const v of adultSemanticVariants(subject, extraCtx)) add(v.q);
+  }
   for (const v of instruction.variants || []) add(v.q);
-  if (quoted) add(quoted);
-  if (classification.type === 'person' && quoted) add(quoted + ' (profile OR official OR website)');
+  if (!adultOnPerson && quoted) add(quoted);
+  if (classification.type === 'person' && quoted && !adultOnPerson) add(quoted + ' (profile OR official OR website)');
   if (classification.context) {
     add(quoted + ' ' + classification.context);
     const syn = contextualSynonyms(classification.context, classification.relation);
@@ -2275,13 +2366,14 @@ function diveExpansionQueries(opts) {
     add(imageSearchQuery(classification.subject || seed, classification));
   }
   if (expanded || selectedIds.has('videos') || resolvedAll) {
-    add((classification.subject || seed) + (adult === 'on' || adult === 'both' ? ' video OR scene OR clip' : ' youtube OR video OR interview'));
+    add((classification.subject || seed) + (adultOnPerson ? ' video OR scene OR clip' : ' youtube OR video OR interview'));
   }
   for (const h of (identifiers.handles || []).slice(0, 2)) add(h);
   const requestedDomain = extractRequestedSourceDomain(customQuestion);
   if (requestedDomain) {
     add(quoted + ' site:' + requestedDomain);
   }
+  if (adultOnPerson && quoted) add(quoted);
   return extra;
 }
 
@@ -2410,10 +2502,19 @@ function resolveDivePaths(type, body = {}, classification) {
   const all = researchPaths(type, classification);
   const requestedRaw = Array.isArray(body.paths) ? body.paths : (Array.isArray(body.pathIds) ? body.pathIds : []);
   const requested = requestedRaw.map(x => (typeof x === 'string' ? x : x && x.id)).filter(Boolean);
+  const investigationId = String(body.investigation || body.investigationId || '').trim();
+  if (investigationId && investigationId !== 'everything' && investigationId !== 'all' && investigationId !== 'question') {
+    const choice = investigationChoices(type, classification).find(c => c && c.id === investigationId);
+    if (choice && Array.isArray(choice.paths)) {
+      for (const p of choice.paths) {
+        if (p && requested.indexOf(p) < 0) requested.push(p);
+      }
+    }
+  }
   const custom = String(body.customQuestion || body.question || '').trim();
   const inferred = inferPathsFromQuestion(custom, all);
-  const wantAll = body.all === true || body.all === 'true' || requested.includes('all') || (!requested.length && !inferred.length);
-  if (wantAll) return { all: true, selected: all, inferred, custom };
+  const wantAll = body.all === true || body.all === 'true' || requested.includes('all') || investigationId === 'everything' || investigationId === 'all' || (!requested.length && !inferred.length && investigationId !== 'question');
+  if (wantAll) return { all: true, selected: all, inferred, custom, investigation: investigationId || 'everything' };
   const ids = new Set(requested.filter(id => id !== 'all'));
   for (const id of inferred) ids.add(id);
   const extras = [];
@@ -2421,7 +2522,7 @@ function resolveDivePaths(type, body = {}, classification) {
   if (ids.has('images') && !all.some(p => p.id === 'images') && !all.some(p => p.id === 'visuals')) extras.push({ id: 'images', label: 'Images' });
   let selected = all.filter(p => ids.has(p.id)).concat(extras);
   if (!selected.length) selected = all;
-  return { all: extras.length ? false : selected.length === all.length, selected, inferred, custom };
+  return { all: extras.length ? false : selected.length === all.length, selected, inferred, custom, investigation: investigationId || '' };
 }
 
 function pathSearchVariants(seed, selectedPaths, classification) {
@@ -2440,7 +2541,7 @@ function pathSearchVariants(seed, selectedPaths, classification) {
     else add(seed + ' photos OR images OR gallery OR portrait', 'visual evidence');
   }
   if (ids.has('videos')) {
-    if (adult === 'on' || adult === 'both' || (ctx && (detectRelation(ctx) === 'bondage' || detectRelation(ctx) === 'video'))) {
+    if ((adult === 'on' || adult === 'both') && classification && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous') || (ctx && (detectRelation(ctx) === 'bondage' || detectRelation(ctx) === 'video'))) {
       add('"' + subject.replace(/"/g, '') + '" ' + (ctx && !/adult content/i.test(ctx) ? ctx + ' ' : '') + 'video OR scene OR clip', 'contextual video sources');
     } else add(seed + ' video OR youtube OR interview', 'video sources');
   }
@@ -2465,7 +2566,7 @@ function pathSearchVariants(seed, selectedPaths, classification) {
   if (ids.has('concepts')) add(seed + ' explained OR concept OR overview', 'concepts');
   if (ids.has('variations') || ids.has('variants')) add(seed + ' variants OR generations OR versions', 'variants');
   if (ids.has('alternatives')) add(seed + ' alternative OR vs OR compared', 'alternatives');
-  if ((adult === 'on' || adult === 'both') && (ids.has('presence') || ids.has('identity') || ids.has('images') || ids.has('videos'))) {
+  if ((adult === 'on' || adult === 'both') && (classification && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous')) && (ids.has('presence') || ids.has('identity') || ids.has('images') || ids.has('videos'))) {
     for (const v of adultSemanticVariants(subject, /adult content/i.test(ctx) ? '' : ctx)) add(v.q, v.why);
   }
   return extra.slice(0, 12);
@@ -2639,14 +2740,16 @@ function buildSearchVariants(q, classification) {
     add('"' + subject.replace(/"/g, '') + '" ' + extraCtx, 'person + requested context');
     const syn = contextualSynonyms(extraCtx, classification.relation);
     if (syn) add('"' + subject.replace(/"/g, '') + '" ' + syn, 'contextual visual/source synonyms');
-    add(subject + ' official OR website OR profile', 'official/profile pages for the person');
+    if (adult === 'on' || adult === 'both') add('"' + subject.replace(/"/g, '') + '" (performer OR profile OR "official site")', 'identity in the adult research lens');
+    else add(subject + ' official OR website OR profile', 'official/profile pages for the person');
   } else if (extraCtx) {
     add('"' + subject.replace(/"/g, '') + '" ' + extraCtx, 'entity + requested context');
     const syn = contextualSynonyms(extraCtx, classification.relation);
     if (syn) add('"' + subject.replace(/"/g, '') + '" ' + syn, 'contextual synonyms');
   } else if (classification.type === 'person' && /\s/.test(clean)) {
     add('"' + clean.replace(/"/g, '') + '"', 'exact name');
-    add(clean + ' official OR website OR profile', 'official/profile pages');
+    if (adult === 'on' || adult === 'both') add('"' + clean.replace(/"/g, '') + '" (performer OR profile OR "official site")', 'identity in the adult research lens');
+    else add(clean + ' official OR website OR profile', 'official/profile pages');
   } else if (classification.type === 'website') {
     add(clean.replace(/^https?:\/\//, ''), 'domain form');
   } else if (classification.type === 'product' || classification.type === 'vehicle') {
@@ -2664,7 +2767,7 @@ function buildSearchVariants(q, classification) {
   } else if (/\s/.test(clean) && !/^".*"$/.test(clean)) {
     add('"' + clean.replace(/"/g, '') + '"', 'exact phrase');
   }
-  if (adult === 'on' || adult === 'both') {
+  if ((adult === 'on' || adult === 'both') && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous')) {
     for (const v of adultSemanticVariants(subject, extraCtx)) add(v.q, v.why);
   }
   if (adult === 'both' && extraCtx) {
@@ -2694,7 +2797,7 @@ function buildExpandedVariants(q, classification) {
     const syn = contextualSynonyms(extraCtx, classification && classification.relation);
     if (syn) add('"' + subject.replace(/"/g, '') + '" ' + syn, 'contextual synonyms');
   }
-  if (classification && (classification.adultContent === 'on' || classification.adultContent === 'both')) {
+  if (classification && (classification.adultContent === 'on' || classification.adultContent === 'both') && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous')) {
     for (const v of adultSemanticVariants(subject, extraCtx)) add(v.q, v.why);
   }
   add(clean + ' reddit OR forum OR discussion', 'public discussion alternatives');
@@ -2758,8 +2861,10 @@ function scoreResult(query, item, classification) {
   }
   if (host.endsWith('wikipedia.org')) {
     const missing = nameTokens.filter(t => t.length > 2 && !title.includes(t) && !url.includes(t));
+    const adultOnPerson = ((classification && classification.adultContent) === 'on' || (classification && classification.adultContent) === 'both') && classification.type === 'person';
     if (classification.type === 'person' && missing.length) { score -= 36; bits.push('encyclopedia hit missing name tokens'); }
     else if (tokens.length && tokens.every(t => !title.includes(t))) { score -= 40; bits.push('encyclopedia hit unrelated to query'); }
+    else if (adultOnPerson && classification.adultContent === 'on') { bits.push('encyclopedia is secondary under adult lens'); }
     else { score += 16; bits.push('encyclopedia source'); }
   }
   if (PROFILE_HOST_RE.test(host)) { score += 14; bits.push('public profile host'); }
@@ -2810,9 +2915,10 @@ function scoreResult(query, item, classification) {
     if (adultish && !genericBio) {
       score += contextPenalized ? 8 : 24;
       bits.push(contextPenalized ? 'adult-context source, missing requested concept' : 'adult-context source');
+      if (intersection) { score += 14; bits.push('adult-context intersection'); }
     }
     if (genericBio && adult === 'on') {
-      score -= contextPenalized ? 8 : 24;
+      score -= 28;
       bits.push('generic biography, weak for adult-context research');
     } else if (genericBio && adult === 'both') {
       score -= 6; bits.push('general biography lane');
@@ -3096,10 +3202,12 @@ async function runDiscovery(query, opts = {}) {
   } else if (depth === 'broad') {
     for (const v of buildSearchVariants(q, classification)) addVar(v.q, v.why, 'identity', 'web');
   } else {
-    addVar(q, 'primary query', 'primary', 'web');
+    const adultOnPerson = (adult === 'on' || adult === 'both') && classification.type === 'person';
+    if (!adultOnPerson) addVar(q, 'primary query', 'primary', 'web');
     for (const lane of graph.lanes) {
       for (const qv of lane.queries) addVar(qv, lane.why, lane.id, lane.kind || 'web');
     }
+    if (adultOnPerson) addVar(q, 'primary query', 'primary', 'web');
   }
   if (expanded) {
     for (const v of buildExpandedVariants(q, classification)) addVar(v.q, v.why, 'expanded', 'web');
@@ -3156,9 +3264,12 @@ async function runDiscovery(query, opts = {}) {
     const webVariants = variants.filter(v => (v.kind || 'web') === 'web');
     const cap = expanded ? 10 : (depth === 'deep' ? 10 : depth === 'contextual' ? 8 : 5);
     const extraActive = !!extraContext(classification);
+    const adultOnPerson = (adult === 'on' || adult === 'both') && classification.type === 'person';
     const mustRun = extraActive
       ? new Set(['primary', 'intersection', 'interviews', 'specialist'])
-      : new Set(['primary', 'intersection', 'identity']);
+      : adultOnPerson
+        ? new Set(['intersection', 'productions', 'interviews', 'primary'])
+        : new Set(['primary', 'intersection', 'identity']);
     for (let i = 0; i < Math.min(webVariants.length, cap); i++) {
       if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
       await runVariant(webVariants[i], i === 0);
@@ -3314,6 +3425,7 @@ async function runDiscovery(query, opts = {}) {
     graphLeads,
     intersectionCount,
     lenses: interestLenses(classification.type, classification),
+    investigationChoices: investigationChoices(classification.type, classification),
     visualCandidates: visualCandidatesFor(ranked, classification),
     selectedEntity: buildSelectedEntity(classification, pickIdentityCandidate(ranked, classification), identity, { originalQuery: q, depth, adultContent: adult, identityAmbiguous: identityIsAmbiguous(ranked, classification), confidence: identityIsAmbiguous(ranked, classification) ? 'low' : undefined }),
     concepts: enrichConceptsFromEvidence((graph.vocab && graph.vocab.concepts) || interpretRequest(classification).concepts, ranked),
@@ -3349,6 +3461,7 @@ function classifyHandler(req) {
     classification,
     depth,
     lenses: interestLenses(classification.type, classification),
+    investigationChoices: investigationChoices(classification.type, classification),
     paths: researchPaths(classification.type, classification),
     concepts: interpreted.concepts,
     conceptGraph: interpreted.graph,
@@ -3483,7 +3596,7 @@ async function provider(env, messages, temperature = 0.2) {
   } finally { clearTimeout(timer); }
 }
 
-const CARMEN_SYSTEM = 'You are Carmen, a conservative AI research assistant for adult users. Be concise and useful. Clearly distinguish OBSERVED (directly stated/visible), INFERRED (labeled interpretation), and UNKNOWN. Never invent facts, sources, URLs, dates, or evidence. Never claim something was saved or sent unless the user explicitly requested it. Never autonomously contact people, send messages, post, comment, submit forms, make purchases, create accounts, perform transactions, or take any external action. You may research, analyze, organize, and prepare information only. Never bypass, evade, or circumvent paywalls, logins, age gates, CAPTCHAs, DRM, robots, or other access controls. Never claim you retrieved paywalled, login-gated, age-gated, or blocked content. Public titles, search snippets, and thumbnails are not the protected content — label them as referenced public evidence only. If the original source cannot be accessed, say so honestly and look for legitimate public alternatives. If the only remaining relevant source is paywalled, say clearly: Absolutely cannot retrieve due to paywall. Adult Content is a research-context filter, not an entity type — when it is ON, do not silently fall back to generic biography. Adult context does not lower evidence discipline. For sexual or self-bondage topics, do not provide explicit step-by-step sexual or self-bondage instructions; you may organize public sources, terminology, visual references, and research questions. For general skills and crafts you may outline procedures only when they are grounded in retrieved sources. Visual likeness is not identity proof.';
+const CARMEN_SYSTEM = 'You are Carmen, a conservative AI research assistant for adult users. Be concise and useful. Clearly distinguish OBSERVED (directly stated/visible), INFERRED (labeled interpretation), and UNKNOWN. Never invent facts, sources, URLs, dates, or evidence. Never claim something was saved or sent unless the user explicitly requested it. Never autonomously contact people, send messages, post, comment, submit forms, make purchases, create accounts, perform transactions, or take any external action. You may research, analyze, organize, and prepare information only. Never bypass, evade, or circumvent paywalls, logins, age gates, CAPTCHAs, DRM, robots, or other access controls. Never claim you retrieved paywalled, login-gated, age-gated, or blocked content. Public titles, search snippets, and thumbnails are not the protected content — label them as referenced public evidence only. If the original source cannot be accessed, say so honestly and look for legitimate public alternatives. If the only remaining relevant source is paywalled, say clearly: Absolutely cannot retrieve due to paywall. Adult Content is a research lens, not an entity type. When Adult content is ON, prioritize adult-industry career, productions, public media, interviews, and collaborators over generic celebrity trivia; general biography is secondary unless it identifies or explains the adult context. If a specific concept is present with Adult ON, research entity × concept × adult lens as one target. Adult context does not lower evidence discipline. For sexual or self-bondage topics, do not provide explicit step-by-step sexual or self-bondage instructions; you may organize public sources, terminology, visual references, and research questions. For general skills and crafts you may outline procedures only when they are grounded in retrieved sources. Visual likeness is not identity proof.';
 
 async function chat(req, env) {
   try {
@@ -3711,7 +3824,7 @@ async function deepDiveHandler(req, env) {
         retrieved.push({ url, status: 'RETRIEVAL_FAILED', accessState: 'UNAVAILABLE', error: String(e && e.message || e).slice(0, 160) });
       }
     };
-    const skipDiscover = analysisOnly || !!(cont && (cont.stage === 'retrieve' || cont.stage === 'synthesize' || cont.stage === 'analyze') && Array.isArray(b.priorResults) && b.priorResults.length);
+    const skipDiscover = analysisOnly || !!(cont && Array.isArray(b.priorResults) && b.priorResults.length);
     if (evidenceUrl && !skipDiscover && !analysisOnly) await pushRet(evidenceUrl);
     const focus = retrieved[0];
     const ids = (focus && focus.identifiers) || { profiles: [], handles: [], aliases: [] };
@@ -3773,7 +3886,7 @@ async function deepDiveHandler(req, env) {
         resolved.all ? 'Investigate ALL research paths for this entity type, active context, and question — including paths discovered for this investigation' : ('Investigate selected paths: ' + selectedPaths.map(p => p.label).join(', ')),
         customQuestion ? ('Investigative instruction (' + (instruction.intent || 'directed') + (instruction.topic ? ': ' + instruction.topic : '') + '): ' + customQuestion.slice(0, 180)) : 'No custom question — follow the selected paths',
         'Research depth: ' + depth + (depth === 'deep' ? ' — follow productions, people, organizations, and references discovered in the intersection' : (depth === 'contextual' ? ' — find material about the entity ∩ requested context, not name-only hits' : ' — identify the entity/domain')),
-        adult === 'off' ? 'Adult content filter is OFF — general public research' : (adult === 'on' ? 'Adult content filter is ON — keep adult-industry public context through retrieval, media, and synthesis' : 'Adult content filter is BOTH — keep general and adult-context lanes distinguishable'),
+        adult === 'off' ? 'Adult content lens is OFF — general public research' : (adult === 'on' ? ((resolved.all || (b.investigation === 'everything')) ? 'Adult lens ON + Everything — adult-industry career, productions, media, interviews, and collaborators first; generic biography is secondary' : 'Adult lens ON — keep adult-industry public context through retrieval, media, and synthesis') : 'Adult content lens is BOTH — keep general and adult-context lanes distinguishable'),
         classification.context ? ('Requested context: ' + (classification.subject || seed) + ' in relation to “' + classification.context + '” (' + (classification.relation || 'context') + ')') : 'Subject-only research (no extra visual/contextual relation requested)',
         evidenceUrl ? (focusBlocked ? ('Identifying source is inaccessible (' + accessLabel(focus.accessState) + '). That page is provenance only — researching the canonical entity across other public sources.') : 'Identifying source kept as provenance/evidence, not as a research boundary. Investigating the canonical entity across public sources.') : 'Retrieve the strongest public sources for the canonical entity',
         'A Browse/Search result identifies the entity. Deep Dive does not restrict discovery to that source, domain, or result set.',
@@ -3789,7 +3902,7 @@ async function deepDiveHandler(req, env) {
       safety: 'Read-only public research. Carmen will not contact anyone, send messages, post, log in, bypass paywalls, or take external actions.',
     };
 
-    const extraLimit = remainingFetches() < 16 ? 4 : (resolved.all || expanded || depth === 'deep' ? 6 : 4);
+    const extraLimit = remainingFetches() < 16 ? 4 : (resolved.all || expanded || depth === 'deep' || ((adult === 'on' || adult === 'both') && classification.type === 'person') ? 6 : 4);
     let discovery;
     if (skipDiscover) {
       const priorRows = b.priorResults || [];
@@ -3826,11 +3939,13 @@ async function deepDiveHandler(req, env) {
       }
       if (a.resultKind === 'INTERSECTION_MATCH' || a.resultKind === 'INTERVIEW_MATCH') sa += 16;
       if (b.resultKind === 'INTERSECTION_MATCH' || b.resultKind === 'INTERVIEW_MATCH') sb += 16;
-      if (a.resultKind === 'AGGREGATOR' || a.resultKind === 'GENERIC_BACKGROUND') sa -= 10;
-      if (b.resultKind === 'AGGREGATOR' || b.resultKind === 'GENERIC_BACKGROUND') sb -= 10;
+      if (a.resultKind === 'AGGREGATOR') sa -= 10;
+      if (b.resultKind === 'AGGREGATOR') sb -= 10;
+      if (a.resultKind === 'GENERIC_BACKGROUND') sa -= (adult === 'on' ? 14 : 10);
+      if (b.resultKind === 'GENERIC_BACKGROUND') sb -= (adult === 'on' ? 14 : 10);
       if (adult === 'on' || adult === 'both') {
-        if (a.contextLane === 'adult' || isAdultishSource(a)) sa += 10;
-        if (b.contextLane === 'adult' || isAdultishSource(b)) sb += 10;
+        if (a.contextLane === 'adult' || isAdultishSource(a)) sa += 18;
+        if (b.contextLane === 'adult' || isAdultishSource(b)) sb += 18;
       }
       return sb - sa || (b.score || 0) - (a.score || 0);
     });
@@ -3914,7 +4029,7 @@ ${selectedPaths.map(p => p.label).join('\n')}
 - Public titles, snippets, and thumbnails of inaccessible sources are REFERENCED public evidence, not retrieved page content.
 - If the only remaining relevant source is paywalled, say clearly: Absolutely cannot retrieve due to paywall. Then list what public evidence exists elsewhere and what remains UNKNOWN.
 - If a visual/contextual relation was requested (person + context), treat that as a different problem from identity-only search. Rank and discuss sources that actually associate the person with the requested context — entity ∩ context, not entity results plus random context results.
-- If Adult content = ON, do not silently fall back to generic biography. Keep adult-context public sources, images, and videos in the writeup, labeled honestly. Adult context does not lower OBSERVED/INFERRED/UNKNOWN discipline.
+- If Adult content = ON, do not silently fall back to generic biography. Keep adult-context public sources, images, and videos in the writeup, labeled honestly. Adult context does not lower OBSERVED/INFERRED/UNKNOWN discipline. When the investigation is Everything/ALL, prioritize adult-industry career, productions, public media, interviews, and collaborators; generic celebrity trivia is secondary. If a specific concept is present, treat entity × concept × adult lens as the first-class research target.
 - If Adult content = BOTH, distinguish the general lane from the adult-context lane.
 - Never bypass paywalls, logins, age gates, CAPTCHAs, or other access controls. Work around the information gap with public alternatives only.
 - Images showing similar appearance across sources are OBSERVED visual consistency, NOT identity proof. Never say they are definitely the same person.
@@ -4018,6 +4133,8 @@ Planning vocabulary is INFERRED, not case evidence. Only treat retrieved co-occu
       analysisSkipped,
       paused,
       analysisOnly: !!analysisOnly,
+      investigation: resolved.investigation || b.investigation || '',
+      investigationChoices: investigationChoices(classification.type, classification),
     }, 200, req);
   } catch (e) {
     const msg = e?.message || String(e);
@@ -4119,7 +4236,7 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '47.2',
+        version: '47.3',
         build: 'workspace',
         schemaVersion: 2,
         provider: ai.provider,
@@ -4128,7 +4245,7 @@ export default {
         routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Reddit', 'Wikipedia', 'Startpage'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -4475,4 +4592,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface };

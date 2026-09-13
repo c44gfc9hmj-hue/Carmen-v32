@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence, mergeConceptKnowledge, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence, mergeConceptKnowledge, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -1162,6 +1162,147 @@ console.log('--- v47.2 no hardcoded test subjects ---');
   assert(!/\bashley anderson\b/i.test(src), 'worker does not hardcode Ashley Anderson');
   assert(!/\blincoln aviator\b/i.test(src), 'worker does not hardcode Lincoln Aviator');
   assert(!/\bclips4sale\.com\b/i.test(src), 'worker does not hardcode clips4sale');
+}
+
+console.log('--- v47.3 investigation choices adapt by type ---');
+{
+  const personOn = investigationChoices('person', { type: 'person', adultContent: 'on' });
+  assert(personOn.some(x => x.id === 'everything' && x.label === 'Everything'), 'person has Everything');
+  assert(personOn.some(x => x.id === 'interviews'), 'person has Interviews');
+  assert(personOn.some(x => x.id === 'videos'), 'person has Videos');
+  assert(personOn.some(x => x.id === 'images'), 'person has Images');
+  assert(personOn.some(x => /Career & credits/.test(x.label)), 'adult ON person career is Career & credits');
+  assert(personOn.some(x => x.id === 'related'), 'person has Related people');
+  assert(personOn.some(x => x.id === 'question' && x.question), 'person has Custom question');
+  assert(!personOn.some(x => /bondage|riley|abella|angela|drea/i.test(x.id + x.label)), 'choices are not hardcoded to a test subject');
+  const personOff = investigationChoices('person', { type: 'person', adultContent: 'off' });
+  assert(personOff.some(x => /Career & history/.test(x.label)), 'adult OFF person career is Career & history');
+  assert(!personOff.some(x => /credits/i.test(x.label)), 'adult OFF does not inject credits wording');
+  const extra = investigationChoices('person', { type: 'person', adultContent: 'on', context: 'rope' });
+  assert(extra.some(x => x.id === 'context' && /rope/i.test(x.label)), 'person + extra concept gets a context choice');
+  const vehicle = investigationChoices('vehicle', { type: 'vehicle', adultContent: 'on' });
+  assert(vehicle.some(x => x.id === 'towing'), 'vehicle has Towing');
+  assert(vehicle.some(x => x.id === 'repair'), 'vehicle has Repair');
+  assert(!vehicle.some(x => /credits|interviews|related people/i.test(x.label)), 'vehicle does not inherit person choices');
+  const skill = investigationChoices('skill', { type: 'skill', adultContent: 'on' });
+  assert(skill.some(x => x.id === 'tutorials'), 'skill has Tutorials');
+  assert(skill.some(x => x.id === 'safety'), 'skill has Safety');
+  const product = investigationChoices('product', { type: 'product', adultContent: 'off' });
+  assert(product.some(x => x.id === 'repair'), 'product has Repair');
+  const mapped = resolveDivePaths('person', { investigation: 'interviews' }, { type: 'person', adultContent: 'on' });
+  assert(mapped.all === false, 'Interviews is not Everything');
+  assert(mapped.selected.some(p => p.id === 'interviews'), 'investigation Interviews maps onto interview paths');
+  const everything = resolveDivePaths('person', { investigation: 'everything' }, { type: 'person' });
+  assert(everything.all === true, 'Everything still selects all person paths');
+}
+
+console.log('--- v47.3 adult lens does not contaminate non-person types ---');
+{
+  const veh = applyResearchFilter(classifyQuery('Lincoln Aviator'), 'on', 'Lincoln Aviator');
+  assert(veh.type === 'vehicle', 'adult ON does not change a vehicle into a person');
+  assert(veh.context !== 'adult content', 'adult ON does not inject adult-content context onto a vehicle');
+  const vehVars = buildSearchVariants('Lincoln Aviator', veh);
+  assert(!vehVars.some(v => /photoset|performer|filmography/i.test(v.q)), 'adult ON does not inject adult-industry variants onto a vehicle');
+  const hitch = applyResearchFilter(classifyQuery('welding a trailer hitch'), 'on', 'welding a trailer hitch');
+  assert(hitch.type === 'skill', 'adult ON does not change a skill into a person');
+  assert(!/adult content/i.test(hitch.context || ''), 'adult ON does not inject adult-content context onto a skill');
+  const hitchVocab = contextVocabulary(hitch);
+  assert(!(hitchVocab.related || []).some(x => /performer|photoset|filmography/i.test(x)), 'skill vocab stays instructional, not adult-industry');
+  const phone = applyResearchFilter(classifyQuery('Apple iPhone repair'), 'on', 'Apple iPhone repair');
+  assert(phone.type === 'product' || phone.type === 'topic', 'product + repair stays a product/topic');
+  assert(!/adult content/i.test(phone.context || ''), 'product + repair does not inherit adult-content context');
+  const bondageVeh = applyResearchFilter(classifyQuery('Lincoln Aviator bondage'), 'on', 'Lincoln Aviator bondage');
+  assert(bondageVeh.type === 'vehicle', 'vehicle + bondage stays a vehicle');
+  const bondageVars = buildSearchVariants('Lincoln Aviator bondage', bondageVeh);
+  assert(!bondageVars.some(v => /performer OR photoset|"official site" OR models/i.test(v.q)), 'vehicle + bondage does not get adult identity variants');
+  const personTow = applyResearchFilter(classifyQuery('Jordan Hale towing'), 'on', 'Jordan Hale towing');
+  assert(personTow.type === 'person', 'person + towing stays a person under adult ON');
+  assert(/towing/i.test(personTow.context || ''), 'person + towing keeps towing as the requested concept');
+}
+
+console.log('--- v47.3 Everything + adult is an adult-first plan ---');
+{
+  const on = applyResearchFilter(classifyQuery('Jordan Hale'), 'on', 'Jordan Hale');
+  assert(on.context === 'adult content', 'adult ON person still implies adult-content context');
+  const vs = adultSemanticVariants('Jordan Hale');
+  assert(vs.length >= 3, 'Everything adult variants cover more than a single identity query');
+  assert(vs.some(v => /credits|filmography/i.test(v.q)), 'adult Everything includes career/credits');
+  assert(vs.some(v => /interview|feature/i.test(v.q)), 'adult Everything includes interviews');
+  assert(vs.some(v => /studio|production|collaborator/i.test(v.q)), 'adult Everything includes collaborators');
+  const extras = diveExpansionQueries({
+    classification: on,
+    seed: 'Jordan Hale',
+    resolvedAll: true,
+    adult: 'on',
+    depth: 'contextual',
+  });
+  assert(extras.length >= 2, 'Deep Dive expands beyond the name');
+  const firstAdult = extras.findIndex(q => /performer|photoset|credits|filmography|interview/i.test(q));
+  const quotedOnly = extras.findIndex(q => /^"Jordan Hale"$/.test(q));
+  assert(firstAdult >= 0, 'adult variants are in the dive expansion');
+  assert(quotedOnly < 0 || firstAdult < quotedOnly, 'quoted name is not the first adult-lens expansion');
+  const off = applyResearchFilter(classifyQuery('Jordan Hale'), 'off', 'Jordan Hale');
+  const offVars = buildSearchVariants('Jordan Hale', off);
+  const onVars = buildSearchVariants('Jordan Hale', on);
+  assert(!offVars.some(v => /photoset/i.test(v.q)), 'adult OFF still does not inject photoset');
+  assert(onVars.some(v => /performer|photoset|official site|models/i.test(v.q)), 'adult ON still expands with adult-industry semantics');
+  const items = [
+    { title: 'Jordan Hale', url: 'https://en.wikipedia.org/wiki/Jordan_Hale', source: 'Bing', snippet: 'favorite food and childhood biography' },
+    { title: 'Jordan Hale - IAFD', url: 'https://www.iafd.com/person.rme/perfid=jordanhale', source: 'Bing', snippet: 'performer filmography credits' },
+    { title: 'Jordan Hale interview', url: 'https://features.example/jordan-hale-interview', source: 'Bing', snippet: 'interview performer official site' },
+  ];
+  const rankedOn = rankResults('Jordan Hale', items, on);
+  assert(!rankedOn[0].url.includes('wikipedia'), 'Everything + adult ON still does not rank trivia biography first');
+  const wiki = rankedOn.find(r => /wikipedia/.test(r.url));
+  const iafd = rankedOn.find(r => /iafd/.test(r.url));
+  assert(iafd && wiki && iafd.score > wiki.score, 'adult-industry career evidence outranks encyclopedia trivia');
+}
+
+console.log('--- v47.3 PERSON × CONCEPT × ADULT stays one target ---');
+{
+  const raw = 'Jordan Hale rope';
+  const c = applyResearchFilter(classifyQuery(raw), 'on', raw);
+  assert(c.type === 'person', 'person + concept stays a person');
+  assert(/rope/i.test(c.context || ''), 'concept remains central under adult ON');
+  const forms = intersectionFormulations('Jordan Hale', 'rope', c);
+  assert(forms.every(q => /Jordan Hale/i.test(q) && /rope/i.test(q)), 'every intersection formulation is entity × concept');
+  const extras = diveExpansionQueries({
+    classification: c,
+    seed: raw,
+    resolvedAll: true,
+    adult: 'on',
+    depth: 'contextual',
+  });
+  assert(extras.some(q => /rope/i.test(q) && /Jordan Hale/i.test(q)), 'dive expansion keeps entity × concept');
+  assert(extras.some(q => /photoset|scene|gallery|credits|filmography|interview/i.test(q)), 'adult lens still expands the same intersection');
+}
+
+console.log('--- v47.3 custom question is not leftover filler ---');
+{
+  const c = { subject: 'Jordan Hale', type: 'person', adultContent: 'on' };
+  const filler = parseInvestigativeQuestion('What are the public facts?', c);
+  assert(!filler.topic || !/public facts|what are/i.test(filler.topic), 'interrogative leftover is not a fake observed concept');
+  const real = parseInvestigativeQuestion('Find interviews where she discusses rope', c);
+  assert(real.intent === 'interviews', 'real custom question still classifies as interviews');
+  assert(/rope/i.test(real.topic), 'real custom question still extracts the concept');
+  const applied = applyQuestionToClassification(applyResearchFilter(classifyQuery('Jordan Hale'), 'on', 'Jordan Hale'), 'Find interviews where she discusses rope');
+  assert(/rope/i.test(applied.context || ''), 'custom question still becomes research context');
+}
+
+console.log('--- v47.3 UI hides engine internals on the primary path ---');
+{
+  const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8');
+  assert(/What are you looking for\?/.test(html), 'home asks What are you looking for');
+  assert(/>Search</.test(html), 'Search is the dominant home action');
+  assert(/Investigate/.test(html) && /Saved/.test(html), 'primary nav is Home / Search / Investigate / Saved');
+  assert(/navLearn" class="hidden"/.test(html) && /navInvestigations" class="hidden"/.test(html), 'Learn and Cases are not in the primary nav');
+  assert(/diveQuestionWrap/.test(html), 'custom question is a dive choice, not a wall of controls');
+  assert(/ACCESS RESTRICTED/.test(app), 'UI still names ACCESS RESTRICTED');
+  assert(/PUBLIC ALTERNATIVES FOUND/.test(app), 'UI still names PUBLIC ALTERNATIVES FOUND');
+  assert(/continueDiveBtn/.test(app) && /continueFrom/.test(app), 'Continue is still wired');
+  assert(/retryAnalysis|Retry analysis/.test(app), 'Retry analysis is still wired');
+  assert(!/\bdrea morgan\b/i.test(app), 'frontend does not hardcode Drea Morgan');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
