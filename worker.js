@@ -1753,8 +1753,14 @@ function isStockImage(url) {
 }
 
 function classifyQuery(q, hint = '') {
-  const raw = String(q || '').trim();
-  const done = (obj) => attachContext(raw, obj);
+  const split = splitSourceRestriction(q);
+  const raw = split.text;
+  const restrictedDomain = split.domain;
+  const done = (obj) => {
+    const attached = attachContext(raw, obj);
+    if (restrictedDomain) attached.requestedSourceDomain = restrictedDomain;
+    return attached;
+  };
   const hintMap = {
     person: 'person', topic: 'topic', website: 'website', claim: 'topic',
     product: 'product', position: 'technique', other: '', organization: 'organization',
@@ -2184,6 +2190,29 @@ function extractRequestedSourceDomain(question) {
   return '';
 }
 
+function splitSourceRestriction(q) {
+  const raw = String(q || '').trim();
+  const domain = extractRequestedSourceDomain(raw);
+  if (!domain) return { text: raw, domain: '' };
+  const escaped = domain.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let text = raw
+    .replace(new RegExp('\\bsite\\s*:\\s*(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(new RegExp('\\bonly\\s+look\\s+at\\s+sources?\\s+(?:on|from|at)\\s+(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(new RegExp('\\bonly\\s+use\\s+sources?\\s+(?:on|from|at)\\s+(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(new RegExp('\\bsearch\\s+only\\s+(?:on\\s+|from\\s+|at\\s+)?(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(new RegExp('\\brestrict(?:\\s+results)?\\s+to\\s+(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(new RegExp('\\bonly\\s+search\\s+(?:this\\s+domain:?\\s+)?(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(new RegExp('\\buse\\s+only\\s+(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(new RegExp('\\bsources?\\s+(?:on|from|at)\\s+(?:www\\.)?' + escaped + '\\s+only\\b', 'ig'), ' ')
+    .replace(new RegExp('\\bonly\\s+(?:on|from|at)\\s+(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(new RegExp('\\bonly\\s+this\\s+domain:?\\s+(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(new RegExp('\\b(?:www\\.)?' + escaped + '\\b', 'ig'), ' ')
+    .replace(/[.,;:]+$/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { text: text || raw, domain };
+}
+
 function userAskedForSourceRestriction(question) {
   return !!extractRequestedSourceDomain(question);
 }
@@ -2300,13 +2329,14 @@ function identityIsAmbiguous(ranked, classification) {
 function diveRetrievalQueue(opts) {
   opts = opts || {};
   const cap = opts.retrieveCap || 6;
+  const overflow = Math.max(Number(cap) * 3, 18);
   const adult = opts.adult || 'off';
   const evidenceUrl = opts.evidenceUrl || '';
   const evidenceHost = hostOf(evidenceUrl).replace(/^www\./, '');
   const out = [];
   const seen = new Set();
   const push = (url) => {
-    if (!url || seen.has(url) || out.length >= cap) return;
+    if (!url || seen.has(url) || out.length >= overflow) return;
     seen.add(url);
     out.push(url);
   };
@@ -2321,7 +2351,7 @@ function diveRetrievalQueue(opts) {
   };
   const rows = [...(opts.discoveryResults || [])].sort((a, b) => pri(a) - pri(b) || (b.score || 0) - (a.score || 0));
   for (const r of rows) {
-    if (out.length >= cap) break;
+    if (out.length >= overflow) break;
     if (!r || !r.url) continue;
     const h = hostOf(r.url).replace(/^www\./, '');
     if ((TUBE_INDEX_RE.test(h) || isAggregatorPage(r)) && r.url !== evidenceUrl && adult === 'off') continue;
@@ -2329,7 +2359,7 @@ function diveRetrievalQueue(opts) {
     push(r.url);
   }
   for (const r of rows) {
-    if (out.length >= cap) break;
+    if (out.length >= overflow) break;
     if (!r || !r.url) continue;
     const h = hostOf(r.url).replace(/^www\./, '');
     if ((TUBE_INDEX_RE.test(h) || isAggregatorPage(r)) && r.url !== evidenceUrl && adult === 'off') continue;
@@ -2692,6 +2722,11 @@ function scoreResult(query, item, classification) {
   const nameTokens = subjTokens.length ? subjTokens : tokens.filter(t => t.length > 2).slice(0, 3);
   if (classification.isUrl && classification.url && (item.url === classification.url || item.url === classification.url.replace(/\/$/, ''))) {
     score += 50; bits.push('submitted URL');
+  }
+  const wantHost = String((classification && classification.requestedSourceDomain) || '').replace(/^www\./, '').toLowerCase();
+  if (wantHost) {
+    if (host === wantHost || host.endsWith('.' + wantHost)) { score += 28; bits.push('user-requested source domain'); }
+    else { score -= 24; bits.push('outside the requested source domain'); }
   }
   const aggregator = isAggregatorPage(item);
   const specialist = isSpecialistSource(item);
@@ -3074,6 +3109,11 @@ async function runDiscovery(query, opts = {}) {
       const t = typeof extra === 'string' ? extra : extra && extra.q;
       addVar(t, (extra && extra.why) || 'deep-dive expansion', 'dive', 'web');
     }
+  }
+  if (classification.requestedSourceDomain) {
+    const d = classification.requestedSourceDomain;
+    const sub = String(classification.subject || q).replace(/"/g, '');
+    addVar('"' + sub + '" site:' + d, 'user-requested source domain', 'restriction', 'web');
   }
   const results = [], seen = new Set(), diagnostics = {};
   if (!q) return { query: q, classification, variants, results, providers: diagnostics, count: 0, expanded, adultContent: adult, depth, lanes: graph.lanes };

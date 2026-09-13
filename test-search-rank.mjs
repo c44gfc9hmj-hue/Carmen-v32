@@ -1035,6 +1035,11 @@ console.log('--- v47.2 continue batch and intersection count ---');
   const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
   assert(/retrieved\.length - batchStartCount/.test(src), 'Deep Dive compare retrieve cap against this batch, not prior total');
   assert(/priorRows\.filter\(r => r && r.intersection\)/.test(src), 'skipDiscover derives intersectionCount from prior results');
+  const overflowQ = diveRetrievalQueue({
+    retrieveCap: 4,
+    discoveryResults: Array.from({ length: 10 }, (_, i) => ({ url: 'https://studio.example/title/' + i, resultKind: 'INTERSECTION_MATCH', score: 40 })),
+  });
+  assert(overflowQ.length > 4, 'retrieval queue keeps URLs beyond this batch cap for Continue');
 }
 
 console.log('--- v47.2 explicit source restriction ---');
@@ -1058,6 +1063,10 @@ console.log('--- v47.2 explicit source restriction ---');
   const ins = parseInvestigativeQuestion('Only look at sources on clips4sale.com', { subject: 'Jordan Hale', type: 'person' });
   assert(ins.intent !== 'videos', 'hostname "clip" does not become video intent');
   assert(!/clips4sale\.com/i.test(ins.topic || ''), 'domain is not the investigative topic');
+  const restricted = classifyQuery('Jordan Hale only look at sources on example.com');
+  assert(restricted.type === 'person', 'restriction language does not change entity type');
+  assert(restricted.subject === 'Jordan Hale', 'subject is still the person after restriction strip');
+  assert(restricted.requestedSourceDomain === 'example.com', 'user domain is recorded on classification');
 }
 
 console.log('--- v47.2 person does not inherit vehicle vocab ---');
