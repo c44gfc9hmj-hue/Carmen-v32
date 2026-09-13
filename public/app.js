@@ -851,7 +851,7 @@ async function discover(opts = {}) {
     }
     const knownImgs = lastVisuals.map(im => im.url || im.src).filter(Boolean).slice(0, 40);
     const knownVids = lastVideos.map(v => v.videoId || videoDedupeKey(v.url || v.pageUrl || '')).filter(Boolean).slice(0, 40);
-    if (attemptedQueries.length) params.set('attempted', attemptedQueries.slice(0, 24).join('\n'));
+    if (attemptedQueries.length) params.set('attempted', attemptedQueries.slice(0, 40).join('\n'));
     if (knownImgs.length && (visualMore || visualMode || videoMore)) params.set('knownMedia', knownImgs.join('\n'));
     if (knownVids.length && (videoMore || visualMode)) params.set('knownVideos', knownVids.join('\n'));
     const r = await fetch(base + '/search?' + params.toString(), { headers: { accept: 'application/json' } });

@@ -1510,6 +1510,13 @@ console.log('--- v47.8 video ID preservation ---');
   assert(vq.some(v => /youtube/i.test(v.q)), 'video query classes include a youtube source class');
   const skipped = videoQueryVariants({ type: 'person', subject: 'Jordan Hale', adultContent: 'on' }, { attemptedQueries: [vq[0].q] });
   assert(!skipped.length || skipped[0].q !== vq[0].q, 'More Videos skips an already-attempted video class');
+  assert(!isAdultishSource({ url: 'https://www.example-news.test/inside-out-riley/', title: '"Jordan Hale" (performer OR photoset OR "official site")', snippet: 'Public image-index result. Attribution is the hosting page.' }), 'query-echo title is not adult evidence');
+  assert(!isAdultishSource({ url: 'https://wedding.example/gallery/riley', title: 'Riley wedding gallery', snippet: 'ceremony photos' }), 'generic /gallery/ path is not adult evidence');
+  const echoAdult = applyResearchFilter(classifyQuery('Jordan Hale'), 'on', 'Jordan Hale');
+  const echoClass = classifySourceClass({ url: 'https://www.example-news.test/inside-out/', title: '"Jordan Hale" (performer OR photoset)', snippet: 'image index' }, echoAdult);
+  assert(echoClass !== 'ADULT_PLATFORM', 'query-echo entertainment page is not classified as an adult platform');
+  const moreAfter = visualQueryVariants({ type: 'person', subject: 'Jordan Hale', adultContent: 'on' }, { mode: 'more', attemptedQueries: visualQueryVariants({ type: 'person', subject: 'Jordan Hale', adultContent: 'on' }, { mode: 'more' }).map(v => v.q) });
+  assert(moreAfter.length && moreAfter.some(v => /photocall|press still|behind the scenes|screenshot|frame/i.test(v.q)), 'More Images invents a new visual class after the first set is exhausted');
 }
 
 console.log('--- v47.8 knowledge model and premium honesty ---');

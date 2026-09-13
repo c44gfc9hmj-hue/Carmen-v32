@@ -156,6 +156,14 @@ function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
 }
 
+function isQueryShapedTitle(title) {
+  const t = String(title || '');
+  if (/\sOR\s/.test(t) && /[("']/.test(t)) return true;
+  if (/\bsite:/i.test(t)) return true;
+  if (/^\s*"[^"]+"\s*\(/.test(t)) return true;
+  return false;
+}
+
 function uniqueAdd(results, seen, item) {
   const url = unwrap(item.url);
   const title = cleanTitle(item.title);
@@ -389,7 +397,9 @@ function attachImageHit(results, seen, hit, diagnosticsKey) {
       return true;
     }
   }
-  const title = cleanTitle(hit.title) || 'Public image result';
+  const hostTitle = hostOf(pageUrl || image).replace(/^www\./, '');
+  const rawTitle = cleanTitle(hit.title);
+  const title = (rawTitle && !isQueryShapedTitle(rawTitle)) ? rawTitle : (hostTitle ? hostTitle + ' image' : 'Public image result');
   const url = (pageUrl && validUrl(pageUrl)) ? pageUrl : image;
   return uniqueAdd(results, seen, {
     title,
@@ -504,6 +514,14 @@ async function bingVideos(q, results, seen, diagnostics) {
       if (uniqueAdd(results, seen, { title: q + ' video', url, source: 'Bing Videos', snippet: 'Public Vimeo reference. Canonical video ID preserved.', queryVariant: q })) added++;
     }
     parseAnchors(html, 'Bing Videos', results, seen, Math.min(40, results.length + 12));
+    // Keep only actual video resources from the video index — do not promote
+    // incidental page links (tube indexes, articles) as if they were videos.
+    for (let i = results.length - 1; i >= before; i--) {
+      const row = results[i];
+      if (row && row.source === 'Bing Videos' && !isVideoUrl(row.url) && !youtubeId(row.url) && !vimeoId(row.url)) {
+        results.splice(i, 1);
+      }
+    }
     diagnostics['Bing Videos'].added = Math.max(0, results.length - before);
     diagnostics['Bing Videos'].videoIds = added;
   } catch (e) {
@@ -779,7 +797,7 @@ const CLOTHING_HINTS = new Set(['clothing', 'garment', 'outfit', 'fashion']);
 const CLOTHING_WORD_RE = /\b(dress|dresses|gown|jacket|coat|coats|jeans|trousers|pants|skirt|blouse|shirt|shirts|outfit|outfits|garment|wardrobe|corset|heels|boots|sneakers|sweater|hoodie|suit|kimono|sari|lingerie|cardigan|blazer|shorts|leggings|jumpsuit|romper|knitwear)\b/i;
 const STOCK_IMAGE_RE = /(shutterstock|gettyimages|istockphoto|adobestock|unsplash\.com|pexels\.com|pixabay\.com|depositphotos)/i;
 const ADULT_HOST_RE = /(^|\.)(onlyfans|manyvids|clips4sale|iwantclips|iafd|adultfilmdatabase|adultdvdtalk|babepedia|boobpedia|indexxx|data18|thenude|freeones)\./i;
-const ADULT_PATH_RE = /\/(models?|performers?|pornstar|photoset|scene|xxx|galleries)(\/|$)/i;
+const ADULT_PATH_RE = /\/(pornstar|pornstars|photoset|photosets|xxx|performer|performers)(\/|$)/i;
 const GENERIC_BIO_HOST_RE = /(wikipedia\.org|britannica\.com|biography\.com)/i;
 const ADULT_LANG_RE = /\b(adult(?:[- ]content)?|nsfw|xxx|porn(?:star)?|onlyfans|bdsm|bondage|fetish|kink|performer|photoset)\b/i;
 const ADULT_EVIDENCE_RE = /\b(performer|photoset|adult film|pornstar|xxx|onlyfans|bdsm|bondage|fetish|iafd)\b/i;
@@ -1108,8 +1126,11 @@ function imageSearchQuery(q, classification) {
 function isAdultishSource(item) {
   const url = String(item && item.url || '');
   const host = hostOf(url);
-  const blob = (String(item && item.title || '') + ' ' + String(item && item.snippet || '') + ' ' + url).toLowerCase();
-  return ADULT_HOST_RE.test(host) || ADULT_PATH_RE.test(url) || ADULT_EVIDENCE_RE.test(blob);
+  if (ADULT_HOST_RE.test(host) || ADULT_PATH_RE.test(url)) return true;
+  const title = String(item && item.title || '');
+  const snippet = String(item && item.snippet || '');
+  const blob = ((isQueryShapedTitle(title) ? '' : title) + ' ' + snippet + ' ' + url).toLowerCase();
+  return ADULT_EVIDENCE_RE.test(blob);
 }
 
 function isAggregatorPage(item) {
@@ -1385,7 +1406,7 @@ function pushVisualHit(hits, hit, source) {
     thumb: usableImage(hit.thumb) || image,
     pageUrl,
     domain: hostOf(pageUrl || image).replace(/^www\./, ''),
-    title: cleanTitle(hit.title) || '',
+    title: (cleanTitle(hit.title) && !isQueryShapedTitle(hit.title)) ? cleanTitle(hit.title) : '',
     source: source || 'Image index',
     queryVariant: hit.query || '',
     imageOrigin: 'image-index',
@@ -1489,7 +1510,14 @@ function visualQueryVariants(classification, opts) {
     }
   }
   const unused = nextUnusedQueries(out, opts.attemptedQueries || [], mode === 'more' || mode === 'searchvisual' ? 8 : 6);
-  return (unused.length ? unused : out).slice(0, 8);
+  if (unused.length) return unused.slice(0, 8);
+  if ((mode === 'more' || mode === 'searchvisual') && quoted) {
+    add(quoted + ' (photocall OR "press still" OR "behind the scenes")', 'additional stills class after exhausted primary visual classes');
+    add(quoted + ' (screenshot OR frame OR thumbnail OR still)', 'frame stills class');
+    const extraUnused = nextUnusedQueries(out, opts.attemptedQueries || [], 8);
+    if (extraUnused.length) return extraUnused.slice(0, 8);
+  }
+  return out.slice(0, 8);
 }
 
 function videoQueryVariants(classification, opts) {
@@ -4191,7 +4219,14 @@ async function runDiscovery(query, opts = {}) {
   if (wantVisual) {
     const vq = visualQueryVariants(classification, { mode, seedVisual, excludeHosts, attemptedQueries });
     const vidQ = videoQueryVariants(classification, { attemptedQueries });
-    for (const v of vidQ) addVar(v.q, v.why, 'videos', 'video');
+    if (!videoMore) {
+      for (const v of vq) addVar(v.q, v.why, 'images', 'image');
+    }
+    // Do not mark video classes as attempted during More Images / visual-only
+    // passes — those classes belong to More Videos.
+    if (videoMore || !(visualMore || visualMode === 'more' || visualMode === 'searchvisual' || visualMode === 'similar' || visualMode === 'different')) {
+      for (const v of vidQ) addVar(v.q, v.why, 'videos', 'video');
+    }
     const primary = (vq[0] && vq[0].q) || imgQ;
     const second = (vq[1] && vq[1].q) || '';
     const videoPrimary = (vidQ[0] && vidQ[0].q) || primary;
