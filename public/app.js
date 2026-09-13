@@ -27,6 +27,9 @@ let invFilter = 'all';
 let openCollectionId = null;
 let lastDivePayload = null;
 let sessionBoundProject = false;
+let attemptedQueries = [];
+let lastPremium = [];
+let lastRetrievalTrace = null;
 let diveAll = true;
 let selectedDivePathIds = [];
 let diveWorkspaceTab = 'findings';
@@ -810,6 +813,9 @@ async function discover(opts = {}) {
     lastVideos = [];
     selectedVisual = null;
     suppressed = { urls: [], hosts: [], images: [] };
+    attemptedQueries = [];
+    lastPremium = [];
+    lastRetrievalTrace = null;
   }
   originalQuery = q;
   $('results').innerHTML = '<div class="skeleton" style="height:120px;margin-bottom:9px"></div>'.repeat(3);
@@ -841,8 +847,13 @@ async function discover(opts = {}) {
     if (hosts.length) params.set('excludeHosts', hosts.slice(0, 8).join(','));
     if (opts.seedVisual) {
       const sv = opts.seedVisual;
-      params.set('seedVisual', JSON.stringify({ title: sv.title || sv.caption || '', domain: sv.domain || '', caption: sv.caption || '' }));
+      params.set('seedVisual', JSON.stringify({ title: sv.title || sv.caption || '', domain: sv.domain || '', caption: sv.caption || '', pageUrl: sv.pageUrl || sv.url || '' }));
     }
+    const knownImgs = lastVisuals.map(im => im.url || im.src).filter(Boolean).slice(0, 40);
+    const knownVids = lastVideos.map(v => v.videoId || videoDedupeKey(v.url || v.pageUrl || '')).filter(Boolean).slice(0, 40);
+    if (attemptedQueries.length) params.set('attempted', attemptedQueries.slice(0, 24).join('\n'));
+    if (knownImgs.length && (visualMore || visualMode || videoMore)) params.set('knownMedia', knownImgs.join('\n'));
+    if (knownVids.length && (videoMore || visualMode)) params.set('knownVideos', knownVids.join('\n'));
     const r = await fetch(base + '/search?' + params.toString(), { headers: { accept: 'application/json' } });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
@@ -857,6 +868,10 @@ async function discover(opts = {}) {
     lastVideos = mergeVideos(lastVideos, data.videos || data.videoCorpus || []);
     lastCorpusScale = data.corpusScale || { images: lastVisuals.length, videos: lastVideos.length, sources: lastResults.length, label: lastVisuals.length + ' images · ' + lastVideos.length + ' videos · ' + lastResults.length + ' sources' };
     lastConcepts = Array.isArray(data.concepts) ? data.concepts : lastConcepts;
+    if (Array.isArray(data.attemptedQueries)) attemptedQueries = [...new Set([...(attemptedQueries || []), ...data.attemptedQueries])].slice(0, 48);
+    else if (Array.isArray(data.variants)) attemptedQueries = [...new Set([...(attemptedQueries || []), ...data.variants.map(v => v.q || v)])].slice(0, 48);
+    if (Array.isArray(data.premiumContent)) lastPremium = data.premiumContent;
+    lastRetrievalTrace = data.retrievalTrace || lastRetrievalTrace;
     originalQuery = data.query || q;
     if (data.classification && data.classification.subject) researchSubject = data.classification.subject;
     if (Array.isArray(data.lenses) && data.lenses.length) lastLenses = data.lenses;
@@ -874,9 +889,11 @@ async function discover(opts = {}) {
     persistSession();
     updateDeepDiveState();
     const scale = lastCorpusScale && lastCorpusScale.label ? lastCorpusScale.label : (lastVisuals.length + ' images · ' + lastVideos.length + ' videos · ' + lastResults.length + ' sources');
-    toast(lastResults.length || lastVisuals.length || lastVideos.length
+    toast(data.noNewMedia
+      ? 'No new media — pivoted to the next query class.'
+      : (lastResults.length || lastVisuals.length || lastVideos.length
       ? (visualMode || visualMore || videoMore ? 'Corpus updated — ' + scale : (expanded ? 'Expanded Research — ' + scale : scale))
-      : 'No public results. See diagnostics.');
+      : 'No public results. See diagnostics.'));
   } catch (e) {
     $('results').innerHTML = '';
     $('resultsEmpty').textContent = 'Discovery failed: ' + e.message;
@@ -1029,12 +1046,20 @@ function mergeVisuals(prior, next) {
   }
   return out.slice(0, 96);
 }
+function videoDedupeKey(url) {
+  const s = String(url || '');
+  const yt = s.match(/[?&]v=([\w-]{6,})/) || s.match(/youtu\.be\/([\w-]{6,})/) || s.match(/youtube\.com\/embed\/([\w-]{6,})/);
+  if (yt) return 'yt:' + yt[1];
+  const vim = s.match(/vimeo\.com\/(?:video\/)?(\d+)/);
+  if (vim) return 'vm:' + vim[1];
+  return visualDedupeKey(s);
+}
 function mergeVideos(prior, next) {
   const out = [];
   const seen = new Set();
   for (const v of [...(prior || []), ...(next || [])]) {
     if (!v) continue;
-    const key = visualDedupeKey(v.url || v.pageUrl || v.embedUrl || '');
+    const key = v.videoId || videoDedupeKey(v.url || v.pageUrl || v.embedUrl || '');
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(v);
@@ -1699,6 +1724,8 @@ function renderDeepDivePayload(data, subject) {
   lastPaths = data.availablePaths || data.paths || lastPaths;
   if (Array.isArray(data.concepts)) lastConcepts = data.concepts;
   lastResearchState = data.researchState || lastResearchState;
+  if (Array.isArray(data.premiumContent)) lastPremium = data.premiumContent;
+  lastRetrievalTrace = data.retrievalTrace || lastRetrievalTrace;
   if (data.paused) lastResearchState = data.researchState || lastResearchState;
   if (Array.isArray(data.investigationChoices) && data.investigationChoices.length) lastInvestigationChoices = data.investigationChoices;
   if (Array.isArray(data.videos) || Array.isArray(data.videoCorpus)) lastVideos = mergeVideos(lastVideos, data.videos || data.videoCorpus || []);
@@ -1755,6 +1782,7 @@ function renderDiveWorkspace(data, subject) {
     tutorials.length ? ['tutorials', 'Tutorials'] : null,
     retrieved.length || results.length ? ['sources', 'Sources'] : null,
     (related.length || leads.length || graphLeads.length) ? ['explore', 'Explore'] : null,
+    (data.premiumContent && data.premiumContent.length) || lastPremium.length ? ['premium', 'Premium'] : null,
   ].filter(Boolean);
   if (diveWorkspaceTab === 'overview' || diveWorkspaceTab === 'media') {
     diveWorkspaceTab = diveWorkspaceTab === 'media' ? (imgs.length ? 'images' : (videos.length ? 'videos' : 'findings')) : 'findings';
@@ -1790,6 +1818,9 @@ function renderDiveWorkspace(data, subject) {
     body = (retrieved.length ? retrieved.map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> ${accessBadge(x.accessState || (x.status === 'RETRIEVED' ? 'DIRECTLY_RETRIEVED' : 'UNAVAILABLE'))}<br><small>${esc(x.finalUrl || x.url || '')}${x.accessNote ? ' · ' + esc(x.accessNote) : ''}</small>${x.publicEvidence ? '<p class="hint">Public evidence (not protected content): ' + esc(x.publicEvidence) + '</p>' : ''}</div>`).join('') : '')
       + (results.length && !retrieved.length ? resultListHtml(results.slice(0, 12)) : '')
       || '<p class="muted">No retrieved pages.</p>';
+  } else if (diveWorkspaceTab === 'premium') {
+    const prem = (data.premiumContent && data.premiumContent.length) ? data.premiumContent : lastPremium;
+    body = prem.length ? prem.map(x => `<div class="pattern"><b>${esc(x.title || x.url)}</b> <span class="badge">${esc(x.accessKind || x.accessState || 'restricted')}</span><br><small>${esc(x.domain || '')} · ${esc(x.accessState || '')}</small><p class="hint">${esc(x.note || 'Referenced as a public citation. Carmen did not access restricted material.')}</p>${x.publicEvidence ? '<p class="hint">Public evidence (not protected content): ' + esc(x.publicEvidence) + '</p>' : ''}${x.url ? '<a href="' + esc(x.url) + '" target="_blank" rel="noopener noreferrer">Open public page</a>' : ''}</div>`).join('') : '<p class="hint">No public references to subscription or login-gated material were found.</p>';
   } else if (diveWorkspaceTab === 'explore') {
     const relHtml = related.length ? related.map((rel, i) => `<div class="branch"><b>${esc(rel.label)}</b><div class="subtle">${esc(rel.why || '')}${rel.domain ? ' · ' + esc(rel.domain) : ''}</div><button class="btn primary" data-branch="${i}" style="margin-top:8px">Investigate this</button></div>`).join('') : '';
     const leadHtml = leads.map(l => `<div class="lead"><b>${esc(l.text || l)}</b></div>`).join('');
@@ -2358,9 +2389,7 @@ function wire() {
   if ($('lightboxSearchVisual')) $('lightboxSearchVisual').onclick = () => {
     const item = currentLightboxVisual();
     closeLightbox();
-    const q = [lastClassification?.subject, item.title || item.caption, item.domain].filter(Boolean).join(' ');
-    if (q && $('searchQuery')) $('searchQuery').value = q;
-    discover({ visualMode: 'similar', seedVisual: item });
+    discover({ visualMode: 'searchvisual', seedVisual: item });
   };
   if ($('lightboxNotImage')) $('lightboxNotImage').onclick = () => {
     const item = currentLightboxVisual();

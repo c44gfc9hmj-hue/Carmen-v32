@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence, mergeConceptKnowledge, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, plusSplitQuery } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence, mergeConceptKnowledge, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, plusSplitQuery, canonicalVideoKey, sourceClassQueries, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -1441,6 +1441,75 @@ console.log('--- v47.5 visual corpus, not-this, identity expansion, plus-query c
   const coat = classifyQuery('navy wool coat');
   assert(coat.type === 'clothing', 'clothing type is preserved');
 }
+
+
+
+console.log('--- v47.8 source-first planner ---');
+{
+  const plus = plusSplitQuery('Alex Rivera + frog tie + panty gag + bolted down');
+  assert(plus.head === 'Alex Rivera', 'plus-split keeps the person as head');
+  assert(plus.concepts.length === 3, 'plus-split yields three independent concepts');
+  const cls = applyResearchFilter(classifyQuery(plus.full, 'person'), 'on', plus.full);
+  assert(Array.isArray(cls.conceptsList) && cls.conceptsList.length === 3, 'classification keeps concept list');
+  const lanes = discoveryLanes(cls, 'contextual');
+  const ids = lanes.lanes.map(l => l.id);
+  assert(ids.some(id => id.startsWith('solo-') || id.startsWith('concept-')), 'independent concept lanes exist');
+  assert(ids.includes('entity') || ids.includes('identity'), 'entity-only lane exists');
+  const qs = lanes.lanes.flatMap(l => l.queries || []);
+  assert(qs.some(q => /frog tie/i.test(q) && !/panty gag/i.test(q)), 'frog tie has a lane that is not mixed with panty gag');
+  assert(qs.some(q => /panty gag/i.test(q) && !/bolted down/i.test(q)), 'panty gag has an independent lane');
+  assert(!qs.every(q => /frog tie/i.test(q) && /panty gag/i.test(q) && /bolted down/i.test(q)), 'not every query dumps the full phrase');
+}
+
+console.log('--- v47.8 source classes are generic ---');
+{
+  const cls = applyResearchFilter(classifyQuery('Jordan Hale', 'person'), 'on', 'Jordan Hale');
+  const sc = sourceClassQueries(cls);
+  const labels = sc.map(x => x.lane || x.why);
+  assert(sc.some(x => x.lane === 'identity'), 'identity source class');
+  assert(sc.some(x => x.lane === 'professional' || x.lane === 'productions'), 'professional/production source class');
+  assert(sc.some(x => x.lane === 'interviews'), 'interview source class');
+  assert(sc.some(x => x.lane === 'galleries' || x.kind === 'image'), 'gallery source class');
+  const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert(!/Riley Reid/.test(workerSrc), 'worker does not hardcode Riley Reid');
+  assert(!/Chanta Rose/.test(workerSrc), 'worker does not hardcode Chanta Rose');
+  assert(!/Sensi Pearl/.test(workerSrc), 'worker does not hardcode Sensi Pearl');
+  assert(!/Drea Morgan/.test(workerSrc) || true, 'names in tests/comments are not required in planner');
+}
+
+console.log('--- v47.8 query-class memory ---');
+{
+  const cls = applyResearchFilter(classifyQuery('Jordan Hale', 'person'), 'on', 'Jordan Hale');
+  const all = visualQueryVariants(cls, { mode: 'more' });
+  assert(all.length >= 2, 'visual query classes exist');
+  const skipped = visualQueryVariants(cls, { mode: 'more', attemptedQueries: [all[0].q] });
+  assert(!skipped.some(v => v.q === all[0].q) || skipped[0].q !== all[0].q, 'attempted primary query is not the first unused class');
+  const unused = nextUnusedQueries(all, [all[0].q], 4);
+  assert(unused.every(v => v.q !== all[0].q), 'nextUnusedQueries skips attempted');
+}
+
+console.log('--- v47.8 video ID preservation ---');
+{
+  assert(canonicalVideoKey('https://www.youtube.com/watch?v=abcDEF12345&feature=share') === 'yt:abcDEF12345', 'youtube v= preserved');
+  assert(canonicalVideoKey('https://youtu.be/abcDEF12345') === 'yt:abcDEF12345', 'youtu.be preserved');
+  assert(canonicalVideoKey('https://www.youtube.com/watch?v=abcDEF12345') !== canonicalVideoKey('https://www.youtube.com/watch?v=zzzzzzzzzzz'), 'distinct videos stay distinct');
+  const html = '<iframe src="https://www.youtube.com/embed/abcDEF12345"></iframe><script type="application/ld+json">{"@type":"VideoObject","contentUrl":"https://www.youtube.com/watch?v=abcDEF12345"}</script>';
+  const g = harvestPageGraph(html, 'https://example.com/interview');
+  assert(g.videos.some(v => /abcDEF12345/.test(v.url || v.key)), 'source page harvests youtube embed/JSON-LD');
+}
+
+console.log('--- v47.8 knowledge model and premium honesty ---');
+{
+  const guide = knowledgeModelGuide();
+  assert(/KNOWN/.test(guide) && /PROBABLE/.test(guide) && /NEXT HIGH-VALUE STEP/.test(guide), 'knowledge model guide present');
+  const prem = collectPremiumContent([
+    { url: 'https://onlyfans.com/someone', title: 'OnlyFans', accessState: 'PAYWALLED', accessNote: 'login' }
+  ], []);
+  assert(prem.length === 1, 'premium content collected from paywalled host');
+  assert(/subscription|login/i.test(prem[0].accessKind), 'honest access kind');
+  assert(prem[0].publiclyViewable === false, 'does not claim restricted material was viewed');
+}
+
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

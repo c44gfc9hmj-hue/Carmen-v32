@@ -101,5 +101,5 @@ console.log('--- /chat without key ---');
 { const { status, body } = await call('/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }) });
   assert(status === 500, 'chat 500 without key');
   assert(/API_KEY|not configured/i.test(body.error || ''), 'clear config error'); }
-console.log(` + '`\nResults: ${passed} passed, ${failed} failed`' + `);
+console.log(`\nResults: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
