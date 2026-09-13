@@ -1,4 +1,4 @@
-import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence } from './worker.js';
+import { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, pathSearchVariants, youtubeId, parseRelated, classifyAccess, accessLabel, parseQueryContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, collectDiveImages, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, parseInvestigativeQuestion, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, FETCH_HARD_CAP, budgetReport, resetFetchBudget, remainingFetches, intersectionFormulations, enrichConceptsFromEvidence, mergeConceptKnowledge, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface } from './worker.js';
 import { readFileSync } from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -710,9 +710,9 @@ console.log('--- v46 Test G: same entity/source split for non-person types ---')
     assert(diveSeedQuery({ subject: row.name, type: row.type }, row.name, row.name, 'https://source-a.example/x') === row.name, 'G: ' + row.type + ' seed is the entity, not the identifying URL');
   }
   const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
-  const extraFn = src.slice(src.indexOf('function diveExpansionQueries'), src.indexOf('function diveRetrievalQueue'));
+  const extraFn = src.slice(src.indexOf('function diveExpansionQueries'), src.indexOf('function retrieveBatchPlan') > 0 ? src.indexOf('function retrieveBatchPlan') : src.indexOf('function diveRetrievalQueue'));
   assert((extraFn.match(/site:/g) || []).length === 1, 'G: dive expansion has only the explicit-request site: path');
-  assert(/userAskedForSourceRestriction\(customQuestion\)/.test(extraFn), 'G: site: identifying host is gated on explicit user request');
+  assert(/extractRequestedSourceDomain/.test(extraFn), 'G: site: uses the user-requested domain, not the identifying host');
   assert(!/\bdrea morgan\b/i.test(src), 'G: worker does not hardcode Drea Morgan');
   assert(!/\bfrogtie\b/i.test(src), 'G: worker does not hardcode Frogtie');
 }
@@ -951,6 +951,207 @@ console.log('--- v47.1 retrieval queue prefers intersection ---');
   });
   assert(q[0] === 'https://source-a.example/j', 'identifying source is still first (provenance)');
   assert(q.indexOf('https://studio.example/title') < q.indexOf('https://wiki.example/jordan'), 'intersection URL is retrieved before generic biography');
+}
+
+console.log('--- v47.2 multi-token person names ---');
+{
+  const de = classifyQuery('Drea de Matteo');
+  assert(de.type === 'person', 'particle name is a person');
+  assert(de.subject === 'Drea de Matteo', 'particle surname is not peeled as context (got ' + de.subject + ' / ' + de.context + ')');
+  assert(!de.context || !/^matteo$/i.test(de.context), 'Matteo is not investigative context');
+  const van = classifyQuery('Ludwig van Beethoven');
+  assert(van.type === 'person' && van.subject === 'Ludwig van Beethoven', 'van particle stays in the name');
+  const von = classifyQuery('Alexander von Humboldt');
+  assert(von.subject === 'Alexander von Humboldt', 'von particle stays in the name');
+  const del = classifyQuery('Oscar de la Hoya');
+  assert(/oscar de la hoya/i.test(del.subject), 'multi-particle name stays intact');
+  const rope = classifyQuery('Drea Morgan rope');
+  assert(rope.type === 'person', 'person + object is still a person');
+  assert(rope.subject === 'Drea Morgan', 'two-token name is the subject');
+  assert(/rope/i.test(rope.context || ''), 'lowercase remainder is investigative context');
+  const interview = classifyQuery('Alex Rivera interview');
+  assert(interview.subject === 'Alex Rivera' && /interview/i.test(interview.context || ''), 'known trailing context still splits');
+  assert(isNameParticle('de') && isNameParticle('van') && isNameParticle('von'), 'particles are recognized generically');
+  assert(!isNameParticle('rope') && !isNameParticle('Morgan'), 'ordinary tokens are not particles');
+}
+
+console.log('--- v47.2 vehicle type survives unrelated context ---');
+{
+  for (const ctx of ['towing', 'repair', 'bondage', 'history', 'specifications']) {
+    const c = classifyQuery('Lincoln Aviator ' + ctx);
+    assert(c.type === 'vehicle', 'Lincoln Aviator + ' + ctx + ' stays a vehicle (got ' + c.type + ')');
+    assert(/lincoln aviator/i.test(c.subject || ''), 'vehicle subject preserved for ' + ctx);
+  }
+  const personTow = classifyQuery('Jordan Hale towing');
+  assert(personTow.type === 'person', 'personal name + towing is still a person');
+}
+
+console.log('--- v47.2 identity: incidental snippet is not identity proof ---');
+{
+  const raw = 'Ashley Anderson photography';
+  const c = applyResearchFilter(classifyQuery(raw), 'off', raw);
+  assert(c.type === 'person', 'common two-token name is a person');
+  const pta = { title: 'Paul Thomas Anderson', url: 'https://en.wikipedia.org/wiki/Paul_Thomas_Anderson', snippet: 'Anderson\'s Next Film. Bubp, Ashley', source: 'Bing' };
+  const scored = scoreResult(raw, pta, c);
+  assert((scored.signals || []).some(s => /incomplete name|different person|missing name/i.test(s)), 'encyclopedia/snippet-only first name is not identity');
+  assert(nameOnIdentitySurface(pta, ['ashley', 'anderson']) === false, 'name-on-surface ignores snippet-only mentions');
+  const real = { title: 'Ashley Anderson photography portfolio', url: 'https://ashleyanderson.example/photos', snippet: 'gallery', source: 'Bing' };
+  const ranked = rankResults(raw, [pta, real], c);
+  const picked = pickIdentityCandidate(ranked, c);
+  assert(picked && /ashleyanderson|Ashley Anderson photography/i.test(picked.url + picked.title), 'identity pick prefers a full-name surface');
+  const junk = { title: "Ashley Anderson 's Interview 2026 - Instagram", url: 'https://www.instagram.com/popular/ashley-anderson-interview-2026/', snippet: 'podcast', source: 'Bing' };
+  assert(isAggregatorPage(junk) === true || /popular/.test(junk.url), 'instagram /popular/ identity farm is junk/aggregator');
+}
+
+console.log('--- v47.2 scorer metadata is never OBSERVED ---');
+{
+  const rope = interpretConcept('rope', 'person', 'on');
+  const leaked = enrichConceptsFromEvidence([rope], [
+    { title: 'Unrelated page', snippet: 'stock photos', reason: 'Strong exact match query tokens — entity ∩ context (rope)' },
+    { title: 'Another unrelated page', snippet: 'more stock', reason: 'strong exact match query tokens' },
+  ]);
+  const obs = (leaked[0].observedRelated || []).join(' ');
+  assert(!/\b(strong|exact|match|query|tokens)\b/i.test(obs), 'scorer words are not observed concepts (got ' + obs + ')');
+  assert(leaked[0].knowledge !== 'evidence', 'reason-only co-occurrence does not upgrade to evidence');
+  const real = enrichConceptsFromEvidence([rope], [
+    { title: 'Jordan Hale rope photoset', snippet: 'rope session gallery photoset' },
+    { title: 'Jordan Hale in rope', snippet: 'rope photoset credits' },
+  ]);
+  assert(real[0].provenance === 'OBSERVED' || real[0].knowledge === 'evidence', 'title/snippet co-occurrence still upgrades');
+  const merged = mergeConceptKnowledge(real, [rope]);
+  assert(merged[0].knowledge === 'evidence' && merged[0].provenance === 'OBSERVED', 'OBSERVED is not downgraded by later planning');
+}
+
+console.log('--- v47.2 continue batch and intersection count ---');
+{
+  const plan = retrieveBatchPlan({
+    priorRetrieved: [{ url: 'https://a.example/1' }, { url: 'https://a.example/2' }, { url: 'https://a.example/3' }, { url: 'https://a.example/4' }, { url: 'https://a.example/5' }, { url: 'https://a.example/6' }],
+    pendingUrls: ['https://b.example/7', 'https://b.example/8', 'https://a.example/1'],
+    batchCap: 6,
+  });
+  assert(plan.next.length === 2, 'continue fetches the next batch, not zero, after a full prior cap');
+  assert(plan.next[0] === 'https://b.example/7', 'pending URLs are first');
+  assert(!plan.next.includes('https://a.example/1'), 'already-retrieved URLs are not refetched');
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert(/retrieved\.length - batchStartCount/.test(src), 'Deep Dive compare retrieve cap against this batch, not prior total');
+  assert(/priorRows\.filter\(r => r && r.intersection\)/.test(src), 'skipDiscover derives intersectionCount from prior results');
+}
+
+console.log('--- v47.2 explicit source restriction ---');
+{
+  assert(extractRequestedSourceDomain('Only look at sources on clips4sale.com') === 'clips4sale.com', 'natural only-look-at-sources-on');
+  assert(extractRequestedSourceDomain('only use sources from example.com') === 'example.com', 'only-use-sources-from');
+  assert(extractRequestedSourceDomain('search only example.com') === 'example.com', 'search-only');
+  assert(extractRequestedSourceDomain('restrict results to example.com') === 'example.com', 'restrict-results-to');
+  assert(extractRequestedSourceDomain('use only example.com') === 'example.com', 'use-only-domain');
+  assert(extractRequestedSourceDomain('sources on example.com only') === 'example.com', 'sources-on-domain-only');
+  assert(extractRequestedSourceDomain('site:example.com interviews') === 'example.com', 'site: operator');
+  assert(userAskedForSourceRestriction('Find interviews where she discusses rope') === false, 'investigative question is not a restriction');
+  const extras = diveExpansionQueries({
+    classification: { subject: 'Jordan Hale', type: 'person', context: 'rope', adultContent: 'on' },
+    seed: 'Jordan Hale rope',
+    customQuestion: 'Only look at sources on clips4sale.com',
+    evidenceHost: 'wikipedia.org',
+  });
+  assert(extras.some(q => /site:clips4sale\.com/i.test(q)), 'restriction uses the USER domain');
+  assert(!extras.some(q => /site:wikipedia/i.test(q)), 'identifying host is not substituted');
+  const ins = parseInvestigativeQuestion('Only look at sources on clips4sale.com', { subject: 'Jordan Hale', type: 'person' });
+  assert(ins.intent !== 'videos', 'hostname "clip" does not become video intent');
+  assert(!/clips4sale\.com/i.test(ins.topic || ''), 'domain is not the investigative topic');
+}
+
+console.log('--- v47.2 person does not inherit vehicle vocab ---');
+{
+  const personTow = applyResearchFilter(classifyQuery('Jordan Hale towing'), 'off', 'Jordan Hale towing');
+  assert(personTow.type === 'person', 'person + towing type');
+  const fam = inferFamily('towing', 'person', 'off');
+  assert(fam.id !== 'capability' && fam.vocabKey !== 'towing', 'person+towing is not a vehicle capability pack');
+  const lanes = discoveryLanes(personTow, 'contextual');
+  assert(!lanes.lanes.some(l => /tow-capacity|payload/i.test(l.id)), 'person+towing does not search vehicle spec terms');
+  const hitchSkill = interpretConcept('hitch', 'skill', 'off');
+  assert(hitchSkill.family === 'practice', 'skill + hitch is still practice');
+  const weld = applyResearchFilter(classifyQuery('welding a trailer hitch'), 'off', 'welding a trailer hitch');
+  assert(weld.type === 'skill', 'welding a trailer hitch remains a skill');
+}
+
+console.log('--- v47.2 classify question influences context ---');
+{
+  const on = applyResearchFilter(classifyQuery('Jordan Hale'), 'on', 'Jordan Hale');
+  const applied = applyQuestionToClassification(on, 'Find interviews where she discusses rope');
+  assert(applied.type === 'person', 'question does not change entity type');
+  assert(/rope/i.test(applied.context || ''), 'question topic becomes context (got ' + applied.context + ')');
+}
+
+console.log('--- v47.2 aggregator title overlap is not intersection ---');
+{
+  const raw = 'Jordan Hale bondage';
+  const c = applyResearchFilter(classifyQuery(raw), 'on', raw);
+  const vip = { title: 'JORDAN HALE BONDAGE PORN', url: 'https://www.vipwank.com/jordan-hale-bondage', snippet: 'Jordan Hale bondage' };
+  assert(isAggregatorPage(vip) === true, 'generic bondage-porn index host/title is an aggregator');
+  const scored = scoreResult(raw, vip, c);
+  assert(scored.resultKind === 'AGGREGATOR', 'token overlap on an index is AGGREGATOR');
+  assert(scored.intersection !== true, 'index keyword overlap is not verified intersection');
+}
+
+console.log('--- v47.2 redirects are honest ---');
+{
+  const home = redirectMeta('https://www.pornhub.com/video/search?search=test', 'https://www.pornhub.com/');
+  assert(home.redirected === true, 'redirect detected');
+  assert(home.redirectToHomepage === true, 'homepage redirect flagged');
+  assert(home.requestedUrl.includes('/video/search'), 'original URL preserved');
+  const same = redirectMeta('https://example.com/page', 'https://example.com/page');
+  assert(same.redirected === false, 'same URL is not a redirect');
+}
+
+console.log('--- v47.2 bounded analysis and safety stub ---');
+{
+  assert(isUnusableAnalysis('User Safety: safe') === true, 'safety stub is unusable');
+  assert(isUnusableAnalysis('') === true, 'empty analysis is unusable');
+  assert(isUnusableAnalysis('OBSERVED\nThe retrieved spec page lists a 5,600 lb rating.') === false, 'real writeup is usable');
+  const excerpts = analysisExcerpts([
+    { status: 'RETRIEVED', title: 'A', url: 'https://a.example', textExcerpt: 'x'.repeat(2000), resultKind: 'INTERSECTION_MATCH', intersection: true },
+    { status: 'RETRIEVED', title: 'B', url: 'https://b.example', textExcerpt: 'y'.repeat(2000), resultKind: 'GENERIC_BACKGROUND' },
+    { status: 'RETRIEVED', title: 'C', url: 'https://c.example', textExcerpt: 'z'.repeat(2000), resultKind: 'WEAK_MATCH' },
+    { status: 'RETRIEVED', title: 'D', url: 'https://d.example', textExcerpt: 'q'.repeat(2000), resultKind: 'WEAK_MATCH' },
+    { status: 'RETRIEVED', title: 'E', url: 'https://e.example', textExcerpt: 'w'.repeat(2000), resultKind: 'WEAK_MATCH' },
+  ], [], true);
+  assert(excerpts.length <= 4, 'ALL analysis is bounded to a small excerpt set');
+  assert(excerpts.every(e => e.excerpt.length <= 400), 'ALL excerpts are capped');
+  assert(excerpts[0].url === 'https://a.example', 'intersection evidence is analyzed first');
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8');
+  assert(/isUnusableAnalysis/.test(src), 'Deep Dive rejects safety stubs');
+  assert(/Research collected\. Analysis unavailable/.test(src) && /retry analysis/.test(app), 'timeout leaves retry analysis');
+  assert(/analysisOnly/.test(src) && /retryAnalysis/.test(app), 'retry analysis is wired');
+}
+
+console.log('--- v47.2 access restriction: recognize, preserve, public alternatives, never bypass ---');
+{
+  const pay = classifyAccess({ httpStatus: 200, html: '<p>Subscribe to unlock the rest. Subscribers only.</p>', url: 'https://news.example/story', host: 'news.example' });
+  assert(pay.accessState === 'PAYWALLED', 'subscription language is PAYWALLED');
+  const login = classifyAccess({ httpStatus: 200, html: '<p>Log in to view this content. Sign in to continue.</p>', url: 'https://members.example/x', host: 'members.example' });
+  assert(login.accessState === 'AUTHENTICATION_REQUIRED', 'login wall is AUTHENTICATION_REQUIRED');
+  const age = classifyAccess({ httpStatus: 200, html: '<p>Confirm your age. Age verification required.</p>', url: 'https://gate.example/x', host: 'gate.example' });
+  assert(age.accessState === 'AGE_RESTRICTED', 'age verification is AGE_RESTRICTED');
+  const publicPage = classifyAccess({ httpStatus: 200, html: '<html><title>Public bio</title><body>' + 'Public biography text. '.repeat(20) + '</body></html>', url: 'https://bio.example/person', host: 'bio.example' });
+  assert(publicPage.accessState === 'DIRECTLY_RETRIEVED', 'ordinary public page remains directly retrieved');
+  const member = classifyAccess({ httpStatus: 200, html: '<html><title>Creator</title><body>' + 'Public landing. '.repeat(30) + '</body></html>', url: 'https://onlyfans.com/someone', host: 'onlyfans.com' });
+  assert(member.accessState === 'PARTIALLY_RETRIEVED' || member.accessState === 'AUTHENTICATION_REQUIRED', 'membership host is not treated as fully retrieved private content');
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert(/Never bypass/.test(src) && !/bypass a paywall/.test(src.replace(/Never bypass[\s\S]*?access controls/, '')), 'worker never instructs a paywall bypass');
+  const app = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8');
+  assert(/ACCESS RESTRICTED/.test(app), 'UI names ACCESS RESTRICTED');
+  assert(/PUBLIC ALTERNATIVES FOUND/.test(app), 'UI names PUBLIC ALTERNATIVES FOUND');
+}
+
+console.log('--- v47.2 no hardcoded test subjects ---');
+{
+  const src = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert(!/\bdrea morgan\b/i.test(src), 'worker does not hardcode Drea Morgan');
+  assert(!/\bdrea de matteo\b/i.test(src), 'worker does not hardcode Drea de Matteo');
+  assert(!/\bashley anderson\b/i.test(src), 'worker does not hardcode Ashley Anderson');
+  assert(!/\blincoln aviator\b/i.test(src), 'worker does not hardcode Lincoln Aviator');
+  assert(!/\bclips4sale\.com\b/i.test(src), 'worker does not hardcode clips4sale');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

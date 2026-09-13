@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '47.1';
+const VERSION = '47.2';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -1451,12 +1451,12 @@ function renderDeepDivePayload(data, subject) {
   $('deepDiveProgress').innerHTML = steps || '<p class="dive-step on">Deep dive finished.</p>';
   const contBtn = $('continueDiveBtn');
   if (contBtn) {
-    const paused = !!(data.paused || (data.researchState && data.researchState.stage === 'paused'));
-    contBtn.classList.toggle('hidden', !paused);
+    const pending = !!(data.paused || (data.researchState && Array.isArray(data.researchState.pendingUrls) && data.researchState.pendingUrls.length));
+    contBtn.classList.toggle('hidden', !pending);
   }
   const retryBtn = $('retryAnalysisBtn');
   if (retryBtn) {
-    const fail = !!(data.analysisError && !data.analysis);
+    const fail = !!(data.analysisError || (data.researchState && (data.researchState.analysisStatus === 'failed' || data.researchState.analysisStatus === 'stub')));
     retryBtn.classList.toggle('hidden', !fail);
   }
   diveWorkspaceTab = 'overview';
@@ -1519,7 +1519,7 @@ function renderDiveWorkspace(data, subject) {
   const tabHtml = `<div class="ws-tabs">${tabs.map(([id, label]) => `<button class="chip${diveWorkspaceTab === id ? ' active' : ''}" data-wstab="${id}">${esc(label)}</button>`).join('')}</div>`;
   const suggestHtml = suggestions.length ? suggestions.map(s => `<div class="suggest">${esc(s)}</div>`).join('') : '';
   const access = data.access || {};
-  const accessHtml = access.headline ? `<div class="access-banner"><b>${esc(access.headline)}</b>${access.paywalled ? '<span class="hint">Paywalled material was not converted into retrieved evidence.</span>' : ''}${!data.expanded && (access.paywalled || access.authenticationRequired || (access.inaccessible || []).length) ? '<div class="row" style="margin-top:8px"><button class="btn" data-expand-dive="1">Expanded Research</button></div>' : ''}</div>` : '';
+  const accessHtml = access.headline ? `<div class="access-banner"><b>${esc(access.headline)}</b>${access.paywalled || access.authenticationRequired || access.ageRestricted ? '<p class="hint">ACCESS RESTRICTED — Carmen does not bypass paywalls, logins, or age verification. Public titles, snippets, and thumbnails are referenced public evidence only.</p>' : ''}${!data.expanded && (access.paywalled || access.authenticationRequired || (access.inaccessible || []).length) ? '<p class="hint">PUBLIC ALTERNATIVES FOUND: Carmen continued researching publicly accessible sources.</p><div class="row" style="margin-top:8px"><button class="btn" data-expand-dive="1">Expanded Research</button></div>' : ''}</div>` : '';
   let body = '';
   if (diveWorkspaceTab === 'images') {
     const gallery = imgs.map(im => ({ src: imgSrc(im.url || im), cap: [im.reason || im.caption, im.domain, im.pageUrl || im.url].filter(Boolean).join(' · '), pageUrl: im.pageUrl || im.url || '' }));
