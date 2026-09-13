@@ -166,24 +166,25 @@ function uniqueAdd(results, seen, item) {
     // Reddit results come from the JSON API; skip any stray anchor links.
     if (!item.source || !item.source.startsWith('Reddit')) return false;
   }
-  let key;
-  try {
-    const href = new URL(url).href.replace(/#.*$/, '');
-    key = canonicalVideoKey(href) || href;
-  } catch { return false; }
-  if (seen.has(key)) return false;
+  let href;
+  try { href = new URL(url).href.replace(/#.*$/, ''); } catch { return false; }
+  const key = canonicalVideoKey(href) || href;
+  if (seen.has(key) || seen.has(href)) return false;
   seen.add(key);
+  if (key !== href) seen.add(href);
   const images = Array.isArray(item.images) ? item.images.filter(x => typeof x === 'string' && x.startsWith('http')).slice(0, 8) : [];
   const image = typeof item.image === 'string' && item.image.startsWith('http') ? item.image : (images[0] || '');
+  const videoId = (youtubeId(href) || vimeoId(href)) ? key : (item.videoId || '');
   results.push({
     title: title.slice(0, 240),
-    url: key,
+    url: href,
     source: String(item.source || 'Public web').slice(0, 120),
     snippet: cleanText(decodeEntities(item.snippet || '')).slice(0, 600),
     image,
     images,
     observedAt: new Date().toISOString(),
     queryVariant: item.queryVariant || '',
+    videoId,
   });
   return true;
 }
@@ -462,21 +463,37 @@ async function bingVideos(q, results, seen, diagnostics) {
     if (!r.ok) return;
     const html = decodeEntities(await r.text());
     const before = results.length;
-    const idRe = /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([\w-]{6,})/gi;
+    const idRe = /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([\w-]{6,})/gi;
     let m, added = 0;
     const seenVid = new Set();
-    while ((m = idRe.exec(html)) && added < 24) {
-      const id = m[1];
-      if (seenVid.has(id)) continue;
+    const pushYt = (id, title) => {
+      if (!id || seenVid.has(id)) return false;
       seenVid.add(id);
       const url = 'https://www.youtube.com/watch?v=' + id;
-      if (uniqueAdd(results, seen, {
-        title: q + ' video',
+      return uniqueAdd(results, seen, {
+        title: title || (q + ' video'),
         url,
         source: 'Bing Videos',
         snippet: 'Public video index result. Canonical video ID preserved.',
         image: 'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg',
         images: ['https://i.ytimg.com/vi/' + id + '/hqdefault.jpg'],
+        queryVariant: q,
+        videoId: 'yt:' + id,
+      });
+    };
+    while ((m = idRe.exec(html)) && added < 24) {
+      if (pushYt(m[1])) added++;
+    }
+    const murlRe = /"murl"\s*:\s*"(https?:[^"]+)"/gi;
+    while ((m = murlRe.exec(html)) && added < 28) {
+      const href = unescapeJsonUrl(m[1]);
+      const yt = youtubeId(href);
+      if (yt) { if (pushYt(yt)) added++; continue; }
+      if (isVideoUrl(href) && uniqueAdd(results, seen, {
+        title: q + ' video',
+        url: href,
+        source: 'Bing Videos',
+        snippet: 'Public video index result. Canonical video ID preserved.',
         queryVariant: q,
       })) added++;
     }
@@ -1475,6 +1492,35 @@ function visualQueryVariants(classification, opts) {
   return (unused.length ? unused : out).slice(0, 8);
 }
 
+function videoQueryVariants(classification, opts) {
+  opts = opts || {};
+  const subject = String((classification && classification.subject) || '').replace(/"/g, '');
+  const extra = extraContext(classification);
+  const concepts = splitContextConcepts(classification);
+  const quoted = subject ? '"' + subject + '"' : '';
+  const adult = (classification && classification.adultContent) || 'off';
+  const adultOn = adult === 'on' || adult === 'both';
+  const out = [];
+  const add = (q, why) => {
+    const t = String(q || '').trim();
+    if (!t || out.some(x => x.q === t)) return;
+    out.push({ q: t, why: why || 'video class' });
+  };
+  if (!quoted) return out;
+  add(quoted + ' (interview OR podcast) (video OR youtube)', 'interview video class');
+  add(quoted + ' site:youtube.com', 'youtube source class');
+  if (adultOn) add(quoted + ' (scene OR clip OR video)', 'adult-context public video class');
+  else add(quoted + ' (trailer OR clip OR video OR talk)', 'public video class');
+  if (concepts.length) {
+    for (const c of concepts.slice(0, 3)) add(quoted + ' ' + c + ' (video OR clip)', 'entity × concept video lane');
+  } else if (extra && !/adult content/i.test(extra)) {
+    add(quoted + ' ' + extra + ' (video OR clip)', 'entity × context video lane');
+  }
+  add(quoted + ' (vimeo OR youtube) interview', 'public host video class');
+  const unused = nextUnusedQueries(out, opts.attemptedQueries || [], 6);
+  return (unused.length ? unused : out).slice(0, 6);
+}
+
 function identityExpansionQueries(classification) {
   const subject = String((classification && classification.subject) || '').replace(/"/g, '');
   const type = (classification && classification.type) || '';
@@ -1621,7 +1667,7 @@ function harvestPageGraph(html, pageUrl) {
     if (!url) return;
     const key = canonicalVideoKey(url);
     if (!key || seenV.has(key)) return;
-    if (!(youtubeId(url) || vimeoId(url) || /\.(mp4|webm|mov)(\?|$)/i.test(url) || /\/embed\//i.test(url))) return;
+    if (!(isVideoUrl(url) || youtubeId(url) || vimeoId(url))) return;
     seenV.add(key);
     videos.push({ url, key, title: title || '', pageUrl });
   };
@@ -1777,8 +1823,16 @@ function buildVisualCorpus(results, retrieved, classification, extraHits) {
       researchObject: true,
     });
   };
-  for (const h of extraHits || []) push(h);
-  for (const im of imgs) push(im);
+  const adultOn = ((classification && classification.adultContent) === 'on' || (classification && classification.adultContent) === 'both') && classification.type === 'person';
+  const hitAdult = (h) => isAdultishSource({ url: h.pageUrl || h.url || h.image, title: h.title || h.caption || '', snippet: h.source || '' });
+  if (adultOn) {
+    for (const h of (extraHits || []).filter(hitAdult)) push(h);
+    for (const im of imgs) push(im);
+    for (const h of extraHits || []) push(h);
+  } else {
+    for (const h of extraHits || []) push(h);
+    for (const im of imgs) push(im);
+  }
   return out.slice(0, 96);
 }
 
@@ -3301,8 +3355,11 @@ function pathSearchVariants(seed, selectedPaths, classification) {
 }
 
 function youtubeId(url) {
+  const raw = String(url || '');
+  const compact = raw.match(/^yt:([\w-]{6,})$/i);
+  if (compact) return compact[1];
   try {
-    const u = new URL(String(url || ''));
+    const u = new URL(raw);
     const h = u.hostname.replace(/^www\./, '').toLowerCase();
     if (h === 'youtu.be') return u.pathname.replace(/^\//, '').split('/')[0] || '';
     if (h === 'youtube.com' || h === 'm.youtube.com' || h.endsWith('.youtube.com')) {
@@ -3315,17 +3372,43 @@ function youtubeId(url) {
 }
 
 function vimeoId(url) {
+  const raw = String(url || '');
+  const compact = raw.match(/^vm:(\d{6,})$/i);
+  if (compact) return compact[1];
   try {
-    const u = new URL(String(url || ''));
+    const u = new URL(raw);
     if (!/(^|\.)vimeo\.com$/i.test(u.hostname.replace(/^www\./, ''))) return '';
     const m = u.pathname.match(/\/(?:video\/)?(\d+)/);
     return m ? m[1] : '';
   } catch { return ''; }
 }
 
+function isVideoUrl(url) {
+  const raw = String(url || '');
+  if (youtubeId(raw) || vimeoId(raw)) return true;
+  if (/\.(mp4|webm|mov)(\?|$)/i.test(raw)) return true;
+  if (/\/embed\//i.test(raw)) return true;
+  try {
+    const u = new URL(raw);
+    const path = u.pathname || '';
+    if (/\/(watch|view_video|video|videos|clip|player|embed)\b/i.test(path)) return true;
+    if (u.searchParams.get('v') && /[\w-]{6,}/.test(u.searchParams.get('v'))) return true;
+    if (u.searchParams.get('viewkey')) return true;
+  } catch {}
+  return false;
+}
+
 function isVideoHost(url) {
-  const h = hostOf(url).replace(/^www\./, '');
-  return /youtube\.com|youtu\.be|vimeo\.com|reddit\.com/i.test(h) || /\.(mp4|webm|mov)(\?|$)/i.test(String(url || ''));
+  return isVideoUrl(url);
+}
+
+function expandVideoUrl(url) {
+  const raw = String(url || '');
+  const yt = youtubeId(raw);
+  if (yt && !/^https?:/i.test(raw)) return 'https://www.youtube.com/watch?v=' + yt;
+  const vim = vimeoId(raw);
+  if (vim && !/^https?:/i.test(raw)) return 'https://vimeo.com/' + vim;
+  return raw;
 }
 
 function collectDiveVideos(retrieved, results, classification) {
@@ -3334,8 +3417,10 @@ function collectDiveVideos(retrieved, results, classification) {
   const adult = (classification && classification.adultContent) || 'off';
   const extraCtx = String((classification && classification.context) || '').replace(/adult content/i, '').trim().toLowerCase();
   const add = (url, pageUrl, title, thumb) => {
-    const key = canonicalVideoKey(url);
+    url = expandVideoUrl(url);
+    const key = canonicalVideoKey(url) || (isVideoUrl(url) ? String(url).split('#')[0].toLowerCase() : '');
     if (!url || !key || seen.has(key)) return;
+    if (!isVideoUrl(url) && !youtubeId(url) && !vimeoId(url)) return;
     seen.add(key);
     const yt = youtubeId(url);
     const vim = vimeoId(url);
@@ -3395,8 +3480,9 @@ function collectDiveVideos(retrieved, results, classification) {
     });
   };
   for (const r of results || []) {
-    if (youtubeId(r.url) || vimeoId(r.url) || /\.(mp4|webm|mov)(\?|$)/i.test(r.url || '')) {
-      add(r.url, r.url, r.title, r.image);
+    const href = r.url || '';
+    if (isVideoUrl(href) || r.videoId || /bing videos/i.test(r.source || '')) {
+      add(href || r.videoId, href, r.title, r.image);
     }
   }
   for (const page of retrieved || []) {
@@ -3411,7 +3497,18 @@ function collectDiveVideos(retrieved, results, classification) {
   out.sort((a, b) => (b.relevance || 0) - (a.relevance || 0));
   if (adult === 'on') {
     const contextual = out.filter(x => (x.relevance || 0) >= 5);
-    if (contextual.length) return contextual.slice(0, 36);
+    const playable = out.filter(x => x.playable);
+    if (contextual.length || playable.length) {
+      const merged = [];
+      const seenK = new Set();
+      for (const v of [...contextual, ...playable, ...out]) {
+        const k = v.videoId || v.url;
+        if (!k || seenK.has(k)) continue;
+        seenK.add(k);
+        merged.push(v);
+      }
+      return merged.slice(0, 36);
+    }
   }
   return out.slice(0, 36);
 }
@@ -4093,29 +4190,34 @@ async function runDiscovery(query, opts = {}) {
   const mode = visualMode || (visualMore ? 'more' : (further ? 'different' : 'more'));
   if (wantVisual) {
     const vq = visualQueryVariants(classification, { mode, seedVisual, excludeHosts, attemptedQueries });
+    const vidQ = videoQueryVariants(classification, { attemptedQueries });
+    for (const v of vidQ) addVar(v.q, v.why, 'videos', 'video');
     const primary = (vq[0] && vq[0].q) || imgQ;
     const second = (vq[1] && vq[1].q) || '';
+    const videoPrimary = (vidQ[0] && vidQ[0].q) || primary;
     const imgCap = visualOnly || visualMore || visualMode ? 32 : (expanded ? 28 : 24);
     const jobs = [];
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(primary, results, seen, diagnostics, imgCap, visualHits, visualOffset));
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(yahooImages(second || primary, results, seen, diagnostics, visualOnly ? 24 : 18, visualHits));
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && (videoMore || wantVisual)) jobs.push(bingVideos(primary, results, seen, diagnostics));
+    if (!videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(primary, results, seen, diagnostics, imgCap, visualHits, visualOffset));
+    if (!videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(yahooImages(second || primary, results, seen, diagnostics, visualOnly ? 24 : 18, visualHits));
+    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && (videoMore || wantVisual)) jobs.push(bingVideos(videoPrimary, results, seen, diagnostics));
+    if (videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vidQ[1]) jobs.push(bingVideos(vidQ[1].q, results, seen, diagnostics));
     if (expanded && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(google(q, results, seen, diagnostics));
     if (expanded && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(mojeek(q, results, seen, diagnostics));
     if (jobs.length) await Promise.all(jobs);
     const bingEmpty = diagnostics['Bing Images'] && (diagnostics['Bing Images'].error || diagnostics['Bing Images'].added === 0);
     const yahooEmpty = diagnostics['Yahoo Images'] && (diagnostics['Yahoo Images'].error || diagnostics['Yahoo Images'].added === 0);
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && vq[1] && (visualOnly || extraContext(classification) || further || expanded || bingEmpty)) {
+    if (!videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vq[1] && (visualOnly || extraContext(classification) || further || expanded || bingEmpty)) {
       await bingImages(vq[1].q, results, seen, diagnostics, 20, visualHits, visualOffset ? visualOffset + 20 : 0);
     }
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && (bingEmpty || yahooEmpty) && vq[2]) {
+    if (!videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && (bingEmpty || yahooEmpty) && vq[2]) {
       diagnostics.ProviderPivot = { reason: 'image provider empty or failed — pivoting to the next query class, not retrying the dead path', from: bingEmpty ? 'Bing Images' : 'Yahoo Images', q: vq[2].q };
       await bingImages(vq[2].q, results, seen, diagnostics, 18, visualHits);
     }
-    if (videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vq[1]) {
-      await bingVideos(vq[1].q, results, seen, diagnostics);
+    if (videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vidQ[2]) {
+      diagnostics.ProviderPivot = { reason: 'video index needed a new query class — pivoting rather than repeating the same media IDs', q: vidQ[2].q };
+      await bingVideos(vidQ[2].q, results, seen, diagnostics);
     }
-    if (adult === 'both' && SEARCH_BUDGET.used < SEARCH_BUDGET.max && !visualOnly) {
+    if (adult === 'both' && SEARCH_BUDGET.used < SEARCH_BUDGET.max && !visualOnly && !videoMore) {
       await bingImages(quoteName(classification.subject || q) + ' (portrait OR headshot OR official)', results, seen, diagnostics, 12, visualHits);
     }
     if (mode === 'searchvisual' && seedVisual && seedVisual.pageUrl && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
@@ -5589,4 +5691,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl };
