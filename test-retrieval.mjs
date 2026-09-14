@@ -66,7 +66,7 @@ console.log('--- /health ---');
   assert(body.features.includes('v48-reserved-adult-identity'), 'features include v48-reserved-adult-identity');
   assert(body.features.includes('v48-research-metrics'), 'features include v48-research-metrics');
   assert(body.features.includes('v48-focus-modes'), 'features include v48-focus-modes');
-  assert(body.build === '48.1-reserved-retrieval', 'build 48.1-reserved-retrieval');
+  assert(body.build === '48.1-direct-lanes', 'build 48.1-direct-lanes');
   assert(body.provider === 'openrouter', 'provider openrouter');
   assert(body.model === 'openrouter/free', 'model openrouter/free');
   assert(body.configured === false, 'configured false without key'); }

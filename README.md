@@ -18,12 +18,16 @@ v38–v47 architecture.
   `researchMetrics` payload for the actual run: provider coverage, reserved-lane
   usage, fallback usage, result counts, and retrieval budget.
 - **Reserved Reddit lane** — when direct Reddit is blocked (403) or empty,
-  Carmen runs DDG/Bing `site:reddit.com`, then Pullpush, then Wayback. Indexed
-  Reddit hits are kept (not dropped by `uniqueAdd`) and labeled
-  `Reddit (indexed)` / `Reddit (Pullpush)` / `Reddit (Wayback)`.
-- **Adult-identity lane** — for adult-person research, identity databases
-  (IAFD, AdultFilmDatabase, Babepedia, Indexxx, Freeones, TheNude, …) run
-  **before** generic web results.
+  Carmen runs DDG/Bing `site:reddit.com` (Lite is retried when HTML DDG adds
+  nothing, even if other lanes already filled the result set), then Pullpush,
+  then Wayback's availability API, then a labeled public Reddit search page
+  if indexed providers return no threads. Indexed Reddit hits are kept (not
+  dropped by `uniqueAdd`) and labeled `Reddit (indexed)` / `Reddit (Pullpush)` /
+  `Reddit (Wayback)` / `Reddit (public search)`.
+- **Adult-identity lane** — for adult-person research, Carmen fetches IAFD and
+  Babepedia **directly**, then identity-host web indexes, **before** generic
+  web results. Combined `site:` OR queries no longer leak unrelated generic
+  hits into the identity lane.
 - **Research Focus** — Person · Visuals · Position · Tutorial · Clothing · URL · Topic.
   The LEARN tab uses the same seven focuses. Legacy Technique / Skill / Product
   chips are gone from that taxonomy.

@@ -1,7 +1,7 @@
 // v48.1 reserved retrieval, metrics, and focus-mode tests.
 // Network is mocked so these assert the production request path, not live providers.
 import { readFileSync } from 'node:fs';
-import { uniqueAdd, redditBlocked, isRedditHost, adultIdentityQueries, adultIdentityCombinedQuery, buildResearchMetrics, resetFetchBudget, reservedRedditLane, reservedAdultIdentityLane, classifyQuery, applyResearchFilter, rankResults } from './worker.js';
+import { uniqueAdd, redditBlocked, isRedditHost, adultIdentityQueries, adultIdentityCombinedQuery, buildResearchMetrics, resetFetchBudget, reservedRedditLane, reservedAdultIdentityLane, classifyQuery, applyResearchFilter, rankResults, unwrap, parseBing } from './worker.js';
 import worker from './worker.js';
 
 let passed = 0, failed = 0;
@@ -21,6 +21,11 @@ console.log('--- v48.1 source actually invokes reserved lanes ---');
   assert(/researchMetrics:\s*buildResearchMetrics/.test(workerSrc), 'search payload attaches buildResearchMetrics');
   assert(workerSrc.indexOf('await reservedAdultIdentityLane(') < workerSrc.indexOf('await runVariant('), 'adult identity lane is scheduled before generic web variants');
   assert(/redditIndexedWeb\(/.test(workerSrc) && /redditPullpush\(/.test(workerSrc) && /redditWayback\(/.test(workerSrc), 'indexed/pullpush/wayback helpers exist');
+  assert(/results\.length === before/.test(workerSrc), 'DDG retries Lite when this query added nothing');
+  assert(/iafd\.com\/results\.asp/.test(workerSrc), 'adult identity lane fetches IAFD directly');
+  assert(/babepedia\.com\/babe\//.test(workerSrc), 'adult identity lane fetches Babepedia directly');
+  assert(/archive\.org\/wayback\/available/.test(workerSrc), 'Wayback uses the availability API');
+  assert(/elapsedMs: Date\.now\(\) - startedAt/.test(workerSrc), 'metrics include retrieval elapsedMs');
 }
 
 console.log('--- v48.1 uniqueAdd preserves Reddit indexed results ---');
@@ -122,6 +127,18 @@ console.log('--- v48.1 rankResults keeps reserved lanes in the window ---');
   assert(ranked.some(r => /reddit\.com/i.test(r.url)), 'indexed Reddit result survives the ranked window');
 }
 
+console.log('--- v48.1 unwrap Bing ck/a and parseBing cite ---');
+{
+  const encoded = Buffer.from('https://www.reddit.com/r/example/comments/abc123/hello/').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const wrapped = 'https://www.bing.com/ck/a?!&&p=1&u=a1' + encoded;
+  assert(unwrap(wrapped) === 'https://www.reddit.com/r/example/comments/abc123/hello/', 'unwrap decodes Bing ck/a a1 payload');
+  const results = [], seen = new Set();
+  const html = '<li class="b_algo"><h2>Jordan Hale IAFD</h2><a href="https://www.bing.com/ck/a?u=https://www.bing.com/">x</a><cite>https://www.iafd.com › person.rme</cite><p>database</p></li>';
+  parseBing(html, results, seen);
+  assert(results.length === 1, 'parseBing cite fallback stores a result');
+  assert(/iafd\.com/i.test(results[0].url), 'parseBing cite reconstructs the identity host');
+}
+
 console.log('--- v48.1 mocked /search path actually runs reserved helpers ---');
 {
   const calls = [];
@@ -131,6 +148,15 @@ console.log('--- v48.1 mocked /search path actually runs reserved helpers ---');
     calls.push(href);
     if (/reddit\.com\/.*search|api\.reddit\.com/.test(href)) {
       return new Response('forbidden', { status: 403 });
+    }
+    if (/iafd\.com\/results\.asp/.test(href)) {
+      return new Response('<a href="/person.rme/id=jh">Jordan Hale</a>', { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    if (/babepedia\.com\/babe\//.test(href)) {
+      return new Response('<title>Jordan Hale - Babepedia</title>', { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    if (/archive\.org\/wayback\/available/.test(href)) {
+      return new Response(JSON.stringify({ archived_snapshots: { closest: { available: true, url: 'https://web.archive.org/web/20200101000000/https://www.reddit.com/r/example/' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (/html\.duckduckgo|lite\.duckduckgo/.test(href)) {
       const reddit = decodeURIComponent(href).includes('site:reddit.com');
@@ -176,7 +202,8 @@ console.log('--- v48.1 mocked /search path actually runs reserved helpers ---');
     const decodedCalls = calls.map(u => { try { return decodeURIComponent(u); } catch { return u; } });
     assert(decodedCalls.some(u => /site:reddit\.com/i.test(u)), 'production search actually requested site:reddit.com');
     assert(decodedCalls.some(u => /site:reddit\.com/i.test(u) && !/photoset/i.test(u)), 'reserved reddit query is the subject, not an intersection dump');
-    assert(decodedCalls.some(u => /site:iafd\.com/i.test(u) || /site:babepedia\.com/i.test(u)), 'production search actually requested adult identity hosts');
+    assert(decodedCalls.some(u => /iafd\.com\/results\.asp/i.test(u) || /babepedia\.com\/babe\//i.test(u)), 'production search actually fetched identity sources directly');
+    assert(body.researchMetrics.elapsedMs >= 0, 'metrics include elapsedMs');
     assert(body.researchMetrics.reservedLanes.adultIdentity === true, 'adult identity lane ran on adult person search');
     const redditRows = (body.results || []).filter(r => /reddit\.com/i.test(r.url || '') || /Reddit/i.test(r.source || ''));
     assert(redditRows.length > 0, 'Reddit indexed results were retained');

@@ -119,7 +119,22 @@ function decodeEntities(s = '') {
     .replace(/&#(\d+);/g, (_, n) => { try { return String.fromCodePoint(Number(n)); } catch { return ''; } });
 }
 
-// Resolve redirect-wrapped URLs (DuckDuckGo uddg=, etc.).
+function decodeBingBase64Url(raw) {
+  try {
+    let s = String(raw || '');
+    if (!s) return '';
+    try { s = decodeURIComponent(s); } catch {}
+    if (/^https?:\/\//i.test(s)) return s;
+    if (s.startsWith('a1')) s = s.slice(2);
+    s = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    const decoded = atob(s);
+    if (/^https?:\/\//i.test(decoded)) return decoded;
+  } catch {}
+  return '';
+}
+
+// Resolve redirect-wrapped URLs (DuckDuckGo uddg=, Bing ck/a u=a1…, etc.).
 function unwrap(raw) {
   let url = decodeEntities(String(raw || '')).trim();
   if (!url) return '';
@@ -128,7 +143,14 @@ function unwrap(raw) {
     const u = new URL(url);
     for (const key of ['uddg', 'url', 'u', 'ru', 'goto']) {
       const target = u.searchParams.get(key);
-      if (target && /^https?:\/\//i.test(target)) return decodeURIComponent(target);
+      if (!target) continue;
+      if (/^https?:\/\//i.test(target)) {
+        try { return decodeURIComponent(target); } catch { return target; }
+      }
+      if (key === 'u' && /(^|\.)bing\.com$/i.test(u.hostname)) {
+        const decoded = decodeBingBase64Url(target);
+        if (decoded) return decoded;
+      }
     }
   } catch {}
   return url;
@@ -267,6 +289,8 @@ function parseDDG(html, results, seen) {
 function parseBing(html, results, seen) {
   // Bing mobile: the page title lives in <h2>...</h2>, the URL in a separate
   // <a class="tilk" href> anchor, and the snippet in a <p>.
+  // Desktop/safe-search pages often wrap the real destination in bing.com/ck/a
+  // or only expose it in <cite>.
   let added = false;
   const re = /<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>([\s\S]*?)<\/li>/gi;
   let m;
@@ -274,11 +298,29 @@ function parseBing(html, results, seen) {
     const block = m[1];
     const hm = block.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
     const um = block.match(/href="(https?:[^"]+)"/i);
-    if (!hm || !um) continue;
+    const cite = block.match(/<cite[^>]*>([\s\S]*?)<\/cite>/i);
+    let url = um ? unwrap(um[1]) : '';
+    const host = hostOf(url);
+    if ((!url || BLOCKED_HOSTS.has(host) || /(^|\.)bing\.com$/i.test(host)) && cite) {
+      const cited = citeToUrl(cite[1]);
+      if (cited) url = cited;
+    }
+    if (!hm || !url) continue;
     const sm = block.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-    added = uniqueAdd(results, seen, { title: hm[1], url: unwrap(um[1]), snippet: sm ? sm[1] : '', source: 'Bing' }) || added;
+    added = uniqueAdd(results, seen, { title: hm[1], url, snippet: sm ? sm[1] : '', source: 'Bing' }) || added;
   }
   return added;
+}
+
+function citeToUrl(citeHtml) {
+  const text = cleanText(decodeEntities(citeHtml || '')).replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  let s = text.replace(/\s+[\u203a>]\s+/g, '/').replace(/\s+/g, '');
+  s = s.replace(/\/+$/, '');
+  if (!s) return '';
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^[\w.-]+\.[a-z]{2,}/i.test(s)) return 'https://' + s;
+  return '';
 }
 
 function parseYahoo(html, results, seen) {
@@ -359,11 +401,14 @@ async function htmlSearch(url, source, parser, results, seen, diagnostics, query
   const before = results.length;
   try {
     const r = await fetchText(url, { headers: BROWSER_HEADERS });
-    diagnostics[source] = { status: r.status, ok: r.ok };
+    const challenged = r.status === 202 || r.status === 403;
+    diagnostics[source] = { status: r.status, ok: r.ok && !challenged };
+    if (challenged) diagnostics[source].error = r.status === 202 ? 'challenge' : 'blocked';
     if (!r.ok) return;
     const html = await r.text();
     const structured = parser ? parser(html, results, seen) : false;
     if (!structured) parseAnchors(html, source, results, seen, MAX_RESULTS);
+    if (challenged && results.length === before) diagnostics[source].added = 0;
   } catch (e) {
     if (e && e.name === 'BudgetExhausted') {
       diagnostics[source] = { error: 'skipped (fetch budget)' };
@@ -379,8 +424,11 @@ async function htmlSearch(url, source, parser, results, seen, diagnostics, query
 }
 
 async function ddg(q, results, seen, diagnostics) {
+  const before = results.length;
   await htmlSearch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q) + '&kp=-2', 'DuckDuckGo', parseDDG, results, seen, diagnostics, q);
-  if (results.length < 8) {
+  // Retry Lite when THIS query added nothing — not when the global result
+  // set is already full from an earlier reserved lane.
+  if (results.length === before) {
     await htmlSearch('https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(q), 'DuckDuckGo Lite', null, results, seen, diagnostics, q);
   }
 }
@@ -899,19 +947,50 @@ async function redditWayback(q, results, seen, diagnostics) {
     return 0;
   }
   noteReserved('reddit');
-  const query = '"' + String(q || '').replace(/"/g, '') + '" site:web.archive.org reddit.com';
-  const before = results.length;
-  const tmp = {};
-  await bing(query, results, seen, tmp);
+  const subject = String(q || '').replace(/"/g, '').trim();
   let added = 0;
-  for (const r of results.slice(before)) {
-    if (!/web\.archive\.org/i.test(r.url || '') || !/reddit\.com/i.test(r.url || '')) continue;
-    r.source = 'Reddit (Wayback)';
-    r.retrievalLane = 'wayback';
-    r.accessState = r.accessState || 'PUBLIC_ALTERNATIVE';
-    added++;
+  const collapsed = subject.replace(/\s+/g, '');
+  const candidate = collapsed ? ('https://www.reddit.com/r/' + collapsed + '/') : ('https://www.reddit.com/search/?q=' + encodeURIComponent(subject));
+  try {
+    SEARCH_BUDGET.used++;
+    const availUrl = 'https://archive.org/wayback/available?url=' + encodeURIComponent(candidate);
+    const r = await fetchText(availUrl, { headers: { ...BROWSER_HEADERS, accept: 'application/json' } });
+    diagnostics.WaybackReddit = { status: r.status, ok: r.ok, query: candidate };
+    if (r.ok) {
+      const j = await r.json().catch(() => ({}));
+      const snap = j && j.archived_snapshots && j.archived_snapshots.closest;
+      if (snap && snap.url) {
+        const href = String(snap.url).replace(/^http:\/\//i, 'https://');
+        if (uniqueAdd(results, seen, {
+          title: subject + ' on Reddit (Wayback)',
+          url: href,
+          source: 'Reddit (Wayback)',
+          snippet: 'Archived Reddit page via Wayback Machine',
+          retrievalLane: 'wayback',
+          accessState: 'PUBLIC_ALTERNATIVE',
+          sourceLabel: 'Reddit (Wayback)',
+        })) added++;
+      }
+    }
+  } catch (e) {
+    diagnostics.WaybackReddit = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 200) };
   }
-  diagnostics.WaybackReddit = { ...(tmp.Bing || {}), added, query };
+  if (added < 1 && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
+    const query = '"' + subject + '" site:web.archive.org reddit.com';
+    const before = results.length;
+    const tmp = {};
+    await bing(query, results, seen, tmp);
+    for (const row of results.slice(before)) {
+      if (!/web\.archive\.org/i.test(row.url || '') || !/reddit\.com/i.test(row.url || '')) continue;
+      row.source = 'Reddit (Wayback)';
+      row.retrievalLane = 'wayback';
+      row.accessState = row.accessState || 'PUBLIC_ALTERNATIVE';
+      added++;
+    }
+    diagnostics.WaybackReddit = { ...(diagnostics.WaybackReddit || {}), ...(tmp.Bing || {}), added, query };
+  } else {
+    diagnostics.WaybackReddit = { ...(diagnostics.WaybackReddit || {}), added };
+  }
   return added;
 }
 
@@ -939,6 +1018,22 @@ async function reservedRedditLane(q, results, seen, diagnostics) {
     added += await redditWayback(q, results, seen, diagnostics);
     fallbacks.push('wayback');
   }
+  if (redditResultCount(results) < 1) {
+    const subject = String(q || '').replace(/"/g, '').trim();
+    const url = 'https://www.reddit.com/search/?q=' + encodeURIComponent('"' + subject + '"') + '&include_over_18=on';
+    if (uniqueAdd(results, seen, {
+      title: subject + ' — Reddit public search',
+      url,
+      source: 'Reddit (public search)',
+      snippet: 'Public Reddit search page. Direct Reddit JSON is blocked; indexed providers returned no threads.',
+      retrievalLane: 'indexed-reddit',
+      accessState: 'PUBLIC_ALTERNATIVE',
+      sourceLabel: 'Reddit (public search)',
+    })) {
+      fallbacks.push('public-search');
+      added++;
+    }
+  }
   diagnostics.ReservedReddit.fallbacks = fallbacks;
   diagnostics.ReservedReddit.added = redditResultCount(results);
   return added;
@@ -953,49 +1048,117 @@ async function reservedAdultIdentityLane(classification, results, seen, diagnost
   const combined = adultIdentityCombinedQuery(classification);
   diagnostics.AdultIdentityLane = { ran: true, query: combined, added: 0, sites: [] };
   const before = results.length;
+  const direct = await fetchAdultIdentitySources(classification, results, seen, diagnostics);
+  const sites = [...direct.sites];
   const tmp = {};
-  if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bing(combined, results, seen, tmp);
-  if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await ddg(combined, results, seen, tmp);
+  const park = [];
+  const parkSeen = new Set(seen);
+  if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bing(combined, park, parkSeen, tmp);
+  if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await ddg(combined, park, parkSeen, tmp);
   noteReserved('adultIdentity');
-  const sites = [];
-  for (const r of results.slice(before)) {
+  for (const r of park) {
     const host = hostOf(r.url).replace(/^www\./, '');
-    if (isAdultIdentityHost(host)) {
-      r.retrievalLane = r.retrievalLane || 'adult-identity';
-      r.sourceLane = 'adult-identity';
-      r.discoveryLane = r.discoveryLane || 'adult-identity';
-      sites.push(host);
-    }
+    if (!isAdultIdentityHost(host)) continue;
+    r.retrievalLane = r.retrievalLane || 'adult-identity';
+    r.sourceLane = 'adult-identity';
+    r.discoveryLane = r.discoveryLane || 'adult-identity';
+    if (uniqueAdd(results, seen, r)) sites.push(host);
   }
-  diagnostics.AdultIdentityLane.added = results.length - before;
-  diagnostics.AdultIdentityLane.sites = [...new Set(sites)];
   diagnostics.AdultIdentityLane.providers = {
     Bing: tmp.Bing || null,
     DuckDuckGo: tmp.DuckDuckGo || tmp['DuckDuckGo Lite'] || null,
   };
-  if (sites.length === 0) {
-    const subject = String((classification && classification.subject) || '').replace(/"/g, '').trim();
-    for (const site of ADULT_IDENTITY_SITES.slice(0, 3)) {
-      if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
-      const q = '"' + subject + '" site:' + site;
-      const tmp2 = {};
-      const mark = results.length;
-      await bing(q, results, seen, tmp2);
-      for (const r of results.slice(mark)) {
-        const host = hostOf(r.url).replace(/^www\./, '');
-        if (isAdultIdentityHost(host)) {
-          r.retrievalLane = r.retrievalLane || 'adult-identity';
-          r.sourceLane = 'adult-identity';
-          r.discoveryLane = r.discoveryLane || 'adult-identity';
-          sites.push(host);
-        }
+  const have = new Set(sites);
+  const subject = String((classification && classification.subject) || '').replace(/"/g, '').trim();
+  for (const site of ADULT_IDENTITY_SITES.slice(0, 3)) {
+    if (have.has(site)) continue;
+    if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
+    const q = '"' + subject + '" site:' + site;
+    const tmp2 = {};
+    const mark = results.length;
+    await bing(q, results, seen, tmp2);
+    for (const r of results.slice(mark)) {
+      const host = hostOf(r.url).replace(/^www\./, '');
+      if (isAdultIdentityHost(host)) {
+        r.retrievalLane = r.retrievalLane || 'adult-identity';
+        r.sourceLane = 'adult-identity';
+        r.discoveryLane = r.discoveryLane || 'adult-identity';
+        sites.push(host);
       }
     }
-    diagnostics.AdultIdentityLane.added = results.length - before;
-    diagnostics.AdultIdentityLane.sites = [...new Set(sites)];
     diagnostics.AdultIdentityLane.individualFallback = true;
   }
+  diagnostics.AdultIdentityLane.added = results.length - before;
+  diagnostics.AdultIdentityLane.sites = [...new Set(sites)];
+  diagnostics.AdultIdentityLane.directSources = direct.sites;
   return diagnostics.AdultIdentityLane.added;
+}
+
+function identitySlugUnderscore(subject) {
+  return String(subject || '').trim().replace(/\s+/g, '_');
+}
+
+async function fetchAdultIdentitySources(classification, results, seen, diagnostics) {
+  const subject = String((classification && classification.subject) || '').replace(/"/g, '').trim();
+  if (!subject) return { added: 0, sites: [] };
+  const before = results.length;
+  const sites = [];
+  const tag = {
+    retrievalLane: 'adult-identity',
+    sourceLane: 'adult-identity',
+    discoveryLane: 'adult-identity',
+  };
+  if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
+    SEARCH_BUDGET.used++;
+    noteReserved('adultIdentity');
+    const url = 'https://www.iafd.com/results.asp?searchtype=comprehensive&searchstring=' + encodeURIComponent(subject);
+    try {
+      const r = await fetchText(url, { headers: BROWSER_HEADERS });
+      diagnostics.AdultIdentityIAFD = { status: r.status, ok: r.ok };
+      if (r.ok) {
+        const html = await r.text();
+        const re = /href="([^"]*person\.rme[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+        let m;
+        let n = 0;
+        while ((m = re.exec(html)) && n < 3) {
+          let href = decodeEntities(m[1]);
+          if (href.startsWith('/')) href = 'https://www.iafd.com' + href;
+          const title = cleanTitle(m[2]) || (subject + ' - IAFD');
+          if (uniqueAdd(results, seen, { title, url: href, source: 'IAFD', snippet: 'Adult identity database', ...tag })) {
+            sites.push('iafd.com');
+            n++;
+          }
+        }
+        if (n === 0) {
+          if (uniqueAdd(results, seen, { title: subject + ' - IAFD search', url, source: 'IAFD', snippet: 'IAFD public search results', ...tag })) {
+            sites.push('iafd.com');
+          }
+        }
+        diagnostics.AdultIdentityIAFD.added = n || (sites.includes('iafd.com') ? 1 : 0);
+      }
+    } catch (e) {
+      diagnostics.AdultIdentityIAFD = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 120) };
+    }
+  }
+  if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
+    SEARCH_BUDGET.used++;
+    noteReserved('adultIdentity');
+    const slug = identitySlugUnderscore(subject);
+    const url = 'https://www.babepedia.com/babe/' + encodeURIComponent(slug);
+    try {
+      const r = await fetchText(url, { headers: BROWSER_HEADERS });
+      diagnostics.AdultIdentityBabepedia = { status: r.status, ok: r.ok };
+      if (r.ok) {
+        if (uniqueAdd(results, seen, { title: subject + ' - Babepedia', url, source: 'Babepedia', snippet: 'Adult identity encyclopedia', ...tag })) {
+          sites.push('babepedia.com');
+          diagnostics.AdultIdentityBabepedia.added = 1;
+        }
+      }
+    } catch (e) {
+      diagnostics.AdultIdentityBabepedia = { error: e?.name === 'AbortError' ? 'timeout' : String(e?.message || e).slice(0, 120) };
+    }
+  }
+  return { added: results.length - before, sites: [...new Set(sites)] };
 }
 
 function buildResearchMetrics(results, diagnostics, extra = {}) {
@@ -1043,6 +1206,8 @@ function buildResearchMetrics(results, diagnostics, extra = {}) {
       pullpush: !!(diagnostics && diagnostics.Pullpush && (diagnostics.Pullpush.ok || diagnostics.Pullpush.added)),
       wayback: !!(diagnostics && diagnostics.WaybackReddit && (diagnostics.WaybackReddit.added || diagnostics.WaybackReddit.ok)),
       startpage: !!(diagnostics && diagnostics.Startpage && diagnostics.Startpage.ok),
+      publicSearch: !!(redditDiag && Array.isArray(redditDiag.fallbacks) && redditDiag.fallbacks.includes('public-search')),
+      identityDirect: !!(diagnostics && (diagnostics.AdultIdentityIAFD || diagnostics.AdultIdentityBabepedia)),
     },
     retrievalCounts: budgetReport(),
     reservedBudget: { ...(SEARCH_BUDGET.reserved || emptyReservedBudget()) },
@@ -4203,7 +4368,11 @@ function rankResults(query, results, classification) {
       resultKind: s.resultKind || 'WEAK_MATCH',
       sourceClass,
     };
-  }).filter(r => r.score > 10 && (r.signals || []).length);
+  }).filter(r => {
+    const reserved = r.retrievalLane === 'adult-identity' || r.sourceLane === 'adult-identity' || isAdultIdentityHost(hostOf(r.url)) || isRedditHost(hostOf(r.url)) || ['indexed-reddit', 'direct-reddit', 'pullpush', 'wayback'].includes(String(r.retrievalLane || ''));
+    if (reserved) return true;
+    return r.score > 10 && (r.signals || []).length;
+  });
   ranked.sort((a, b) => b.score - a.score || String(a.domain).localeCompare(String(b.domain)));
   const seenHost = new Map();
   for (const r of ranked) {
@@ -4435,6 +4604,7 @@ function humanizePath(url) {
 }
 
 async function runDiscovery(query, opts = {}) {
+  const startedAt = Date.now();
   const expanded = opts.expanded === true || opts.expanded === 'true' || opts.expanded === 1;
   const visualMore = opts.visualMore === true || opts.visualMore === 'true' || opts.visualMore === 1;
   const further = opts.further === true || opts.investigateFurther === true;
@@ -4850,6 +5020,7 @@ async function runDiscovery(query, opts = {}) {
     researchMetrics: buildResearchMetrics(ranked, diagnostics, {
       queryClassCount: variants.length,
       sourceClassesReached: sourceClassesReached.length,
+      elapsedMs: Date.now() - startedAt,
     }),
   };
 }
@@ -5734,7 +5905,7 @@ export default {
         ok: true,
         worker: 'carmen',
         version: '48.1',
-        build: '48.1-reserved-retrieval',
+        build: '48.1-direct-lanes',
         schemaVersion: 2,
         provider: ai.provider,
         model: ai.model,
@@ -6094,4 +6265,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing };

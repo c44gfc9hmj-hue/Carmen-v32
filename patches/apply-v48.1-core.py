@@ -18,6 +18,6 @@ def sub(rel, old, new):
         print('skip', rel, old[:48])
 
 sub('worker.js', "version: '47.8'", "version: '48.1'")
-sub('worker.js', "build: '47.8-source-first'", "build: '48.1-reserved-retrieval'")
+sub('worker.js', "build: '47.8-source-first'", "build: '48.1-direct-lanes'")
 sub('public/app.js', "const VERSION = '47.8';", "const VERSION = '48.1';")
 print('core done (source-canonical v48.1)')
