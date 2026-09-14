@@ -7,12 +7,13 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '47.8';
+const VERSION = '48.1';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
 const DB_VERSION = 3;
-const SESSION_KEY = 'carmen_session_v47';
+const SESSION_KEY = 'carmen_session_v48';
+const SESSION_KEY_LEGACY = 'carmen_session_v47';
 const SAME_ORIGIN = (window.CARMEN_BACKEND && String(window.CARMEN_BACKEND).length) ? window.CARMEN_BACKEND : location.origin;
 
 let db = null, stream = null, current = null, historyStack = [], historyIndex = -1, currentProjectId = null;
@@ -359,25 +360,29 @@ function setTab(name) {
 /* ---------- discovery / search ---------- */
 function subjectLabel(s) {
   return ({
-    person: 'Person', topic: 'Topic', website: 'Website', product: 'Product',
-    technique: 'Technique', skill: 'Skill / project', organization: 'Organization',
+    person: 'Person', topic: 'Topic', website: 'URL', product: 'Product',
+    technique: 'Position', skill: 'Tutorial', organization: 'Organization',
     vehicle: 'Vehicle', reddit: 'Reddit', social: 'Social', ambiguous: 'Ambiguous',
-    position: 'Technique', project: 'Project', place: 'Place', clothing: 'Clothing',
+    position: 'Position', project: 'Project', place: 'Place', clothing: 'Clothing',
+    visuals: 'Visuals', tutorial: 'Tutorial',
   }[s] || (s ? String(s) : 'Auto'));
 }
 function subjectQueryHint(s) {
   return ({
     person: 'Full name and any known context work best.',
     website: 'Paste a domain or URL.',
+    visuals: 'Visuals, photos, stills, or a look you want to research.',
+    position: 'A position, pose, or form.',
+    tutorial: 'A tutorial, demonstration, or how-to.',
+    clothing: 'A garment, outfit, or style.',
+    topic: 'Describe the topic or question.',
     product: 'Product, brand, or object.',
     technique: 'A technique, position, or form.',
     skill: 'A skill, craft, or project to learn.',
     organization: 'Organization or institution name.',
     vehicle: 'Vehicle or object.',
     place: 'A place or location.',
-    clothing: 'A garment, outfit, or style.',
-    topic: 'Describe the topic or question.',
-  }[s] || 'A name, URL, product, technique, or skill.');
+  }[s] || 'A person, visuals, position, tutorial, clothing, URL, or topic.');
 }
 function backendUrl() { return $('backend').value.trim().replace(/\/$/, ''); }
 function imgSrc(u) {
@@ -738,7 +743,7 @@ function renderPathChips(paths, elId) {
 }
 function restoreSession() {
   try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
+    const raw = sessionStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY_LEGACY);
     if (!raw) return;
     const s = JSON.parse(raw);
     if (s.query && $('searchQuery')) $('searchQuery').value = s.query;
@@ -1433,9 +1438,34 @@ function closeLightbox() {
   $('lightboxImg').src = '';
   lightboxGallery = [];
 }
+function renderSearchDiagnostics(data) {
+  const el = $('searchDiagnostics');
+  if (!el) return;
+  const providers = (data && data.providers) || {};
+  const m = data && data.researchMetrics;
+  const bits = [];
+  for (const [k, v] of Object.entries(providers)) {
+    if (!v || typeof v !== 'object') continue;
+    const ok = v.ok === true || (typeof v.added === 'number' && v.added > 0) || v.ran === true;
+    const bad = v.ok === false || v.error || (v.status && v.status >= 400);
+    if (!ok && !bad && v.status == null && v.ran == null) continue;
+    const label = k + (v.status ? ' ' + v.status : '') + (v.error ? ' ' + String(v.error).slice(0, 40) : '') + (typeof v.added === 'number' ? ' +' + v.added : '');
+    bits.push(`<span class="${ok && !bad ? 'ok' : (bad ? 'bad' : '')}">${esc(label)}</span>`);
+  }
+  if (m) {
+    bits.push(`<span>${Number(m.resultCount || 0)} results</span>`);
+    if (m.reservedLanes && m.reservedLanes.reddit) bits.push('<span class="ok">Reddit reserved lane</span>');
+    if (m.reservedLanes && m.reservedLanes.adultIdentity) bits.push('<span class="ok">Adult identity lane</span>');
+    if (m.fallbackUsage && m.fallbackUsage.redditIndexed) bits.push('<span class="ok">Indexed Reddit</span>');
+    if (m.fallbackUsage && m.fallbackUsage.pullpush) bits.push('<span class="ok">Pullpush</span>');
+    if (m.fallbackUsage && m.fallbackUsage.wayback) bits.push('<span class="ok">Wayback</span>');
+    if (Array.isArray(m.redditProvenance) && m.redditProvenance.length) bits.push(`<span>${esc(m.redditProvenance.join(', '))}</span>`);
+  }
+  el.innerHTML = bits.join(' · ');
+}
 function renderResults(results, providers) {
   $('resultCount').textContent = results.length ? String(results.length) : '';
-  $('searchDiagnostics').innerHTML = '';
+  renderSearchDiagnostics(lastDiscoveryMeta || { providers });
   if (!results.length) {
     $('results').innerHTML = '';
     if ($('personRail')) $('personRail').innerHTML = '';
@@ -1462,6 +1492,12 @@ function renderResults(results, providers) {
       ${hero ? `<img class="hero"${personCard ? ` data-identify="${i}"` : ''} data-full="${esc(imgSrc(hero))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(hero))}" alt="${esc(displayName)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
       <div class="rbody">
         <div class="rtitle">${esc(displayName)}</div>
+        <div class="rmeta">
+          <span class="badge">${esc(r.source || 'Public web')}</span>
+          ${r.retrievalLane ? `<span class="badge">${esc(r.retrievalLane)}</span>` : ''}
+          ${r.accessState ? `<span class="badge">${esc(r.accessState)}</span>` : ''}
+          ${kindLabel ? `<span class="badge rkind">${esc(kindLabel)}</span>` : ''}
+        </div>
         <div class="subtle">${esc(r.domain || hostOf(r.url))}</div>
         ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
         ${personCard ? `<p class="hint">A picture is not proof of identity.</p>` : ''}

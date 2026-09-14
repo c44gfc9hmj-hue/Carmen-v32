@@ -9,6 +9,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon.svg">
 <title>Carmen</title>
+<meta name="carmen-build" content="48.1">
 <style>
 :root{
   color-scheme:dark;
@@ -204,7 +205,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 </head>
 <body>
 <header class="appbar">
-  <h1>Carmen</h1>
+  <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v48.1</span></h1>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
 </header>
 <main>
@@ -214,7 +215,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <p class="kicker">Public research</p>
     <h2>What are you looking for?</h2>
     <div class="searchbox stack">
-      <input id="homeQuery" placeholder="A person, product, clothing, technique, place, or URL" enterkeyhint="search" autocapitalize="words">
+      <input id="homeQuery" placeholder="A person, visuals, position, tutorial, clothing, URL, or topic" enterkeyhint="search" autocapitalize="words">
       <button class="btn primary" id="homeSearchBtn">Search</button>
     </div>
     <div class="filter-block" style="margin-top:14px">
@@ -240,7 +241,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <div class="card">
     <p class="kicker">Search</p>
     <h3 style="font-size:22px;letter-spacing:-.03em;margin:0 0 12px">What are you looking for?</h3>
-    <textarea id="searchQuery" placeholder="A person, product, clothing, technique, place, or URL"></textarea>
+    <textarea id="searchQuery" placeholder="A person, visuals, position, tutorial, clothing, URL, or topic"></textarea>
     <div id="lensStack" class="hidden"></div>
     <div class="filter-block">
       <p class="flabel">Adult research lens</p>
@@ -250,10 +251,22 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
         <button type="button" class="chip" data-adult="both">Both</button>
       </div>
     </div>
+    <div class="filter-block" id="focusBlock">
+      <p class="flabel">Research Focus</p>
+      <div class="chips" id="subjectChips" style="margin-top:0">
+        <button class="chip" data-subject="person">Person</button>
+        <button class="chip" data-subject="visuals">Visuals</button>
+        <button class="chip" data-subject="position">Position</button>
+        <button class="chip" data-subject="tutorial">Tutorial</button>
+        <button class="chip" data-subject="clothing">Clothing</button>
+        <button class="chip" data-subject="website">URL</button>
+        <button class="chip" data-subject="topic">Topic</button>
+      </div>
+    </div>
     <details class="adv">
       <summary>More options</summary>
       <div class="stage" id="interestBlock" style="margin-top:10px">
-        <h3>Research focus</h3>
+        <h3>Adaptive lenses</h3>
         <div class="chips" id="interestChips"></div>
         <div id="customContextWrap" class="hidden" style="margin-top:8px">
           <label class="hint">Specific context</label>
@@ -271,19 +284,6 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
           <button type="button" class="chip active" data-depth="contextual">Contextual</button>
           <button type="button" class="chip" data-depth="deep">Deep</button>
         </div>
-      </div>
-      <div class="chips" id="subjectChips" style="margin-top:8px">
-        <button class="chip active" data-subject="">Auto</button>
-        <button class="chip" data-subject="person">Person</button>
-        <button class="chip" data-subject="product">Product</button>
-        <button class="chip" data-subject="vehicle">Vehicle</button>
-        <button class="chip" data-subject="technique">Technique</button>
-        <button class="chip" data-subject="clothing">Clothing</button>
-        <button class="chip" data-subject="skill">Skill / project</button>
-        <button class="chip" data-subject="organization">Organization</button>
-        <button class="chip" data-subject="place">Place</button>
-        <button class="chip" data-subject="topic">Topic</button>
-        <button class="chip" data-subject="website">URL</button>
       </div>
     </details>
     <div class="row" style="margin-top:8px">
@@ -410,13 +410,15 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <h3>Learn</h3>
     <p class="muted">Turn public research into an organized brief. The layout follows the kind of thing you are learning — not a single hardcoded subject.</p>
     <div class="chips" id="learnChips">
-      <button class="chip active" data-learn="">Auto</button>
-      <button class="chip" data-learn="technique">Technique</button>
-      <button class="chip" data-learn="skill">Skill / project</button>
-      <button class="chip" data-learn="product">Product</button>
+      <button class="chip" data-learn="person">Person</button>
+      <button class="chip" data-learn="visuals">Visuals</button>
+      <button class="chip" data-learn="position">Position</button>
+      <button class="chip" data-learn="tutorial">Tutorial</button>
+      <button class="chip" data-learn="clothing">Clothing</button>
+      <button class="chip" data-learn="website">URL</button>
       <button class="chip" data-learn="topic">Topic</button>
     </div>
-    <textarea id="learnQuery" placeholder="Welding a trailer hitch, a woodworking joint, a technique, a concept…"></textarea>
+    <textarea id="learnQuery" placeholder="A person, visuals, position, tutorial, clothing, URL, or topic"></textarea>
     <button class="btn primary" id="learnBtn" style="margin-top:8px">Research & teach</button>
     <p class="warning">Sourced information is labeled OBSERVED. Carmen’s interpretation is INFERRED. Missing facts stay UNKNOWN.</p>
   </div>

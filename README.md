@@ -9,6 +9,24 @@ This is the single canonical Carmen application. There are no separate V25/V32/
 V33/V34/V35 builds — those accumulated during earlier development and have been
 consolidated into this one project.
 
+## Investigation workspace (v48.1)
+
+v48.1 is a retrieval-correctness pass on live v47.8. It does not replace the
+v38–v47 architecture.
+
+- **Research metrics** — every `/search` response includes a non-sensitive
+  `researchMetrics` payload for the actual run: provider coverage, reserved-lane
+  usage, fallback usage, result counts, and retrieval budget.
+- **Reserved Reddit lane** — when direct Reddit is blocked (403) or empty,
+  Carmen runs DDG/Bing `site:reddit.com`, then Pullpush, then Wayback. Indexed
+  Reddit hits are kept (not dropped by `uniqueAdd`) and labeled
+  `Reddit (indexed)` / `Reddit (Pullpush)` / `Reddit (Wayback)`.
+- **Adult-identity lane** — for adult-person research, identity databases
+  (IAFD, AdultFilmDatabase, Babepedia, Indexxx, Freeones, TheNude, …) run
+  **before** generic web results.
+- **Research Focus** — Person · Visuals · Position · Tutorial · Clothing · URL · Topic.
+  The LEARN tab uses the same seven focuses. Legacy Technique / Skill / Product
+  chips are gone from that taxonomy.
 
 ## Investigation workspace (v47.1)
 
