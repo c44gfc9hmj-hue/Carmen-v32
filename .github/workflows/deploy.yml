@@ -48,6 +48,7 @@ jobs:
           node test-search-rank.mjs
           node test-ai-provider.mjs
           node test-v48.1.mjs
+          node test-v49.mjs
 
       - name: Install Wrangler
         run: npm install --no-save wrangler@4

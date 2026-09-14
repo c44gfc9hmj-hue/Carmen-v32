@@ -3604,12 +3604,15 @@ function diveSeedQuery(classification, originalQuery, canonical, fallbackQuery) 
   const name = String(canonical || (classification && classification.subject) || '').trim();
   const orig = String(originalQuery || '').trim();
   const fb = String(fallbackQuery || '').trim();
-  const isUrl = (s) => /^https?:\/\//i.test(s);
-  if (orig && !isUrl(orig)) return orig;
   const ctx = extraContext(classification);
+  const isUrl = (s) => /^https?:\/\//i.test(s);
+  if (orig && !isUrl(orig)) {
+    if (name && !orig.toLowerCase().includes(name.toLowerCase())) return composeInvestigationQuery(orig, name, ctx);
+    return orig;
+  }
   if (name && ctx) return (name + ' ' + ctx).replace(/\s+/g, ' ').trim();
   if (name) return name;
-  if (fb && !isUrl(fb)) return fb;
+  if (fb && !isUrl(fb)) return composeInvestigationQuery(fb, name, ctx);
   return name || orig || fb;
 }
 
@@ -4603,6 +4606,23 @@ function humanizePath(url) {
   } catch { return ''; }
 }
 
+function composeInvestigationQuery(q, entity, topic) {
+  const query = String(q || '').trim();
+  const ent = String(entity || '').replace(/"/g, '').trim();
+  const top = String(topic || '').replace(/"/g, '').trim();
+  if (!ent) return query;
+  const qLower = query.toLowerCase();
+  const entLower = ent.toLowerCase();
+  const topLower = top.toLowerCase();
+  if (query && qLower.includes(entLower)) {
+    if (top && !qLower.includes(topLower)) return (query + ' ' + top).replace(/\s+/g, ' ').trim();
+    return query;
+  }
+  const extra = (top && topLower !== entLower) ? top : query;
+  if (extra && extra.toLowerCase() !== entLower) return (ent + ' ' + extra).replace(/\s+/g, ' ').trim();
+  return ent || query;
+}
+
 async function runDiscovery(query, opts = {}) {
   const startedAt = Date.now();
   const expanded = opts.expanded === true || opts.expanded === 'true' || opts.expanded === 1;
@@ -4619,8 +4639,19 @@ async function runDiscovery(query, opts = {}) {
   const knownVideoIds = parseAttemptedList(opts.knownVideoIds || opts.knownVideos || []);
   const visualOnly = (visualMore || !!visualMode || videoMore) && !further && !expanded;
   const adult = normalizeAdult(opts.adult || opts.adultContent);
-  const q = String(query || '').trim().slice(0, 500);
-  const classification = applyResearchFilter(classifyQuery(q, opts.hint), adult, q);
+  const keepEntity = String(opts.entity || '').replace(/"/g, '').trim();
+  const keepTopic = String(opts.topic || '').replace(/"/g, '').trim();
+  let q = composeInvestigationQuery(String(query || '').trim().slice(0, 500), keepEntity, keepTopic);
+  const hint = String(opts.hint || '').trim();
+  const classification = applyResearchFilter(classifyQuery(q, hint), adult, q);
+  if (keepEntity) {
+    classification.subject = keepEntity;
+    if (hint && hint !== 'ambiguous' && hint !== 'topic') classification.type = hint;
+  }
+  if (keepTopic) {
+    classification.context = keepTopic;
+    classification.relation = detectRelation(keepTopic) || classification.relation || 'context';
+  }
   const depth = normalizeDepth(opts.depth, classification);
   classification.researchDepth = depth;
   const defaultCap = expanded || visualMore || further || visualMode ? 32 : (depth === 'deep' ? 28 : depth === 'contextual' ? 24 : (isVisualSubject(classification) ? 24 : 16));
@@ -4968,6 +4999,11 @@ async function runDiscovery(query, opts = {}) {
   return {
     query: q,
     classification,
+    investigationContext: {
+      entity: keepEntity || classification.subject || '',
+      topic: keepTopic || extraContext(classification) || '',
+      keptSubject: !!keepEntity,
+    },
     variants,
     results: ranked,
     providers: diagnostics,
@@ -5081,9 +5117,11 @@ async function searchWeb(req) {
   } catch {}
   const adult = normalizeAdult(u.searchParams.get('adult') || u.searchParams.get('adultContent'));
   const depth = u.searchParams.get('depth') || '';
+  const entity = (u.searchParams.get('entity') || '').trim().slice(0, 200);
+  const topic = (u.searchParams.get('topic') || u.searchParams.get('question') || '').trim().slice(0, 200);
   if (!q) return json({ results: [], query: '', count: 0, providers: {}, classification: applyResearchFilter(classifyQuery(''), adult, ''), expanded: false, adultContent: adult, depth: normalizeDepth(depth), researchMetrics: buildResearchMetrics([], {}) }, 200, req);
   resetFetchBudget();
-  const discovery = await runDiscovery(q, { hint, enrich: true, expanded, visualMore, visualMode, visualOffset, videoMore, excludeUrls, excludeHosts, seedVisual, adult, depth, attemptedQueries, knownMedia, knownVideoIds });
+  const discovery = await runDiscovery(q, { hint, enrich: true, expanded, visualMore, visualMode, visualOffset, videoMore, excludeUrls, excludeHosts, seedVisual, adult, depth, attemptedQueries, knownMedia, knownVideoIds, entity, topic });
   return json(discovery, 200, req);
 }
 
@@ -5390,7 +5428,7 @@ async function deepDiveHandler(req, env) {
     const classifyInput = (/^https?:\/\//i.test(rawForClassify) && canonical) ? canonical : (rawForClassify || canonical);
     const classification = applyResearchFilter(classifyQuery(classifyInput, typeHint), adult, classifyInput);
     if (canonical) classification.subject = canonical;
-    const carriedCtx = String((selectedEntityIn && selectedEntityIn.context) || b.context || '').trim();
+    const carriedCtx = String((selectedEntityIn && selectedEntityIn.context) || b.context || b.topic || '').trim();
     if (carriedCtx && !extraContext(classification)) classification.context = carriedCtx;
     const seed = diveSeedQuery(classification, originalQuery, canonical, query);
     const expanded = b.expanded === true || b.expanded === 'true' || b.expanded === 1;
@@ -5904,8 +5942,8 @@ export default {
       return json({
         ok: true,
         worker: 'carmen',
-        version: '48.1',
-        build: '48.1-direct-lanes',
+        version: '49.0',
+        build: '49.0-investigation-loop',
         schemaVersion: 2,
         provider: ai.provider,
         model: ai.model,
@@ -5913,7 +5951,7 @@ export default {
         routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -6265,4 +6303,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing, composeInvestigationQuery };

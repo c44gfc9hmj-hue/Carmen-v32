@@ -9,7 +9,35 @@ This is the single canonical Carmen application. There are no separate V25/V32/
 V33/V34/V35 builds — those accumulated during earlier development and have been
 consolidated into this one project.
 
+## Investigation workspace (v49.0)
+
+v49 is the investigation-loop pass on live v48.1 retrieval. It does not replace
+the v38–v47 architecture or v48 reserved lanes.
+
+- **Subject stays in Deep Dive.** Typing a topic (for example `bondage`) inside
+  an identified investigation searches **subject + topic**, not the topic alone.
+  `/search` accepts `entity` and `topic`. The worker composes the query before
+  classification so identity type is not collapsed into a generic topic.
+- **Deep Dive is a stream.** Identified subject, persistent search, Reddit-like
+  posts, and tabs: Overview · Posts · Search · Images · Sources. The planner is
+  optional (“More investigation options”), not a gate.
+- **Find more** on any item: Who is this / More from this person / More like
+  this (characteristics, not keyword echo) / More on this subject / More from
+  this source (labeled as host, not assumed creator) / Surprise me.
+- **Surprise me** uses explicit saves, searches, and “more like this” — never
+  advertising — and says why.
+- **Saves are a database.** Items keep `foundThrough`, `parentId`, subject,
+  topic, and a short trail. **How I got here?** shows that trail.
+- **Identity is interactive.** Multiple person candidates: That’s the one /
+  Not this one. Carmen does not silently pick.
+- **Analyze** distinguishes OBSERVED / INFERRED / UNKNOWN and is honest that
+  video frames are not inspected yet.
+- **Teach me** stays attached to the current investigation context.
+- **Cross-investigation isolation.** A new home search or branch does not keep
+  the previous subject’s evidence.
+
 ## Investigation workspace (v48.1)
+
 
 v48.1 is a retrieval-correctness pass on live v47.8. It does not replace the
 v38–v47 architecture.
