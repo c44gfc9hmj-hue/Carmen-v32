@@ -1,7 +1,7 @@
 // v48.1 reserved retrieval, metrics, and focus-mode tests.
 // Network is mocked so these assert the production request path, not live providers.
 import { readFileSync } from 'node:fs';
-import { uniqueAdd, redditBlocked, isRedditHost, adultIdentityQueries, adultIdentityCombinedQuery, buildResearchMetrics, resetFetchBudget, reservedRedditLane, reservedAdultIdentityLane, classifyQuery, applyResearchFilter } from './worker.js';
+import { uniqueAdd, redditBlocked, isRedditHost, adultIdentityQueries, adultIdentityCombinedQuery, buildResearchMetrics, resetFetchBudget, reservedRedditLane, reservedAdultIdentityLane, classifyQuery, applyResearchFilter, rankResults } from './worker.js';
 import worker from './worker.js';
 
 let passed = 0, failed = 0;
@@ -107,6 +107,21 @@ console.log('--- v48.1 Research Focus UI ---');
   assert(appSrc.includes("const VERSION = '48.1'"), 'frontend version 48.1');
 }
 
+console.log('--- v48.1 rankResults keeps reserved lanes in the window ---');
+{
+  const cls = applyResearchFilter(classifyQuery('Jordan Hale', 'person'), 'on', 'Jordan Hale');
+  const rows = [];
+  for (let i = 0; i < 24; i++) {
+    rows.push({ title: 'Jordan Hale interview video ' + i, url: 'https://www.youtube.com/watch?v=abcDEFxxxx' + String(i).padStart(2, '0'), source: 'Bing Videos', snippet: 'video' });
+  }
+  rows.push({ title: 'Jordan Hale - IAFD', url: 'https://www.iafd.com/person.rme/perfid=jh/gender=f/jordan-hale.htm', source: 'Bing', snippet: 'performer database', retrievalLane: 'adult-identity', sourceLane: 'adult-identity' });
+  rows.push({ title: 'Jordan Hale discussion', url: 'https://www.reddit.com/r/example/comments/abc123/jordan_hale/', source: 'Reddit (indexed · Bing)', snippet: 'thread', retrievalLane: 'indexed-reddit' });
+  const ranked = rankResults('Jordan Hale', rows, cls);
+  assert(ranked.length <= 20, 'ranked window still capped');
+  assert(ranked.some(r => /iafd\.com/i.test(r.url)), 'adult identity result survives the ranked window');
+  assert(ranked.some(r => /reddit\.com/i.test(r.url)), 'indexed Reddit result survives the ranked window');
+}
+
 console.log('--- v48.1 mocked /search path actually runs reserved helpers ---');
 {
   const calls = [];
@@ -160,6 +175,7 @@ console.log('--- v48.1 mocked /search path actually runs reserved helpers ---');
     assert(body.researchMetrics.reservedLanes, 'metrics include reservedLanes');
     const decodedCalls = calls.map(u => { try { return decodeURIComponent(u); } catch { return u; } });
     assert(decodedCalls.some(u => /site:reddit\.com/i.test(u)), 'production search actually requested site:reddit.com');
+    assert(decodedCalls.some(u => /site:reddit\.com/i.test(u) && !/photoset/i.test(u)), 'reserved reddit query is the subject, not an intersection dump');
     assert(decodedCalls.some(u => /site:iafd\.com/i.test(u) || /site:babepedia\.com/i.test(u)), 'production search actually requested adult identity hosts');
     assert(body.researchMetrics.reservedLanes.adultIdentity === true, 'adult identity lane ran on adult person search');
     const redditRows = (body.results || []).filter(r => /reddit\.com/i.test(r.url || '') || /Reddit/i.test(r.source || ''));

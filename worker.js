@@ -973,6 +973,28 @@ async function reservedAdultIdentityLane(classification, results, seen, diagnost
     Bing: tmp.Bing || null,
     DuckDuckGo: tmp.DuckDuckGo || tmp['DuckDuckGo Lite'] || null,
   };
+  if (sites.length === 0) {
+    const subject = String((classification && classification.subject) || '').replace(/"/g, '').trim();
+    for (const site of ADULT_IDENTITY_SITES.slice(0, 3)) {
+      if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
+      const q = '"' + subject + '" site:' + site;
+      const tmp2 = {};
+      const mark = results.length;
+      await bing(q, results, seen, tmp2);
+      for (const r of results.slice(mark)) {
+        const host = hostOf(r.url).replace(/^www\./, '');
+        if (isAdultIdentityHost(host)) {
+          r.retrievalLane = r.retrievalLane || 'adult-identity';
+          r.sourceLane = 'adult-identity';
+          r.discoveryLane = r.discoveryLane || 'adult-identity';
+          sites.push(host);
+        }
+      }
+    }
+    diagnostics.AdultIdentityLane.added = results.length - before;
+    diagnostics.AdultIdentityLane.sites = [...new Set(sites)];
+    diagnostics.AdultIdentityLane.individualFallback = true;
+  }
   return diagnostics.AdultIdentityLane.added;
 }
 
@@ -4198,7 +4220,26 @@ function rankResults(query, results, classification) {
     }
   }
   ranked.sort((a, b) => b.score - a.score);
-  return ranked.slice(0, MAX_RESULTS);
+  const picked = [];
+  const seenUrl = new Set();
+  const take = (arr, n) => {
+    for (const r of arr) {
+      if (picked.length >= MAX_RESULTS) break;
+      if (n <= 0) break;
+      const key = r.url || '';
+      if (!key || seenUrl.has(key)) continue;
+      seenUrl.add(key);
+      picked.push(r);
+      n--;
+    }
+  };
+  const ident = ranked.filter(r => r.retrievalLane === 'adult-identity' || r.sourceLane === 'adult-identity' || isAdultIdentityHost(hostOf(r.url)));
+  const reddit = ranked.filter(r => isRedditHost(hostOf(r.url)) || ['indexed-reddit', 'direct-reddit', 'pullpush', 'wayback'].includes(String(r.retrievalLane || '')));
+  take(ident, 4);
+  take(reddit, 3);
+  take(ranked, MAX_RESULTS - picked.length);
+  picked.sort((a, b) => b.score - a.score);
+  return picked.slice(0, MAX_RESULTS);
 }
 
 function usableImage(url) {
@@ -4516,17 +4557,18 @@ async function runDiscovery(query, opts = {}) {
         : new Set(['primary', 'intersection', 'identity']);
     const visualReserve = isVisualSubject(classification) ? 4 : 0;
     let redditLaneDone = false;
+    const redditQuery = String(classification.subject || q).replace(/"/g, '').trim() || q;
     for (let i = 0; i < Math.min(webVariants.length, cap); i++) {
       if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max - visualReserve) break;
       await runVariant(webVariants[i], i === 0);
       if (i === 0) {
-        await reservedRedditLane(webVariants[i].q || q, results, seen, diagnostics);
+        await reservedRedditLane(redditQuery, results, seen, diagnostics);
         redditLaneDone = true;
       }
       const remainingMust = webVariants.slice(i + 1).some(v => mustRun.has(v.lane));
       if (depth === 'broad' && !expanded && results.length >= MAX_RESULTS && !remainingMust) break;
     }
-    if (!redditLaneDone) await reservedRedditLane(q, results, seen, diagnostics);
+    if (!redditLaneDone) await reservedRedditLane(redditQuery, results, seen, diagnostics);
     if (results.length < 6 && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
       await startpage(q, results, seen, diagnostics);
     }
