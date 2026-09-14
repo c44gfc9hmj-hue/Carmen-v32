@@ -21,21 +21,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply v47.8 video URL patch if needed
+      - name: Apply v48.1 patch if present
         run: |
+          if [ -f patches/apply-v48.1.sh ]; then
+            if sh patches/apply-v48.1.sh; then
+              echo "v48.1 source patch applied before deploy"
+            else
+              echo "v48.1 patch already applied or tree mismatch — continuing with current tree"
+            fi
+          fi
           if [ -f patches/v47.8-video-urls.patch ] && git apply --check patches/v47.8-video-urls.patch; then
             git apply patches/v47.8-video-urls.patch
-            git config user.name "c44gfc9hmj-hue"
-            git config user.email "c44gfc9hmj@privaterelay.appleid.com"
-            git add worker.js test-search-rank.mjs
-            if ! git diff --cached --quiet; then
-              git commit -m "Carmen v47.8: keep real video URLs and unused video query classes"
-              git push origin HEAD:main || true
-              git tag -f v47.8
-              git push origin v47.8 --force || true
-            fi
+            echo "applied leftover v47.8 patch"
           else
-            echo "patch already applied or missing"
+            echo "v47.8 patch already applied or missing"
           fi
 
       - name: Setup Node
