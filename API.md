@@ -46,9 +46,10 @@ Never send `API_KEY` / OpenRouter credentials to these routes.
 | health | GET | `/api/v1/health` |
 | search | POST | `/api/v1/machine/search` |
 | Deep Dive | POST | `/api/v1/machine/dive` |
-| investigation state | GET | `/api/v1/machine/investigations/{id}` |
-| results | GET | `/api/v1/machine/investigations/{id}/results` |
+| investigation state | GET or POST | `/api/v1/machine/investigations/{id}` |
+| results | GET or POST | `/api/v1/machine/investigations/{id}/results` |
 | analyze | POST | `/api/v1/machine/investigations/{id}/analyze` |
+| confirm identity | POST | `/api/v1/machine/investigations/{id}/confirm-identity` |
 
 The full investigation catalog remains available and uses the same
 `handleCarmenApi` → `runDiscovery` path as the PWA.
@@ -84,17 +85,29 @@ Authorization: Bearer $CARMEN_API_KEY
   "subject": "Drea Morgan",
   "topic": "bondage",
   "adult": "on",
-  "investigationId": "inv_…"
+  "investigationId": "inv_…",
+  "investigationState": { }
 }
 ```
 
-`lens` is one of `bondage`, `people`, `clothing`.
+`lens` is one of `bondage`, `people`, `clothing`. Always send `investigationState`.
 
 ### Investigation state / results
 
 ```http
 GET /api/v1/machine/investigations/inv_…
 X-Carmen-Api-Key: $CARMEN_API_KEY
+```
+
+```http
+POST /api/v1/machine/investigations/inv_…
+Content-Type: application/json
+X-Carmen-Api-Key: $CARMEN_API_KEY
+
+{
+  "investigationId": "inv_…",
+  "investigationState": { }
+}
 ```
 
 ```http
@@ -112,12 +125,22 @@ X-Carmen-Api-Key: $CARMEN_API_KEY
 {
   "url": "https://example.com/interview",
   "title": "Interview",
-  "kind": "webpage"
+  "kind": "webpage",
+  "investigationId": "inv_…",
+  "investigationState": { }
 }
 ```
 
-Pass `investigationState` from the previous response (or `investigationId`)
-so identity confirmation, rejections, and the trail persist.
+Pass **`investigationState` plus `investigationId`** from the previous
+response so identity confirmation, rejections, and the trail persist.
+Worker memory is **not durable**. `GET /api/v1/machine/investigations/{id}`
+is best-effort only and returns **404** if this isolate no longer holds the
+investigation. ChatGPT / external agents should `POST` the same path with
+`{ "investigationId", "investigationState" }` to inspect state or results.
+
+`GET /api/v1/health` and `GET /api/v1/machine/capabilities` report
+`machineAuthConfigured` (boolean only — never the secret). Until the
+`CARMEN_API_KEY` Worker secret exists, machine routes stay open.
 
 ## Response envelope
 
@@ -149,14 +172,16 @@ DIRECTORY CLAIM, FAN/REPOSTER, MIRROR, UNVERIFIED, UNKNOWN.
 
 1. Set Cloudflare Worker secret `CARMEN_API_KEY`:
    `npx wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25`
+   Also set the GitHub Actions secret `CARMEN_API_KEY` so deploy can push it.
    Do not reuse `API_KEY`.
 2. Create a ChatGPT Action. Import
    `https://carmen-iphone-v25.94bwfd5grv.workers.dev/api/v1/openapi.json`.
 3. Authentication: API Key, header name `X-Carmen-Api-Key`, secret value =
    `CARMEN_API_KEY`.
-4. Allow only search, dive, state, results, and analyze.
+4. Allow only search, dive, state, results, analyze, and confirm-identity.
 5. Instruct the GPT that Carmen is read-only and must never attempt messaging,
-   posting, following, purchasing, or form submission.
+   posting, following, purchasing, or form submission. Instruct it to echo
+   `investigationState` on every subsequent call.
 
 ## Full action catalog
 
