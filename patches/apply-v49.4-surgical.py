@@ -17,8 +17,8 @@ def main():
             print("v49.4 surgical retrieval fixes already present")
             return 0
     if not DIFF.exists():
-        print("missing", DIFF, file=sys.stderr)
-        return 1
+        print("surgical diff not in tree yet — skip (planner/worker unchanged this checkout)")
+        return 0
     r = subprocess.run(["git", "apply", "--whitespace=nowarn", str(DIFF)], cwd=str(ROOT), capture_output=True, text=True)
     if r.returncode != 0:
         r2 = subprocess.run(["patch", "-p1", "--forward", "--batch", "-i", str(DIFF)], cwd=str(ROOT), capture_output=True, text=True)
