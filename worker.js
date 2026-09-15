@@ -140,7 +140,7 @@ function cors(req) {
   return {
     'access-control-allow-origin': allow,
     'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type, x-carmen-client, x-carmen-test-key',
+    'access-control-allow-headers': 'content-type, x-carmen-client, x-carmen-test-key, x-carmen-api-key, authorization',
     'access-control-expose-headers': 'x-carmen-version, x-carmen-build, x-carmen-browser-test',
     'access-control-max-age': '86400',
     'vary': 'Origin',
@@ -6568,11 +6568,12 @@ function apiDocsPayload() {
     },
     cors: {
       allowMethods: 'GET,POST,OPTIONS',
-      allowHeaders: 'content-type, x-carmen-client, x-carmen-test-key',
+      allowHeaders: 'content-type, x-carmen-client, x-carmen-test-key, x-carmen-api-key, authorization',
       notes: 'Same-origin, localhost, *.workers.dev, grok.app, chatgpt.com, and requests with no Origin (server-to-server) are allowed. Credentials are not used.',
     },
     auth: {
-      default: 'none — investigation IDs are unguessable; do not publish private investigation JSON',
+      default: 'none unless CARMEN_API_KEY is configured — investigation IDs are unguessable; do not publish private investigation JSON',
+      machineKey: 'If CARMEN_API_KEY is configured, send X-Carmen-Api-Key or Authorization: Bearer <CARMEN_API_KEY>. Never send API_KEY / OpenRouter credentials.',
       optionalTestKey: 'If CARMEN_TEST_KEY is configured, send header X-Carmen-Test-Key. Never send OpenRouter/API keys to these routes.',
     },
     diagnostic: 'Pass diagnostic=1 or fixture=<name> to exercise ranking without treating a provider outage as a Carmen PASS.',
@@ -6597,12 +6598,241 @@ function apiDocsPayload() {
   };
 }
 
+const MACHINE_PUBLIC_PATHS = new Set([
+  '/api', '/api/v1', '/api/v1/docs', '/api/v1/health', '/api/health',
+  '/api/v1/openapi.json', '/api/v1/machine/capabilities', '/api/v1/capabilities',
+  '/api/v1/browser-test-session', '/api/browser-test-session',
+]);
+const DENIED_EXTERNAL_SEGMENTS = new Set([
+  'message', 'messages', 'messaging', 'dm', 'post', 'comment', 'comments',
+  'follow', 'following', 'purchase', 'buy', 'checkout', 'transaction', 'transactions',
+  'signup', 'sign-up', 'create-account', 'login', 'paywall', 'form', 'submit',
+]);
+
+function presentedMachineCredential(req) {
+  const header = (req.headers.get('x-carmen-api-key') || '').trim();
+  const bearer = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  const test = (req.headers.get('x-carmen-test-key') || '').trim();
+  return header || bearer || test;
+}
+
+function machineCapabilities() {
+  return {
+    readOnly: true,
+    pipelineFunction: 'runDiscovery',
+    samePipelineAsIphoneUi: true,
+    mock: false,
+    browserTestSimulation: false,
+    allowed: ['search', 'dive', 'analyze', 'inspect-investigation', 'inspect-results', 'confirm-identity', 'reject-identity', 'find-more', 'learn'],
+    denied: ['external-action', 'messaging', 'posting', 'commenting', 'following', 'purchasing', 'submitting-forms', 'creating-accounts', 'transactions', 'login-bypass', 'paywall-bypass'],
+    primaryDiveLenses: ['bondage', 'people', 'clothing'],
+    findMore: 'additive expansion via the next unexplored retrieval lane',
+    authentication: 'CARMEN_API_KEY via X-Carmen-Api-Key or Authorization Bearer. Never send API_KEY.',
+  };
+}
+
+function machinePipeline() {
+  return { function: 'runDiscovery', mock: false, browserTestSimulation: false, fixtureAllowed: true };
+}
+
+function identityStateFrom(state, discovery) {
+  const fb = (state && state.identityFeedback) || {};
+  return {
+    confirmed: fb.confirmed || (state && state.confirmed) || [],
+    rejected: fb.rejectedPeople || [],
+    rejectedImages: fb.rejectedImages || [],
+    rejectedHosts: fb.rejectedHosts || [],
+    rejectedUrls: fb.rejectedUrls || [],
+    candidates: (discovery && discovery.identityCandidates) || (state && state.candidates) || [],
+    ambiguous: !!(discovery && discovery.identityAmbiguous),
+    ambiguousReason: (discovery && discovery.identityAmbiguousReason) || null,
+    subject: (state && state.subject) || (discovery && discovery.classification && discovery.classification.subject) || '',
+    note: 'That’s the one confirms WHO the person is. It does not restrict retrieval to the selected website.',
+  };
+}
+
+function relationshipsFrom(discovery, state) {
+  const seeds = (discovery && discovery.discoverySeeds) || {};
+  return {
+    relatedPeople: (discovery && discovery.relatedPeople) || seeds.people || [],
+    parent: (state && state.parentInvestigationId) || null,
+    derivedFrom: (state && state.derivedFrom) || null,
+    relatedTo: (state && state.relatedTo) || null,
+    foundThrough: (state && state.foundThrough) || null,
+    discoverySeeds: seeds,
+    productions: seeds.productions || [],
+    domains: seeds.domains || [],
+    studios: seeds.studios || [],
+  };
+}
+
+function retrievalLanesFrom(discovery) {
+  return {
+    variants: (discovery && (discovery.queryClasses || discovery.variants)) || [],
+    queryClasses: (discovery && discovery.queryClasses) || [],
+    topicMap: (discovery && discovery.topicMap) || null,
+    expansion: (discovery && discovery.expansion) || null,
+    diveLenses: (discovery && discovery.primaryDiveLenses) || PRIMARY_DIVE_LENSES,
+    attemptedQueries: (discovery && discovery.attemptedQueries) || [],
+  };
+}
+
+function isDeniedExternalAction(path, action) {
+  const segs = String(path || '').split('/').filter(Boolean);
+  if (segs.some(s => DENIED_EXTERNAL_SEGMENTS.has(String(s).toLowerCase()))) return true;
+  const act = String(action || '').toLowerCase();
+  if (DENIED_EXTERNAL_SEGMENTS.has(act)) return true;
+  return /\b(external-action|send-message|create-account|login-bypass|paywall-bypass)\b/i.test(path + ' ' + act);
+}
+
+function machineOpenApiSpec() {
+  const origin = 'https://carmen-iphone-v25.94bwfd5grv.workers.dev';
+  const searchBody = {
+    type: 'object',
+    properties: {
+      query: { type: 'string' },
+      subject: { type: 'string' },
+      topic: { type: 'string' },
+      type: { type: 'string' },
+      adult: { type: 'string', enum: ['on', 'off', 'both'] },
+      investigationId: { type: 'string' },
+      investigationState: { type: 'object' },
+      fixture: { type: 'string' },
+    },
+  };
+  const security = [{ CarmenApiKey: [] }, { BearerAuth: [] }];
+  return {
+    openapi: '3.0.3',
+    info: {
+      title: 'Carmen machine-readable investigation API',
+      version: PLANNER_VERSION,
+      description: 'Read-only ChatGPT/tool interface. Same runDiscovery pipeline as the iPhone PWA. Authenticate with CARMEN_API_KEY. Never send the provider API_KEY.',
+    },
+    servers: [{ url: origin }],
+    security,
+    components: {
+      securitySchemes: {
+        CarmenApiKey: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'X-Carmen-Api-Key',
+          description: 'CARMEN_API_KEY Worker secret. Never send API_KEY / OpenRouter credentials.',
+        },
+        BearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          description: 'Authorization: Bearer <CARMEN_API_KEY>',
+        },
+      },
+    },
+    paths: {
+      '/api/v1/openapi.json': { get: { operationId: 'openapi', security: [], responses: { 200: { description: 'OpenAPI document' } } } },
+      '/api/v1/machine/capabilities': { get: { operationId: 'capabilities', security: [], responses: { 200: { description: 'Read-only capabilities' } } } },
+      '/api/v1/health': { get: { operationId: 'health', security: [], responses: { 200: { description: 'Health' } } } },
+      '/api/v1/machine/search': {
+        post: {
+          operationId: 'machineSearch',
+          security,
+          requestBody: { required: true, content: { 'application/json': { schema: searchBody } } },
+          responses: { 200: { description: 'Discovery results from runDiscovery' }, 401: { description: 'Unauthorized' } },
+        },
+      },
+      '/api/v1/machine/dive': {
+        post: {
+          operationId: 'machineDive',
+          security,
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    lens: { type: 'string', enum: ['bondage', 'people', 'clothing'] },
+                    query: { type: 'string' },
+                    subject: { type: 'string' },
+                    topic: { type: 'string' },
+                    adult: { type: 'string' },
+                    investigationId: { type: 'string' },
+                    investigationState: { type: 'object' },
+                    priorResults: { type: 'array' },
+                    graphLeads: { type: 'array' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Deep Dive results from runDiscovery' } },
+        },
+      },
+      '/api/v1/machine/investigations/{id}': {
+        get: {
+          operationId: 'machineInvestigation',
+          security,
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Investigation state' } },
+        },
+      },
+      '/api/v1/machine/investigations/{id}/results': {
+        get: {
+          operationId: 'machineResults',
+          security,
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Structured evidence items' } },
+        },
+      },
+      '/api/v1/machine/investigations/{id}/analyze': {
+        post: {
+          operationId: 'machineAnalyze',
+          security,
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' }, kind: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Analyze evidence object' } },
+        },
+      },
+    },
+  };
+}
+
 function apiUnauthorized(req, env) {
-  const need = env && env.CARMEN_TEST_KEY;
-  if (!need) return null;
-  const got = req.headers.get('x-carmen-test-key') || '';
-  if (got && got === need) return null;
-  return json({ error: 'Unauthorized', hint: 'Set X-Carmen-Test-Key to the configured test key. Carmen API keys for OpenRouter are never accepted here.' }, 401, req);
+  const path = new URL(req.url).pathname.replace(/\/+$/, '') || '/';
+  const presented = presentedMachineCredential(req);
+  const providerKey = String((env && (env.API_KEY || env.Api_key)) || '').trim();
+  const machineKey = String((env && env.CARMEN_API_KEY) || '').trim();
+  const testKey = String((env && env.CARMEN_TEST_KEY) || '').trim();
+
+  if (presented && providerKey && presented === providerKey && presented !== machineKey && presented !== testKey) {
+    return json({
+      error: 'Provider secret is not a Carmen machine credential',
+      hint: 'Use CARMEN_API_KEY via X-Carmen-Api-Key or Authorization Bearer. Never send API_KEY.',
+    }, 401, req);
+  }
+
+  const isPublic = MACHINE_PUBLIC_PATHS.has(path);
+  if (isPublic) {
+    if (!machineKey && testKey) {
+      const got = (req.headers.get('x-carmen-test-key') || '').trim();
+      if (got && got === testKey) return null;
+      return json({ error: 'Unauthorized', hint: 'Set X-Carmen-Test-Key to the configured test key. Carmen API keys for OpenRouter are never accepted here.' }, 401, req);
+    }
+    return null;
+  }
+
+  if (machineKey) {
+    if (presented && presented === machineKey) return null;
+    if (testKey && presented && presented === testKey) return null;
+    return json({
+      error: 'Unauthorized',
+      hint: 'Send X-Carmen-Api-Key or Authorization Bearer with CARMEN_API_KEY. Never send API_KEY.',
+    }, 401, req);
+  }
+
+  if (testKey) {
+    const got = (req.headers.get('x-carmen-test-key') || '').trim();
+    if (got && got === testKey) return null;
+    return json({ error: 'Unauthorized', hint: 'Set X-Carmen-Test-Key to the configured test key. Carmen API keys for OpenRouter are never accepted here.' }, 401, req);
+  }
+  return null;
 }
 
 function packApiDiscovery(discovery, state, action, req, extra = {}) {
@@ -6615,8 +6845,20 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
   state.visuals = (discovery.visualCorpus || []).slice(0, 24);
   state.retrievalRuns = (state.retrievalRuns || 0) + 1;
   state.updatedAt = new Date().toISOString();
+  state.graphLeads = discovery.graphLeads || discovery.relatedPeople || state.graphLeads || [];
+  state.attemptedQueries = discovery.attemptedQueries || state.attemptedQueries || [];
+  state.priorCorpus = (discovery.results || []).slice(0, 40).map(r => ({
+    url: r.url, title: r.title, snippet: String(r.snippet || '').slice(0, 220),
+    domain: r.domain || r.host, source: r.source, sourceClass: r.sourceClass || r.plannerSourceClass,
+    discoveryLane: r.discoveryLane, provenance: r.provenance, retrievalStatus: r.retrievalStatus,
+    accessState: r.accessState, textExcerpt: String(r.textExcerpt || r.snippet || '').slice(0, 280),
+    subjectEvidence: r.subjectEvidence, topicEvidence: r.topicEvidence, intersection: r.intersection,
+    foundThrough: r.foundThrough, parent: r.parent, relatedTo: r.relatedTo,
+  }));
   rememberInvestigation(state);
   const items = (discovery.structuredResults || (discovery.results || []).map(r => serializeEvidenceItem(r, { investigationId: state.investigationId, subject, topic, intent: action })));
+  state.lastApiResults = items;
+  state.identityState = identityStateFrom(state, discovery);
   return {
     ok: discovery.corpusDiagnosis && discovery.corpusDiagnosis.status === 'search_failed' ? false : true,
     investigationId: state.investigationId,
@@ -6634,6 +6876,12 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
     identityCandidates: discovery.identityCandidates,
     identityAmbiguous: discovery.identityAmbiguous,
     identityAmbiguousReason: discovery.identityAmbiguousReason,
+    identityState: identityStateFrom(state, discovery),
+    relationships: relationshipsFrom(discovery, state),
+    retrievalLanes: retrievalLanesFrom(discovery),
+    pipeline: machinePipeline(),
+    capabilities: machineCapabilities(),
+    readOnly: true,
     sourceDiversity: discovery.sourceDiversity,
     corpusDiagnosis: discovery.corpusDiagnosis,
     redditEvidence: discovery.redditEvidence,
@@ -6697,6 +6945,26 @@ async function handleCarmenApi(req, env) {
     return issueBrowserTestSession(req, env);
   }
 
+  if ((path === '/api/v1/openapi.json' || path === '/openapi.json') && req.method === 'GET') {
+    return json(machineOpenApiSpec(), 200, req);
+  }
+  if ((path === '/api/v1/machine/capabilities' || path === '/api/v1/capabilities') && req.method === 'GET') {
+    return json({
+      ok: true,
+      version: PLANNER_VERSION,
+      build: PLANNER_BUILD,
+      samePipelineAsIphoneUi: true,
+      readOnly: true,
+      pipelineFunction: 'runDiscovery',
+      capabilities: machineCapabilities(),
+      pipeline: machinePipeline(),
+    }, 200, req);
+  }
+
+  if (isDeniedExternalAction(path, '')) {
+    return json({ error: 'External action denied', readOnly: true, capabilities: machineCapabilities() }, 403, req);
+  }
+
   let body = {};
   if (req.method === 'POST') {
     try { body = await req.json(); } catch { body = {}; }
@@ -6705,6 +6973,19 @@ async function handleCarmenApi(req, env) {
   // /api/v1/investigations/:id/...
   let investigationId = body.investigationId || u.searchParams.get('investigationId') || '';
   let action = body.action || u.searchParams.get('action') || '';
+  if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'machine') {
+    const leaf = parts[3] || '';
+    if (leaf === 'search') action = action || 'search';
+    else if (leaf === 'dive') {
+      const lens = String(body.lens || body.diveLens || 'bondage').toLowerCase();
+      action = action || ('dive-' + (['bondage', 'people', 'clothing'].includes(lens) ? lens : 'bondage'));
+    } else if (leaf === 'investigations') {
+      investigationId = investigationId || parts[4] || '';
+      const sub = parts[5] || '';
+      if (req.method === 'GET' && !sub) action = action || 'get';
+      else if (sub) action = action || sub;
+    }
+  }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'investigations') {
     if (req.method === 'POST' && parts.length === 3) action = action || 'new-investigation';
     if (parts[3] && parts[3] !== 'search') investigationId = investigationId || parts[3];
@@ -6750,11 +7031,12 @@ async function handleCarmenApi(req, env) {
     }, 200, req);
   }
 
-  let state = loadInvestigation(investigationId, body.investigationState) || createInvestigationState(body);
+  let state = loadInvestigation(investigationId, body.investigationState) || createInvestigationState({ ...body, investigationId: investigationId || undefined });
   if (body.investigationState && body.investigationState.investigationId) state = { ...createInvestigationState(), ...body.investigationState };
-  if (!state.investigationId) state.investigationId = newInvestigationId();
+  if (!state.investigationId) state.investigationId = investigationId || newInvestigationId();
+  if (investigationId && !state.investigationId) state.investigationId = investigationId;
 
-  if (action === 'get' || action === 'trail' || action === 'evidence') {
+  if (action === 'get' || action === 'trail' || action === 'evidence' || action === 'results') {
     rememberInvestigation(state);
     return json({
       ok: true,
@@ -6765,8 +7047,16 @@ async function handleCarmenApi(req, env) {
       trail: state.trail,
       savedEvidence: state.savedEvidence,
       identityFeedback: state.identityFeedback,
+      identityState: identityStateFrom(state, null),
+      relationships: relationshipsFrom(null, state),
+      retrievalLanes: retrievalLanesFrom(null),
       candidates: state.candidates,
+      results: action === 'results' || action === 'evidence' ? (state.lastApiResults || state.results || []) : undefined,
       investigationState: state,
+      capabilities: machineCapabilities(),
+      pipeline: machinePipeline(),
+      samePipelineAsIphoneUi: true,
+      readOnly: true,
     }, 200, req);
   }
 
@@ -6866,9 +7156,9 @@ async function handleCarmenApi(req, env) {
     excludeUrls: [].concat(body.excludeUrls || [], state.identityFeedback.rejectedUrls || [], state.identityFeedback.rejectedImages || []),
     excludeHosts: [].concat(body.excludeHosts || [], state.identityFeedback.rejectedHosts || []),
     identityFeedback: state.identityFeedback,
-    priorResults: body.priorResults || [],
-    graphLeads: body.graphLeads || [],
-    attemptedQueries: body.attemptedQueries || [],
+    priorResults: body.priorResults || state.priorCorpus || state.lastApiResults || state.results || [],
+    graphLeads: body.graphLeads || state.graphLeads || [],
+    attemptedQueries: body.attemptedQueries || state.attemptedQueries || [],
     fixture,
     diagnostic,
     enrich: !fixture,

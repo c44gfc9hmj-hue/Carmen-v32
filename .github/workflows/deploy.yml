@@ -77,6 +77,7 @@ jobs:
           node test-v49.3.mjs
           node test-v49.4.mjs
           node test-v49.4-machine-api.mjs
+          node test-v49.4-identity-anchor.mjs
           node test-browser-test.mjs
 
       - name: Install Wrangler
@@ -95,6 +96,20 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Configure CARMEN_API_KEY (never reuse API_KEY)
+        run: |
+          if [ -z "$CARMEN_API_KEY" ]; then
+            echo "GitHub secret CARMEN_API_KEY is not set. Worker /api stays open unless the Worker already has CARMEN_API_KEY."
+            npx wrangler secret list --name carmen-iphone-v25 --format json || true
+            exit 0
+          fi
+          printf '%s' "$CARMEN_API_KEY" | npx wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25
+          echo "CARMEN_API_KEY Worker secret updated (value not logged)."
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CARMEN_API_KEY: ${{ secrets.CARMEN_API_KEY }}
 
       - name: List Worker secret names (after deploy)
         run: |

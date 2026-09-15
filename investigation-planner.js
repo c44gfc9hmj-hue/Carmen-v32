@@ -2212,6 +2212,13 @@ export function applyInvestigationAction(state, action, payload = {}) {
 
 export const API_ACTION_CATALOG = [
   { action: 'health', method: 'GET', path: '/api/v1/health', description: 'Version, features, provider status. Never returns secrets.' },
+  { action: 'openapi', method: 'GET', path: '/api/v1/openapi.json', description: 'OpenAPI 3.0.3 for ChatGPT Actions. Documents CARMEN_API_KEY, never provider API_KEY.' },
+  { action: 'capabilities', method: 'GET', path: '/api/v1/machine/capabilities', description: 'Read-only machine capabilities. pipelineFunction is always runDiscovery.' },
+  { action: 'machine-search', method: 'POST', path: '/api/v1/machine/search', description: 'Same runDiscovery path as GET /search (iPhone PWA).' },
+  { action: 'machine-dive', method: 'POST', path: '/api/v1/machine/dive', description: 'Deep Dive lens (bondage|people|clothing) on the same runDiscovery path.' },
+  { action: 'machine-investigation', method: 'GET', path: '/api/v1/machine/investigations/:id', description: 'Investigation state, identity evidence, provenance, and trail.' },
+  { action: 'machine-results', method: 'GET', path: '/api/v1/machine/investigations/:id/results', description: 'Structured evidence items for the investigation.' },
+  { action: 'machine-analyze', method: 'POST', path: '/api/v1/machine/investigations/:id/analyze', description: 'Analyze a public evidence object. Same analyze path as the PWA.' },
   { action: 'new-investigation', method: 'POST', path: '/api/v1/investigations', description: 'Hard live-state reset. Saved collections stay.' },
   { action: 'search', method: 'POST', path: '/api/v1/investigations/:id/search', description: 'Same /search pipeline as the iPhone UI.' },
   { action: 'identify', method: 'POST', path: '/api/v1/investigations/:id/identify', description: 'Subject identification search.' },
