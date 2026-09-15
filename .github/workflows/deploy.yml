@@ -45,6 +45,14 @@ jobs:
               exit 1
             fi
           fi
+          if [ -f patches/apply-machine-api.py ]; then
+            if python3 patches/apply-machine-api.py; then
+              echo "v49.4 machine API applied before deploy"
+            else
+              echo "machine API patch failed" >&2
+              exit 1
+            fi
+          fi
           if [ -f patches/v47.8-video-urls.patch ] && git apply --check patches/v47.8-video-urls.patch; then
             git apply patches/v47.8-video-urls.patch
             echo "applied leftover v47.8 patch"
@@ -68,8 +76,8 @@ jobs:
           node test-v49.2.mjs
           node test-v49.3.mjs
           node test-v49.4.mjs
+          node test-v49.4-machine-api.mjs
           node test-browser-test.mjs
-
 
       - name: Install Wrangler
         run: npm install --no-save wrangler@4

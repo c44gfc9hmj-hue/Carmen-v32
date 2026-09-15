@@ -1,34 +1,67 @@
 # Carmen machine-readable API (v49.4)
 
+ChatGPT and other authorized assistants can drive Carmen through a **secure,
+read-only** HTTP API. The routes execute the same `runDiscovery` / retrieve /
+analyze / investigation-state pipeline as the iPhone PWA. There is no mock and
+no browser-test simulation.
 
-ChatGPT and other assistants can drive Carmen through these routes. They exercise
-the **same** `runDiscovery` / retrieve / analyze / learn pipeline as the iPhone UI.
-There is no fake test implementation.
+Production origin:
 
-Base URL: the Carmen origin (same host as the app).
+`https://carmen-iphone-v25.94bwfd5grv.workers.dev`
+
+OpenAPI: `GET /api/v1/openapi.json`
 
 ## Safety
 
-- Secrets and API keys are never returned.
+- Read-only investigation API.
+- Secrets and provider keys (`API_KEY` / OpenRouter) are never returned.
+- Provider secrets are **rejected** if sent as the machine credential.
 - Carmen never messages, posts, comments, follows, purchases, or submits forms.
+- External-action paths return **403** with `error: "External action denied"`.
 - Investigation IDs are unguessable. Do not publish private investigation JSON.
-- If `CARMEN_TEST_KEY` is configured, send `X-Carmen-Test-Key`.
-- CORS: localhost, `*.workers.dev`, grok.app, chatgpt.com, and no-Origin (server-to-server).
 
-## Quick start
+## Authentication
 
-```
-GET  /health
-GET  /api
-POST /api/v1/investigations
-POST /api/v1/investigations/:id/search
-```
+Configure a Worker secret named **`CARMEN_API_KEY`**. This is separate from
+`API_KEY` (the AI provider / OpenRouter secret).
 
-Example:
+Send one of:
+
+- `X-Carmen-Api-Key: <CARMEN_API_KEY>`
+- `Authorization: Bearer <CARMEN_API_KEY>`
+- `X-Carmen-Test-Key: <CARMEN_TEST_KEY>` (alias if that secret is set)
+
+If no machine key is configured, `/api` remains open (same as v49.3). The PWA
+`GET /search`, `POST /dive`, and `POST /analyze` routes never require the
+machine key.
+
+Never send `API_KEY` / OpenRouter credentials to these routes.
+
+## Minimal ChatGPT endpoint set
+
+| Purpose | Method | Path |
+|---|---|---|
+| OpenAPI | GET | `/api/v1/openapi.json` |
+| capabilities | GET | `/api/v1/machine/capabilities` |
+| health | GET | `/api/v1/health` |
+| search | POST | `/api/v1/machine/search` |
+| Deep Dive | POST | `/api/v1/machine/dive` |
+| investigation state | GET | `/api/v1/machine/investigations/{id}` |
+| results | GET | `/api/v1/machine/investigations/{id}/results` |
+| analyze | POST | `/api/v1/machine/investigations/{id}/analyze` |
+
+The full investigation catalog remains available and uses the same
+`handleCarmenApi` → `runDiscovery` path as the PWA.
+
+## ChatGPT request examples
+
+### Search (same pipeline as GET /search)
 
 ```http
-POST /api/v1/search
+POST /api/v1/machine/search
+Host: carmen-iphone-v25.94bwfd5grv.workers.dev
 Content-Type: application/json
+X-Carmen-Api-Key: $CARMEN_API_KEY
 
 {
   "query": "Drea Morgan bondage",
@@ -39,10 +72,95 @@ Content-Type: application/json
 }
 ```
 
-Pass `investigationState` from the previous response (or `investigationId`) so
-identity confirmation, rejections, and the trail persist.
+### Deep Dive
 
-## Actions
+```http
+POST /api/v1/machine/dive
+Content-Type: application/json
+Authorization: Bearer $CARMEN_API_KEY
+
+{
+  "lens": "bondage",
+  "subject": "Drea Morgan",
+  "topic": "bondage",
+  "adult": "on",
+  "investigationId": "inv_…"
+}
+```
+
+`lens` is one of `bondage`, `people`, `clothing`.
+
+### Investigation state / results
+
+```http
+GET /api/v1/machine/investigations/inv_…
+X-Carmen-Api-Key: $CARMEN_API_KEY
+```
+
+```http
+GET /api/v1/machine/investigations/inv_…/results
+X-Carmen-Api-Key: $CARMEN_API_KEY
+```
+
+### Analyze a public page
+
+```http
+POST /api/v1/machine/investigations/inv_…/analyze
+Content-Type: application/json
+X-Carmen-Api-Key: $CARMEN_API_KEY
+
+{
+  "url": "https://example.com/interview",
+  "title": "Interview",
+  "kind": "webpage"
+}
+```
+
+Pass `investigationState` from the previous response (or `investigationId`)
+so identity confirmation, rejections, and the trail persist.
+
+## Response envelope
+
+Successful search / dive responses include:
+
+- `results` — structured evidence items with provenance
+- `evidenceSummary` — subject / topic / intersection buckets
+- `identityState` — confirmed / rejected / candidates / ambiguity
+- `relationships` — related people, parent, derivedFrom, discovery seeds
+- `retrievalLanes` — variants, query classes, topic map, expansion
+- `investigationState` — opaque state to send back on the next call
+- `pipeline.function` — always `runDiscovery`
+- `samePipelineAsIphoneUi` — always `true`
+- `capabilities` — allowed vs denied actions
+- `readOnly` — always `true`
+
+Each result item includes: investigationId, subject, topic, intent,
+sourceClass, sourceUrl, canonicalUrl, title, publisher, host, creator,
+originalSource, reposter, mirror, imageUrl, identityEvidence, topicEvidence,
+confidence, observationState (OBSERVED / SUPPORTED / INFERRED / UNKNOWN),
+foundThrough, parent, relatedTo, retrievalRun, timestamps,
+deduplicationStatus, rejectionReason, candidateIdentity, provider, latency,
+failureReason, isEvidenceItem, isDiscoveryLead, ownershipClass, accessState.
+
+Ownership classes: CONFIRMED CREATOR-OWNED, LIKELY CREATOR-OWNED,
+DIRECTORY CLAIM, FAN/REPOSTER, MIRROR, UNVERIFIED, UNKNOWN.
+
+## ChatGPT Custom GPT / Actions setup
+
+1. Set Cloudflare Worker secret `CARMEN_API_KEY`:
+   `npx wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25`
+   Do not reuse `API_KEY`.
+2. Create a ChatGPT Action. Import
+   `https://carmen-iphone-v25.94bwfd5grv.workers.dev/api/v1/openapi.json`.
+3. Authentication: API Key, header name `X-Carmen-Api-Key`, secret value =
+   `CARMEN_API_KEY`.
+4. Allow only search, dive, state, results, and analyze.
+5. Instruct the GPT that Carmen is read-only and must never attempt messaging,
+   posting, following, purchasing, or form submission.
+
+## Full action catalog
+
+You can also `POST /api/v1` with `{ "action": "search", ... }`.
 
 | Action | Method | Path |
 |---|---|---|
@@ -60,7 +178,6 @@ identity confirmation, rejections, and the trail persist.
 | dive people | POST | `/api/v1/investigations/:id/dive-people` |
 | dive clothing | POST | `/api/v1/investigations/:id/dive-clothing` |
 | more like this | POST | `/api/v1/investigations/:id/more-like-this` |
-
 | find different | POST | `/api/v1/investigations/:id/find-different` |
 | find similar | POST | `/api/v1/investigations/:id/find-similar` |
 | search this visual | POST | `/api/v1/investigations/:id/search-this-visual` |
@@ -72,8 +189,6 @@ identity confirmation, rejections, and the trail persist.
 | learn | POST | `/api/v1/investigations/:id/learn` |
 | trail | GET | `/api/v1/investigations/:id/trail` |
 | branch | POST | `/api/v1/investigations/:id/branch` |
-
-You can also `POST /api/v1` with `{ "action": "search", ... }`.
 
 The existing `GET /search` query-string interface still works and is what the
 iPhone UI uses.
@@ -97,45 +212,8 @@ fixture=ashley-anderson
 
 Pass `"fixture": "provider-blocked"` in the JSON body or `?fixture=provider-blocked`.
 
-## Result fields
-
-Each item includes: investigationId, subject, topic, intent, sourceClass,
-sourceUrl, canonicalUrl, title, publisher, host, creator, originalSource,
-reposter, mirror, imageUrl, identityEvidence, topicEvidence, confidence,
-observationState (OBSERVED / SUPPORTED / INFERRED / UNKNOWN), foundThrough,
-parent, relatedTo, retrievalRun, timestamps, deduplicationStatus,
-rejectionReason, candidateIdentity, provider, latency, failureReason,
-isEvidenceItem vs isDiscoveryLead, ownershipClass, accessState.
-
-Ownership classes: CONFIRMED CREATOR-OWNED, LIKELY CREATOR-OWNED,
-DIRECTORY CLAIM, FAN/REPOSTER, MIRROR, UNVERIFIED, UNKNOWN.
-
-A directory mention is never a confirmed account.
-
 ## Browser-test surface (same UI as iPhone)
 
-Remote browser agents (ChatGPT, etc.) can drive the **real** Carmen PWA — not a
-mock — at:
-
-- `/test` (stable primary)
-- `/browser-test` (alias)
-
-Those paths load the same `public/index.html` / `app.js` and the same Worker
-routes (`/search`, `/dive`, `/retrieve`, `/api/v1/...`) as `/`. There is no
-parallel test implementation, no redirect stub, no Continue click, and no
-change to retrieval, ranking, or Deep Dive.
-
-The page is the real DOM. Agents can click, type, submit, wait, and inspect:
-
-- `[data-testid="search-input"]` / `[data-testid="search-submit"]`
-- `[data-testid="deep-dive"]`, `[data-testid="dive-bondage"]`, `[data-testid="dive-people"]`, `[data-testid="dive-clothing"]`, `[data-testid="find-more"]`
-- `[data-testid="save"]`, `[data-testid="new-investigation"]`, `[data-testid="how-i-got-here"]`
-- `[data-testid="result-card"]` with `data-source-url`
-- Wait on `document.documentElement[data-carmen-status]` (`idle|loading|complete|error`) and `[data-carmen-busy]`
-
-Access: open `https://carmen-iphone-v25.94bwfd5grv.workers.dev/test`. No extra
-authentication unless `CARMEN_TEST_KEY` is configured (then send
-`X-Carmen-Test-Key` on `/api` JSON routes). Optional session:
-`GET /api/v1/browser-test-session`.
-
-`GET /health` and `GET /api` advertise `browserTest` and `testRoutes`.
+Remote browser agents can still drive the **real** Carmen PWA at `/test` and
+`/browser-test`. That is not the machine API. The machine API is the JSON
+routes above.
