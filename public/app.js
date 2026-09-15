@@ -990,7 +990,13 @@ async function discover(opts = {}) {
   }
   if ($('personRail') && !keepSubject) $('personRail').innerHTML = '';
   $('resultsEmpty').classList.add('hidden');
-  setAgentState({ status: 'loading', busy: true, error: '', lens: opts.diveLens || activeDiveLens || '' });
+  setAgentState({
+    status: (lastResults.length && (opts.append || opts.progressive || opts.visualMore || opts.videoMore || opts.findMore)) ? 'complete' : 'loading',
+    busy: true,
+    error: '',
+    lens: opts.diveLens || activeDiveLens || '',
+    results: lastResults.length,
+  });
   $('searchDiagnostics').textContent = expanded
     ? 'Looking further across public sources…'
     : (visualMode || visualMore || videoMore)

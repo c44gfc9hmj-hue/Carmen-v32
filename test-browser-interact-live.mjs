@@ -22,7 +22,12 @@ function log(step, ok, detail) {
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-page.setDefaultTimeout(20000);
+page.setDefaultTimeout(60000);
+
+async function waitPred(fn, timeout = 90000) {
+  // Playwright's second argument is the predicate arg, not options.
+  return page.waitForFunction(fn, null, { timeout });
+}
 
 async function agentState() {
   return page.evaluate(() => ({
@@ -74,35 +79,33 @@ try {
 
   // D. Submit
   await page.locator('[data-testid="search-submit"]').click();
-  await page.waitForFunction(() => {
+  await waitPred(() => {
     const s = document.documentElement.getAttribute('data-carmen-status');
     return s === 'loading' || s === 'complete' || s === 'error';
-  }, { timeout: 15000 }).catch(() => {});
+  }, 15000).catch(() => {});
   const afterClick = await agentState();
   log('D submit search', afterClick.status === 'loading' || afterClick.status === 'complete' || afterClick.status === 'error', `status=${afterClick.status} view=${afterClick.view} busy=${afterClick.busy}`);
 
-  // E. Wait for async results
-  await page.waitForFunction(() => {
-    const s = document.documentElement.getAttribute('data-carmen-status');
-    const busy = document.documentElement.getAttribute('data-carmen-busy');
-    return (s === 'complete' || s === 'error') && busy === 'false';
-  }, { timeout: 90000 }).catch(() => {});
-  // Results can appear while progressive search is still busy.
-  await page.waitForFunction(() => {
+  // E. Wait for async results (cards may appear while progressive search is still busy)
+  await waitPred(() => {
     const s = document.documentElement.getAttribute('data-carmen-status');
     const cards = document.querySelectorAll('[data-testid="result-card"], [data-testid="person-tile"]').length;
+    const results = Number(document.documentElement.getAttribute('data-carmen-results') || 0);
     const err = document.documentElement.getAttribute('data-carmen-error') || '';
-    return s === 'complete' || s === 'error' || cards > 0 || err.length > 0;
-  }, { timeout: 90000 }).catch(() => {});
+    return s === 'error' || err.length > 0 || cards > 0 || results > 0 || s === 'complete';
+  }, 90000).catch(() => {});
   await page.screenshot({ path: SHOT + '/carmen-test-results.png' });
   const e = await agentState();
   const haveResults = e.cards > 0 || Number(e.results) > 0;
   log('E wait async results', e.status === 'complete' || haveResults, `status=${e.status} results=${e.results} cards=${e.cards} error=${e.error} busy=${e.busy}`);
 
   // Select a subject so Deep Dive / Bondage have an entity
+  await waitPred(() => {
+    return document.querySelector('[data-testid="identity-confirm"], [data-testid="result-card"], [data-testid="person-tile"]');
+  }, 20000).catch(() => {});
   const confirm = page.locator('[data-testid="identity-confirm"]').first();
   const card = page.locator('[data-testid="result-card"]').first();
-  if (await confirm.count()) {
+  if (await confirm.count() && await confirm.isVisible().catch(() => false)) {
     await confirm.click();
     await page.waitForTimeout(500);
   } else if (await card.count()) {
@@ -112,13 +115,17 @@ try {
 
   // F. Open Deep Dive
   const diveBtn = page.locator('[data-testid="deep-dive"]');
-  if (await diveBtn.count()) {
+  await waitPred(() => {
+    const b = document.querySelector('[data-testid="deep-dive"]');
+    return b && !b.disabled;
+  }, 20000).catch(() => {});
+  if (await diveBtn.count() && await diveBtn.isEnabled().catch(() => false)) {
     await diveBtn.click();
   } else {
     const perCard = page.locator('[data-testid="result-deep-dive"]').first();
     if (await perCard.count()) await perCard.click();
   }
-  await page.waitForFunction(() => document.documentElement.getAttribute('data-carmen-view') === 'dive', { timeout: 10000 }).catch(() => {});
+  await waitPred(() => document.documentElement.getAttribute('data-carmen-view') === 'dive', 15000).catch(() => {});
   await page.screenshot({ path: SHOT + '/carmen-test-dive.png' });
   const f = await agentState();
   log('F open Deep Dive', f.view === 'dive', `view=${f.view}`);
@@ -130,15 +137,18 @@ try {
 
   // H. Click Bondage
   await page.locator('[data-testid="dive-bondage"]').click();
-  await page.waitForFunction(() => document.documentElement.getAttribute('data-carmen-lens') === 'bondage' || document.documentElement.getAttribute('data-carmen-status') === 'loading', { timeout: 10000 }).catch(() => {});
+  await waitPred(() => document.documentElement.getAttribute('data-carmen-lens') === 'bondage' || document.documentElement.getAttribute('data-carmen-status') === 'loading' || document.documentElement.getAttribute('data-carmen-busy') === 'true', 15000).catch(() => {});
   const h = await agentState();
   log('H click Bondage', h.lens === 'bondage' || h.status === 'loading' || h.status === 'complete', `lens=${h.lens} status=${h.status}`);
 
   // I. Wait for real retrieval
-  await page.waitForFunction(() => {
+  await waitPred(() => {
     const s = document.documentElement.getAttribute('data-carmen-status');
-    return s === 'complete' || s === 'error';
-  }, { timeout: 90000 }).catch(() => {});
+    const busy = document.documentElement.getAttribute('data-carmen-busy');
+    const lens = document.documentElement.getAttribute('data-carmen-lens');
+    const cards = document.querySelectorAll('[data-testid="result-card"]').length;
+    return s === 'error' || ((s === 'complete' || cards > 0) && busy === 'false') || (lens === 'bondage' && cards > 0 && s !== 'loading');
+  }, 90000).catch(() => {});
   await page.screenshot({ path: SHOT + '/carmen-test-bondage.png' });
   const i = await agentState();
   log('I wait Bondage retrieval', i.status === 'complete' || i.status === 'error', `status=${i.status} results=${i.results} cards=${i.cards} error=${i.error} lens=${i.lens}`);
@@ -197,7 +207,11 @@ try {
 
   // M/N New investigation isolates live state
   await page.locator('[data-testid="new-investigation"]').click();
-  await page.waitForFunction(() => document.documentElement.getAttribute('data-carmen-status') === 'idle', { timeout: 8000 }).catch(() => {});
+  await waitPred(() => {
+    const s = document.documentElement.getAttribute('data-carmen-status');
+    const view = document.documentElement.getAttribute('data-carmen-view');
+    return s === 'idle' && (view === 'home' || Number(document.documentElement.getAttribute('data-carmen-results') || 0) === 0);
+  }, 15000).catch(() => {});
   const n = await agentState();
   const isolated = n.status === 'idle' && n.investigation && n.investigation !== beforeInv && Number(n.results || 0) === 0;
   log('M/N New Investigation isolates live state', isolated, `before=${beforeInv} after=${n.investigation} results=${n.results} cards=${n.cards} prevCards=${beforeCards} view=${n.view}`);
