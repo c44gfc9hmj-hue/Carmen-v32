@@ -44,15 +44,36 @@ console.log('--- unauthenticated docs / openapi / capabilities ---');
   assert(spec.status === 200 && openapi.openapi === '3.0.3', 'GET /api/v1/openapi.json');
   assert(openapi.paths['/api/v1/machine/search'], 'spec includes machine search');
   assert(openapi.paths['/api/v1/machine/investigations/{id}'].post, 'spec includes POST inspect for durable state');
+  assert(openapi.paths['/api/v1/machine/investigations/{id}/confirm-identity'].post, 'spec includes confirm-identity');
   assert(openapi.components.securitySchemes.CarmenApiKey, 'spec documents X-Carmen-Api-Key');
+  assert(openapi.components.securitySchemes.BearerAuth, 'spec documents Bearer auth');
+  assert(openapi.security[0].BearerAuth, 'Bearer is listed first for ChatGPT Actions');
   assert(openapi.components.schemas && openapi.components.schemas.DiscoveryEnvelope, 'spec includes response schemas');
+  assert(openapi.components.schemas.EvidenceItem, 'spec includes EvidenceItem');
+  assert(openapi.components.schemas.SearchRequest, 'spec includes SearchRequest');
+  assert(openapi.paths['/api/v1/machine/search'].post['x-openai-isConsequential'] === false, 'search is non-consequential');
+  assert(openapi.paths['/api/v1/machine/search'].post.requestBody.content['application/json'].schema.$ref, 'search body uses $ref');
+  assert(openapi.paths['/api/v1/machine/search'].post.responses['200'].content['application/json'].schema, 'search 200 has JSON schema');
+  assert(openapi.paths['/api/v1/machine/search'].post.responses['401'].content['application/json'].schema, 'search 401 has JSON schema');
   assert(/investigationState/.test(JSON.stringify(openapi)), 'spec documents investigationState continuity');
+  assert(/investigationStateJson/.test(JSON.stringify(openapi)), 'spec documents investigationStateJson fallback');
   assert(/CARMEN_API_KEY/.test(JSON.stringify(openapi)), 'spec names CARMEN_API_KEY not provider secrets as the assistant key');
+  let descOk = true;
+  for (const [path, ops] of Object.entries(openapi.paths)) {
+    for (const op of Object.values(ops)) {
+      if (op && typeof op === 'object') {
+        if (op.summary && op.summary.length > 300) descOk = false;
+        if (op.description && op.description.length > 300) descOk = false;
+      }
+    }
+  }
+  assert(descOk, 'ChatGPT Action summary/description stay under 300 chars');
 
   const caps = await worker.fetch(new Request('https://test/api/v1/machine/capabilities'), {});
   const cbody = await caps.json();
   assert(caps.status === 200 && cbody.capabilities.readOnly === true, 'capabilities are read-only');
   assert(cbody.machineAuthConfigured === false, 'capabilities report machineAuthConfigured=false when secret absent');
+  assert(cbody.capabilities.agentContract && Array.isArray(cbody.capabilities.agentContract.sequence), 'capabilities include agentContract sequence');
   const health = await worker.fetch(new Request('https://test/api/v1/health'), { CARMEN_API_KEY: 'carmen-machine-secret' });
   const hbody = await health.json();
   assert(hbody.machineAuthConfigured === true, 'health reports machineAuthConfigured when CARMEN_API_KEY is present');
@@ -101,6 +122,7 @@ console.log('--- auth rejects provider secrets and wrong keys; accepts CARMEN_AP
   assert(okBody.relationships, 'response includes relationships');
   assert(okBody.retrievalLanes, 'response includes retrievalLanes');
   assert(okBody.investigationState && okBody.investigationId, 'response includes investigation state');
+  assert(typeof okBody.investigationStateJson === 'string' && okBody.investigationStateJson.includes(okBody.investigationId), 'response includes investigationStateJson echo');
 
   const okBearer = await worker.fetch(new Request('https://test/api/v1/machine/search', {
     method: 'POST',
@@ -196,6 +218,30 @@ console.log('--- Deep Dive machine route uses dive lens + runDiscovery ---');
   }), env);
   const ibody = await inspected.json();
   assert(inspected.status === 200 && ibody.investigationState && ibody.investigationState.investigationId === dbody.investigationId, 'POST inspect reconstructs client-held state');
+
+  const viaJson = await worker.fetch(new Request('https://test/api/v1/machine/dive', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-carmen-api-key': 'carmen-machine-secret' },
+    body: JSON.stringify({
+      lens: 'people',
+      query: 'Drea Morgan',
+      subject: 'Drea Morgan',
+      adult: 'on',
+      fixture: 'drea-intersection',
+      investigationId: dbody.investigationId,
+      investigationStateJson: JSON.stringify(dbody.investigationState),
+    }),
+  }), env);
+  const vj = await viaJson.json();
+  assert(viaJson.status === 200 && vj.investigationId === dbody.investigationId, 'dive accepts investigationStateJson string');
+
+  const viaStringState = await worker.fetch(new Request('https://test/api/v1/machine/investigations/' + dbody.investigationId, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-carmen-api-key': 'carmen-machine-secret' },
+    body: JSON.stringify({ investigationId: dbody.investigationId, investigationState: JSON.stringify(dbody.investigationState) }),
+  }), env);
+  const vs = await viaStringState.json();
+  assert(viaStringState.status === 200 && vs.investigationState && vs.investigationState.investigationId === dbody.investigationId, 'POST inspect accepts investigationState as JSON string');
 }
 
 console.log('--- analyze + explicit external-action denial ---');
@@ -212,7 +258,9 @@ console.log('--- analyze + explicit external-action denial ---');
       headers: { 'content-type': 'application/json', 'x-carmen-api-key': 'carmen-machine-secret' },
       body: JSON.stringify({ url: 'https://example.com/interview', title: 'Interview', kind: 'webpage' }),
     }), env);
+    const abody = await analyzed.json();
     assert(analyzed.status === 200, 'machine analyze 200 on same analyze path');
+    assert(abody.investigationId && abody.investigationState, 'analyze returns investigationId and investigationState');
   } finally {
     globalThis.fetch = originalFetch;
   }

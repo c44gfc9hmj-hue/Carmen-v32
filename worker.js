@@ -6616,7 +6616,8 @@ function presentedMachineCredential(req) {
   return header || bearer || test;
 }
 
-function machineCapabilities() {
+function machineCapabilities(env) {
+  const machineKeyConfigured = !!(env && String(env.CARMEN_API_KEY || '').trim());
   return {
     readOnly: true,
     pipelineFunction: 'runDiscovery',
@@ -6628,6 +6629,24 @@ function machineCapabilities() {
     primaryDiveLenses: ['bondage', 'people', 'clothing'],
     findMore: 'additive expansion via the next unexplored retrieval lane',
     authentication: 'CARMEN_API_KEY via X-Carmen-Api-Key or Authorization Bearer. Never send API_KEY.',
+    machineAuthConfigured: machineKeyConfigured,
+    continuity: 'Worker memory is not durable. Echo investigationState (and investigationId) on every subsequent search, dive, analyze, or inspect call.',
+    agentContract: {
+      sequence: [
+        'GET /api/v1/machine/capabilities',
+        'POST /api/v1/machine/search',
+        'save investigationId + investigationState',
+        'POST /api/v1/machine/dive with both',
+        'inspect results array',
+        'POST /api/v1/machine/investigations/{id}/analyze with url + both',
+        'POST /api/v1/machine/investigations/{id} with echoed state',
+        'continue search/dive using the returned state',
+      ],
+      echo: ['investigationId', 'investigationState'],
+      echoAlternate: 'investigationStateJson',
+      readOnly: true,
+      deniedExternalActions: true,
+    },
   };
 }
 
@@ -6685,113 +6704,437 @@ function isDeniedExternalAction(path, action) {
   return /\b(external-action|send-message|create-account|login-bypass|paywall-bypass)\b/i.test(path + ' ' + act);
 }
 
+function coerceInvestigationState(body) {
+  if (!body || typeof body !== 'object') return null;
+  let raw = body.investigationState;
+  if (raw == null && body.investigationStateJson != null) raw = body.investigationStateJson;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try { raw = JSON.parse(trimmed); } catch { return null; }
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  return null;
+}
+
+function attachInvestigationStateEcho(payload, state) {
+  if (!payload || !state) return payload;
+  try {
+    const encoded = JSON.stringify(state);
+    if (encoded.length <= 40000) payload.investigationStateJson = encoded;
+    else payload.investigationStateJsonOmitted = true;
+  } catch (_) {}
+  return payload;
+}
+
 function machineOpenApiSpec() {
   const origin = 'https://carmen-iphone-v25.94bwfd5grv.workers.dev';
-  const searchBody = {
-    type: 'object',
-    properties: {
-      query: { type: 'string' },
-      subject: { type: 'string' },
-      topic: { type: 'string' },
-      type: { type: 'string' },
-      adult: { type: 'string', enum: ['on', 'off', 'both'] },
-      investigationId: { type: 'string' },
-      investigationState: { type: 'object' },
-      fixture: { type: 'string' },
-    },
+  const bearerFirst = [{ BearerAuth: [] }, { CarmenApiKey: [] }];
+  const json = (schema, desc) => ({ description: desc, content: { 'application/json': { schema } } });
+  const errRef = { '$ref': '#/components/schemas/MachineError' };
+  const envRef = { '$ref': '#/components/schemas/DiscoveryEnvelope' };
+  const inspectRef = { '$ref': '#/components/schemas/InvestigationEnvelope' };
+  const analyzeRef = { '$ref': '#/components/schemas/AnalyzeEnvelope' };
+  const idParam = {
+    name: 'id',
+    in: 'path',
+    required: true,
+    schema: { type: 'string' },
+    description: 'investigationId from the previous search/dive response.',
   };
-  const security = [{ CarmenApiKey: [] }, { BearerAuth: [] }];
-  return {
+  const spec = {
     openapi: '3.0.3',
     info: {
       title: 'Carmen machine-readable investigation API',
       version: PLANNER_VERSION,
-      description: 'Read-only ChatGPT/tool interface. Same runDiscovery pipeline as the iPhone PWA. Authenticate with CARMEN_API_KEY. Never send the provider API_KEY.',
+      description: 'Read-only investigation API for ChatGPT Actions and other agents. Same runDiscovery pipeline as the iPhone PWA. Never messages, posts, purchases, or submits forms. Auth: Authorization Bearer CARMEN_API_KEY (preferred) or X-Carmen-Api-Key. Never send the provider API_KEY. Worker memory is not durable: echo investigationId plus investigationState on every continuation. Sequence: capabilities → search → save id+state → dive with both → inspect results → analyze a public URL → POST inspect with echoed state → continue.',
     },
-    servers: [{ url: origin }],
-    security,
+    servers: [{ url: origin, description: 'Live Carmen Worker' }],
+    security: bearerFirst,
+    tags: [
+      { name: 'machine', description: 'Read-only ChatGPT/tool investigation routes' },
+      { name: 'meta', description: 'Health, capabilities, OpenAPI' },
+    ],
     components: {
       securitySchemes: {
+        BearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'CARMEN_API_KEY',
+          description: 'Authorization: Bearer <CARMEN_API_KEY>. Preferred for ChatGPT Actions (Auth type: API Key → Bearer). Never send API_KEY.',
+        },
         CarmenApiKey: {
           type: 'apiKey',
           in: 'header',
           name: 'X-Carmen-Api-Key',
-          description: 'CARMEN_API_KEY Worker secret. Never send API_KEY / OpenRouter credentials.',
+          description: 'Alternate header. ChatGPT Actions: API Key → Custom header name X-Carmen-Api-Key. Never send API_KEY.',
         },
-        BearerAuth: {
-          type: 'http',
-          scheme: 'bearer',
-          description: 'Authorization: Bearer <CARMEN_API_KEY>',
+      },
+      schemas: {
+        InvestigationState: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Client-held snapshot. Echo this exact object on the next call. Worker memory is not durable.',
+          properties: {
+            investigationId: { type: 'string' },
+            subject: { type: 'string' },
+            topic: { type: 'string' },
+            adultLens: { type: 'string' },
+            confirmed: { type: 'array', items: { type: 'string' } },
+            identityFeedback: { type: 'object', additionalProperties: true },
+            trail: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            lastApiResults: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          },
+        },
+        EvidenceItem: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            investigationId: { type: 'string' },
+            subject: { type: 'string' },
+            topic: { type: 'string' },
+            intent: { type: 'string' },
+            sourceClass: { type: 'string' },
+            sourceUrl: { type: 'string' },
+            canonicalUrl: { type: 'string' },
+            title: { type: 'string' },
+            publisher: { type: 'string' },
+            host: { type: 'string' },
+            creator: { type: 'string' },
+            originalSource: { type: 'string' },
+            imageUrl: { type: 'string' },
+            identityEvidence: { type: 'string' },
+            topicEvidence: { type: 'string' },
+            observationState: { type: 'string', enum: ['OBSERVED', 'SUPPORTED', 'INFERRED', 'UNKNOWN'] },
+            foundThrough: { type: 'string' },
+            parent: { type: 'object', additionalProperties: true, nullable: true },
+            relatedTo: { type: 'object', additionalProperties: true, nullable: true },
+            deduplicationStatus: { type: 'string' },
+            rejectionReason: { type: 'string', nullable: true },
+            candidateIdentity: { type: 'object', additionalProperties: true, nullable: true },
+            ownershipClass: { type: 'string' },
+            accessState: { type: 'string' },
+            isEvidenceItem: { type: 'boolean' },
+            isDiscoveryLead: { type: 'boolean' },
+            url: { type: 'string' },
+          },
+        },
+        IdentityState: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            confirmed: { type: 'array', items: { type: 'string' } },
+            rejected: { type: 'array', items: { type: 'string' } },
+            rejectedImages: { type: 'array', items: { type: 'string' } },
+            rejectedHosts: { type: 'array', items: { type: 'string' } },
+            rejectedUrls: { type: 'array', items: { type: 'string' } },
+            candidates: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            ambiguous: { type: 'boolean' },
+            ambiguousReason: { type: 'string', nullable: true },
+            subject: { type: 'string' },
+          },
+        },
+        CorpusDiagnosis: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            status: { type: 'string', enum: ['ok', 'thin_corpus', 'search_failed', 'source_inaccessible', 'identity_unresolved', 'evidence_unavailable'] },
+          },
+        },
+        Expansion: { type: 'object', additionalProperties: true },
+        DiscoveryEnvelope: {
+          type: 'object',
+          required: ['ok', 'investigationId', 'results', 'investigationState', 'readOnly'],
+          properties: {
+            ok: { type: 'boolean' },
+            investigationId: { type: 'string' },
+            version: { type: 'string' },
+            build: { type: 'string' },
+            action: { type: 'string' },
+            subject: { type: 'string' },
+            topic: { type: 'string' },
+            results: { type: 'array', items: { '$ref': '#/components/schemas/EvidenceItem' } },
+            identityState: { '$ref': '#/components/schemas/IdentityState' },
+            corpusDiagnosis: { '$ref': '#/components/schemas/CorpusDiagnosis' },
+            expansion: { '$ref': '#/components/schemas/Expansion' },
+            investigationState: { '$ref': '#/components/schemas/InvestigationState' },
+            investigationStateJson: { type: 'string', description: 'JSON string of investigationState for clients that cannot resend nested objects.' },
+            readOnly: { type: 'boolean' },
+            samePipelineAsIphoneUi: { type: 'boolean' },
+            pipeline: { type: 'object', additionalProperties: true },
+            capabilities: { type: 'object', additionalProperties: true },
+            count: { type: 'integer' },
+          },
+        },
+        InvestigationEnvelope: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            investigationId: { type: 'string' },
+            subject: { type: 'string' },
+            topic: { type: 'string' },
+            identityState: { '$ref': '#/components/schemas/IdentityState' },
+            results: { type: 'array', items: { '$ref': '#/components/schemas/EvidenceItem' } },
+            investigationState: { '$ref': '#/components/schemas/InvestigationState' },
+            investigationStateJson: { type: 'string' },
+            trail: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            readOnly: { type: 'boolean' },
+          },
+        },
+        AnalyzeEnvelope: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            ok: { type: 'boolean' },
+            investigationId: { type: 'string' },
+            action: { type: 'string' },
+            url: { type: 'string' },
+            title: { type: 'string' },
+            kind: { type: 'string' },
+            analysis: { type: 'object', additionalProperties: true },
+            investigationState: { '$ref': '#/components/schemas/InvestigationState' },
+          },
+        },
+        MachineError: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            error: { type: 'string' },
+            hint: { type: 'string' },
+            readOnly: { type: 'boolean' },
+          },
+        },
+        SearchRequest: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Search query. Provide query or subject.' },
+            subject: { type: 'string', description: 'Person or entity name.' },
+            topic: { type: 'string', description: 'Optional topic such as bondage.' },
+            type: { type: 'string', description: 'Optional type hint, e.g. person.' },
+            adult: { type: 'string', enum: ['on', 'off', 'both'], description: 'Adult lens. Default off.' },
+            investigationId: { type: 'string', description: 'Echo from previous response to continue the same investigation.' },
+            investigationState: { '$ref': '#/components/schemas/InvestigationState' },
+            investigationStateJson: { type: 'string', description: 'Optional JSON string alternative to investigationState.' },
+            fixture: { type: 'string', description: 'Optional deterministic fixture name for tests only.' },
+          },
+        },
+        DiveRequest: {
+          type: 'object',
+          properties: {
+            lens: { type: 'string', enum: ['bondage', 'people', 'clothing'], description: 'Deep Dive lens. Default bondage.' },
+            query: { type: 'string' },
+            subject: { type: 'string' },
+            topic: { type: 'string' },
+            type: { type: 'string' },
+            adult: { type: 'string', enum: ['on', 'off', 'both'] },
+            investigationId: { type: 'string', description: 'Required to continue. Echo previous investigationId.' },
+            investigationState: { '$ref': '#/components/schemas/InvestigationState' },
+            investigationStateJson: { type: 'string' },
+            priorResults: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            graphLeads: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            fixture: { type: 'string' },
+          },
+        },
+        InspectRequest: {
+          type: 'object',
+          properties: {
+            investigationId: { type: 'string' },
+            investigationState: { '$ref': '#/components/schemas/InvestigationState' },
+            investigationStateJson: { type: 'string' },
+          },
+        },
+        AnalyzeRequest: {
+          type: 'object',
+          required: ['url'],
+          properties: {
+            url: { type: 'string', description: 'Public URL to analyze. Read-only retrieval.' },
+            title: { type: 'string' },
+            kind: { type: 'string', description: 'webpage, reddit, image, or video.' },
+            investigationId: { type: 'string' },
+            investigationState: { '$ref': '#/components/schemas/InvestigationState' },
+            investigationStateJson: { type: 'string' },
+          },
+        },
+        ConfirmIdentityRequest: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Confirmed person name.' },
+            subject: { type: 'string' },
+            query: { type: 'string' },
+            type: { type: 'string' },
+            adult: { type: 'string', enum: ['on', 'off', 'both'] },
+            investigationId: { type: 'string' },
+            investigationState: { '$ref': '#/components/schemas/InvestigationState' },
+            investigationStateJson: { type: 'string' },
+          },
         },
       },
     },
     paths: {
-      '/api/v1/openapi.json': { get: { operationId: 'openapi', security: [], responses: { 200: { description: 'OpenAPI document' } } } },
-      '/api/v1/machine/capabilities': { get: { operationId: 'capabilities', security: [], responses: { 200: { description: 'Read-only capabilities' } } } },
-      '/api/v1/health': { get: { operationId: 'health', security: [], responses: { 200: { description: 'Health' } } } },
+      '/api/v1/openapi.json': {
+        get: {
+          operationId: 'openapi',
+          tags: ['meta'],
+          summary: 'OpenAPI document',
+          description: 'ChatGPT Actions schema. Import this URL. No auth.',
+          security: [],
+          'x-openai-isConsequential': false,
+          responses: { 200: { description: 'OpenAPI 3.0.3 document' } },
+        },
+      },
+      '/api/v1/machine/capabilities': {
+        get: {
+          operationId: 'capabilities',
+          tags: ['meta'],
+          summary: 'Read-only machine capabilities',
+          description: 'Allowed vs denied actions, auth flag, and the required investigationState continuity contract.',
+          security: [],
+          'x-openai-isConsequential': false,
+          responses: { 200: json({ type: 'object', additionalProperties: true }, 'Capabilities and agent contract') },
+        },
+      },
+      '/api/v1/health': {
+        get: {
+          operationId: 'health',
+          tags: ['meta'],
+          summary: 'Worker health',
+          description: 'Version, build, provider configured flag, machineAuthConfigured. Never returns secrets.',
+          security: [],
+          'x-openai-isConsequential': false,
+          responses: { 200: json({ type: 'object', additionalProperties: true }, 'Health') },
+        },
+      },
       '/api/v1/machine/search': {
         post: {
           operationId: 'machineSearch',
-          security,
-          requestBody: { required: true, content: { 'application/json': { schema: searchBody } } },
-          responses: { 200: { description: 'Discovery results from runDiscovery' }, 401: { description: 'Unauthorized' } },
+          tags: ['machine'],
+          summary: 'Search / start investigation',
+          description: 'Runs runDiscovery. Save investigationId and investigationState from the JSON. Echo both on later dive/analyze/inspect. Read-only.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/SearchRequest' } } } },
+          responses: {
+            200: json(envRef, 'Structured discovery results'),
+            400: json(errRef, 'Missing query/subject'),
+            401: json(errRef, 'Unauthorized'),
+            403: json(errRef, 'External action denied'),
+          },
         },
       },
       '/api/v1/machine/dive': {
         post: {
           operationId: 'machineDive',
-          security,
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    lens: { type: 'string', enum: ['bondage', 'people', 'clothing'] },
-                    query: { type: 'string' },
-                    subject: { type: 'string' },
-                    topic: { type: 'string' },
-                    adult: { type: 'string' },
-                    investigationId: { type: 'string' },
-                    investigationState: { type: 'object' },
-                    priorResults: { type: 'array' },
-                    graphLeads: { type: 'array' },
-                  },
-                },
-              },
-            },
+          tags: ['machine'],
+          summary: 'Deep Dive through discovered evidence',
+          description: 'Lens bondage|people|clothing. Send investigationId and investigationState from search. Additive merge; not a query rewrite. Read-only.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/DiveRequest' } } } },
+          responses: {
+            200: json(envRef, 'Expanded structured results'),
+            400: json(errRef, 'Missing query/subject'),
+            401: json(errRef, 'Unauthorized'),
+            403: json(errRef, 'External action denied'),
           },
-          responses: { 200: { description: 'Deep Dive results from runDiscovery' } },
         },
       },
       '/api/v1/machine/investigations/{id}': {
         get: {
           operationId: 'machineInvestigation',
-          security,
-          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-          responses: { 200: { description: 'Investigation state' } },
+          tags: ['machine'],
+          summary: 'Get investigation if this isolate still holds it',
+          description: 'Best-effort only. Returns 404 if Worker memory dropped it. Prefer POST inspect with investigationState.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          parameters: [idParam],
+          responses: {
+            200: json(inspectRef, 'Investigation state'),
+            401: json(errRef, 'Unauthorized'),
+            404: json(errRef, 'Not in this Worker isolate'),
+          },
+        },
+        post: {
+          operationId: 'machineInvestigationInspect',
+          tags: ['machine'],
+          summary: 'Inspect investigation from echoed state',
+          description: 'Durable inspect. POST investigationId plus investigationState from the last response. Required for ChatGPT continuity.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          parameters: [idParam],
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/InspectRequest' } } } },
+          responses: {
+            200: json(inspectRef, 'State reconstructed from client payload'),
+            401: json(errRef, 'Unauthorized'),
+            404: json(errRef, 'No state provided and not in memory'),
+          },
         },
       },
       '/api/v1/machine/investigations/{id}/results': {
         get: {
           operationId: 'machineResults',
-          security,
-          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-          responses: { 200: { description: 'Structured evidence items' } },
+          tags: ['machine'],
+          summary: 'Get results if isolate still holds them',
+          description: 'Best-effort only. Prefer POST results inspect with investigationState.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          parameters: [idParam],
+          responses: {
+            200: json(inspectRef, 'Structured evidence items'),
+            401: json(errRef, 'Unauthorized'),
+            404: json(errRef, 'Not in this Worker isolate'),
+          },
+        },
+        post: {
+          operationId: 'machineResultsInspect',
+          tags: ['machine'],
+          summary: 'Inspect results from echoed state',
+          description: 'Returns structured evidence items from client-held investigationState. No HTML parsing.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          parameters: [idParam],
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/InspectRequest' } } } },
+          responses: {
+            200: json(inspectRef, 'Structured evidence items'),
+            401: json(errRef, 'Unauthorized'),
+          },
         },
       },
       '/api/v1/machine/investigations/{id}/analyze': {
         post: {
           operationId: 'machineAnalyze',
-          security,
-          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' }, kind: { type: 'string' } } } } } },
-          responses: { 200: { description: 'Analyze evidence object' } },
+          tags: ['machine'],
+          summary: 'Analyze a public URL',
+          description: 'Read-only analysis of a public page. Send url plus investigationId and investigationState. Never posts or messages.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          parameters: [idParam],
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/AnalyzeRequest' } } } },
+          responses: {
+            200: json(analyzeRef, 'Analysis JSON'),
+            401: json(errRef, 'Unauthorized'),
+            403: json(errRef, 'External action denied'),
+          },
+        },
+      },
+      '/api/v1/machine/investigations/{id}/confirm-identity': {
+        post: {
+          operationId: 'machineConfirmIdentity',
+          tags: ['machine'],
+          summary: 'Confirm the subject identity',
+          description: 'That’s-the-one. Confirms WHO, not which website. Echo investigationState. Later dive/search use this identity.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          parameters: [idParam],
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/ConfirmIdentityRequest' } } } },
+          responses: {
+            200: json(envRef, 'Updated identityState plus investigationState'),
+            401: json(errRef, 'Unauthorized'),
+          },
         },
       },
     },
   };
+  return spec;
 }
 
 function apiUnauthorized(req, env) {
@@ -6859,7 +7202,7 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
   const items = (discovery.structuredResults || (discovery.results || []).map(r => serializeEvidenceItem(r, { investigationId: state.investigationId, subject, topic, intent: action })));
   state.lastApiResults = items;
   state.identityState = identityStateFrom(state, discovery);
-  return {
+  const payload = {
     ok: discovery.corpusDiagnosis && discovery.corpusDiagnosis.status === 'search_failed' ? false : true,
     investigationId: state.investigationId,
     version: PLANNER_VERSION,
@@ -6880,7 +7223,7 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
     relationships: relationshipsFrom(discovery, state),
     retrievalLanes: retrievalLanesFrom(discovery),
     pipeline: machinePipeline(),
-    capabilities: machineCapabilities(),
+    capabilities: machineCapabilities(extra.env),
     readOnly: true,
     sourceDiversity: discovery.sourceDiversity,
     corpusDiagnosis: discovery.corpusDiagnosis,
@@ -6908,6 +7251,7 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
     samePipelineAsIphoneUi: true,
     count: items.length,
   };
+  return attachInvestigationStateEcho(payload, state);
 }
 
 async function handleCarmenApi(req, env) {
@@ -6935,6 +7279,8 @@ async function handleCarmenApi(req, env) {
       model: ai.model,
       api: 'v1',
       secretsExposed: false,
+      machineAuthConfigured: !!(env && String(env.CARMEN_API_KEY || '').trim()),
+      machineAuth: !!(env && String(env.CARMEN_API_KEY || '').trim()) ? 'CARMEN_API_KEY required' : 'CARMEN_API_KEY not configured — machine routes are open',
       environment: describeCarmenEnvironment(env, ai),
       browserTest: browserTestDescriptor(env),
       testRoutes: ['/test', '/browser-test', '/api/v1/browser-test-session'],
@@ -6946,7 +7292,7 @@ async function handleCarmenApi(req, env) {
   }
 
   if ((path === '/api/v1/openapi.json' || path === '/openapi.json') && req.method === 'GET') {
-    return json(machineOpenApiSpec(), 200, req);
+    return json(machineOpenApiSpec(env), 200, req);
   }
   if ((path === '/api/v1/machine/capabilities' || path === '/api/v1/capabilities') && req.method === 'GET') {
     return json({
@@ -6956,19 +7302,22 @@ async function handleCarmenApi(req, env) {
       samePipelineAsIphoneUi: true,
       readOnly: true,
       pipelineFunction: 'runDiscovery',
-      capabilities: machineCapabilities(),
+      machineAuthConfigured: !!(env && String(env.CARMEN_API_KEY || '').trim()),
+      capabilities: machineCapabilities(env),
       pipeline: machinePipeline(),
     }, 200, req);
   }
 
   if (isDeniedExternalAction(path, '')) {
-    return json({ error: 'External action denied', readOnly: true, capabilities: machineCapabilities() }, 403, req);
+    return json({ error: 'External action denied', readOnly: true, capabilities: machineCapabilities(env) }, 403, req);
   }
 
   let body = {};
   if (req.method === 'POST') {
     try { body = await req.json(); } catch { body = {}; }
   }
+  const coercedState = coerceInvestigationState(body);
+  if (coercedState) body.investigationState = coercedState;
   const parts = path.split('/').filter(Boolean);
   // /api/v1/investigations/:id/...
   let investigationId = body.investigationId || u.searchParams.get('investigationId') || '';
@@ -6982,7 +7331,7 @@ async function handleCarmenApi(req, env) {
     } else if (leaf === 'investigations') {
       investigationId = investigationId || parts[4] || '';
       const sub = parts[5] || '';
-      if (req.method === 'GET' && !sub) action = action || 'get';
+      if (!sub && (req.method === 'GET' || req.method === 'POST')) action = action || 'get';
       else if (sub) action = action || sub;
     }
   }
@@ -7031,14 +7380,25 @@ async function handleCarmenApi(req, env) {
     }, 200, req);
   }
 
-  let state = loadInvestigation(investigationId, body.investigationState) || createInvestigationState({ ...body, investigationId: investigationId || undefined });
-  if (body.investigationState && body.investigationState.investigationId) state = { ...createInvestigationState(), ...body.investigationState };
-  if (!state.investigationId) state.investigationId = investigationId || newInvestigationId();
-  if (investigationId && !state.investigationId) state.investigationId = investigationId;
-
+  const loaded = loadInvestigation(investigationId, body.investigationState);
   if (action === 'get' || action === 'trail' || action === 'evidence' || action === 'results') {
+    if (!loaded) {
+      return json({
+        ok: false,
+        error: 'Investigation not in this Worker isolate',
+        hint: 'Worker memory is not durable. POST this same path with the investigationState returned by search/dive, or continue via POST /api/v1/machine/search or /dive with that state.',
+        investigationId: investigationId || null,
+        action,
+      }, 404, req);
+    }
+    const state = (body.investigationState && body.investigationState.investigationId)
+      ? { ...createInvestigationState(), ...body.investigationState }
+      : loaded;
+    if (investigationId && state.investigationId && investigationId !== state.investigationId) {
+      state.investigationId = investigationId;
+    }
     rememberInvestigation(state);
-    return json({
+    return json(attachInvestigationStateEcho({
       ok: true,
       investigationId: state.investigationId,
       action,
@@ -7053,12 +7413,17 @@ async function handleCarmenApi(req, env) {
       candidates: state.candidates,
       results: action === 'results' || action === 'evidence' ? (state.lastApiResults || state.results || []) : undefined,
       investigationState: state,
-      capabilities: machineCapabilities(),
+      capabilities: machineCapabilities(env),
       pipeline: machinePipeline(),
       samePipelineAsIphoneUi: true,
       readOnly: true,
-    }, 200, req);
+    }, state), 200, req);
   }
+
+  let state = loaded || createInvestigationState({ ...body, investigationId: investigationId || undefined });
+  if (body.investigationState && body.investigationState.investigationId) state = { ...createInvestigationState(), ...body.investigationState };
+  if (!state.investigationId) state.investigationId = investigationId || newInvestigationId();
+  if (investigationId && !state.investigationId) state.investigationId = investigationId;
 
   if (action === 'confirm-identity' || action === 'reject-identity' || action === 'reject-image' || action === 'branch' || action === 'save') {
     state = applyInvestigationAction(state, action, body);
@@ -7111,7 +7476,16 @@ async function handleCarmenApi(req, env) {
   }
   if (action === 'analyze') {
     const analyzed = await analyzeEvidenceObject(req, env, body);
-    return json({ ok: true, investigationId: state.investigationId, action: 'analyze', ...analyzed }, 200, req);
+    rememberInvestigation(state);
+    return json(attachInvestigationStateEcho({
+      ok: true,
+      investigationId: state.investigationId,
+      action: 'analyze',
+      investigationState: state,
+      identityState: identityStateFrom(state, null),
+      readOnly: true,
+      ...analyzed,
+    }, state), 200, req);
   }
   if (action === 'learn') {
     return learnHandler(req, env);
@@ -7163,7 +7537,7 @@ async function handleCarmenApi(req, env) {
     diagnostic,
     enrich: !fixture,
   });
-  const packed = packApiDiscovery(discovery, state, action || 'search', req, { diagnostic });
+  const packed = packApiDiscovery(discovery, state, action || 'search', req, { diagnostic, env });
   return json(packed, 200, req);
 }
 
@@ -7176,6 +7550,7 @@ function describeCarmenEnvironment(env, ai) {
     workerBinding: 'carmen-iphone-v25',
     assetsBound: !!(env && env.ASSETS && typeof env.ASSETS.fetch === 'function'),
     aiConfigured: !!(ai && ai.configured),
+    machineAuthConfigured: !!(env && String(env.CARMEN_API_KEY || '').trim()),
     testKeyRequired,
     secretsExposed: false,
   };

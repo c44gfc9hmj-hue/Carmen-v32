@@ -118,3 +118,9 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Production machine-API fixture smoke
+        run: node machine-smoke.mjs --fixture
+        env:
+          CARMEN_API_ORIGIN: https://carmen-iphone-v25.94bwfd5grv.workers.dev
+          CARMEN_API_KEY: ${{ secrets.CARMEN_API_KEY }}

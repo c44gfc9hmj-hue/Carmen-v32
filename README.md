@@ -43,8 +43,8 @@ later retrieval.
 
 Build identifier: **49.3-chatgpt-access**.
 
-API: `GET /api` · `POST /api/v1/investigations` · `POST /api/v1/search`.
-See [API.md](API.md).
+API: `GET /api` · `POST /api/v1/machine/search` · OpenAPI `GET /api/v1/openapi.json`.
+See [API.md](API.md) and [CHATGPT.md](CHATGPT.md).
 
 ## Investigation workspace (v49.2)
 

@@ -11,6 +11,8 @@ Production origin:
 
 OpenAPI: `GET /api/v1/openapi.json`
 
+ChatGPT connection procedure: [CHATGPT.md](CHATGPT.md)
+
 ## Safety
 
 - Read-only investigation API.
@@ -27,8 +29,8 @@ Configure a Worker secret named **`CARMEN_API_KEY`**. This is separate from
 
 Send one of:
 
+- `Authorization: Bearer <CARMEN_API_KEY>` (preferred for ChatGPT Actions)
 - `X-Carmen-Api-Key: <CARMEN_API_KEY>`
-- `Authorization: Bearer <CARMEN_API_KEY>`
 - `X-Carmen-Test-Key: <CARMEN_TEST_KEY>` (alias if that secret is set)
 
 If no machine key is configured, `/api` remains open (same as v49.3). The PWA
@@ -36,6 +38,39 @@ If no machine key is configured, `/api` remains open (same as v49.3). The PWA
 machine key.
 
 Never send `API_KEY` / OpenRouter credentials to these routes.
+
+One-time secret configuration (do this once; do not commit the value):
+
+```bash
+npx wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25
+```
+
+Also set the GitHub Actions secret `CARMEN_API_KEY` so deploy can push it.
+Do not reuse `API_KEY`.
+
+`GET /api/v1/health` and `GET /api/v1/machine/capabilities` report
+`machineAuthConfigured` (boolean only — never the secret).
+
+## Canonical machine-agent sequence
+
+Worker memory is **not durable**. Every continuation must send both
+`investigationId` and `investigationState` (or `investigationStateJson`).
+
+1. `GET /api/v1/machine/capabilities`
+2. `POST /api/v1/machine/search` with `query` / `subject`
+3. Save returned `investigationId` + `investigationState`
+4. `POST /api/v1/machine/dive` with `lens` plus both
+5. Inspect the structured `results` array (no HTML)
+6. Optional: `POST /api/v1/machine/investigations/{id}/confirm-identity`
+7. `POST /api/v1/machine/investigations/{id}/analyze` with a public `url` plus both
+8. `POST /api/v1/machine/investigations/{id}` with the echoed state (inspect)
+9. Continue another search/dive using the **latest** returned state
+
+`GET /api/v1/machine/investigations/{id}` is best-effort only and returns
+**404** if this isolate no longer holds the investigation.
+
+If a client cannot resend the nested object, send `investigationStateJson`
+(the JSON string returned on the previous envelope when it fits).
 
 ## Minimal ChatGPT endpoint set
 
@@ -62,7 +97,7 @@ The full investigation catalog remains available and uses the same
 POST /api/v1/machine/search
 Host: carmen-iphone-v25.94bwfd5grv.workers.dev
 Content-Type: application/json
-X-Carmen-Api-Key: $CARMEN_API_KEY
+Authorization: Bearer $CARMEN_API_KEY
 
 {
   "query": "Drea Morgan bondage",
@@ -96,13 +131,13 @@ Authorization: Bearer $CARMEN_API_KEY
 
 ```http
 GET /api/v1/machine/investigations/inv_…
-X-Carmen-Api-Key: $CARMEN_API_KEY
+Authorization: Bearer $CARMEN_API_KEY
 ```
 
 ```http
 POST /api/v1/machine/investigations/inv_…
 Content-Type: application/json
-X-Carmen-Api-Key: $CARMEN_API_KEY
+Authorization: Bearer $CARMEN_API_KEY
 
 {
   "investigationId": "inv_…",
@@ -112,7 +147,7 @@ X-Carmen-Api-Key: $CARMEN_API_KEY
 
 ```http
 GET /api/v1/machine/investigations/inv_…/results
-X-Carmen-Api-Key: $CARMEN_API_KEY
+Authorization: Bearer $CARMEN_API_KEY
 ```
 
 ### Analyze a public page
@@ -120,7 +155,7 @@ X-Carmen-Api-Key: $CARMEN_API_KEY
 ```http
 POST /api/v1/machine/investigations/inv_…/analyze
 Content-Type: application/json
-X-Carmen-Api-Key: $CARMEN_API_KEY
+Authorization: Bearer $CARMEN_API_KEY
 
 {
   "url": "https://example.com/interview",
@@ -130,17 +165,6 @@ X-Carmen-Api-Key: $CARMEN_API_KEY
   "investigationState": { }
 }
 ```
-
-Pass **`investigationState` plus `investigationId`** from the previous
-response so identity confirmation, rejections, and the trail persist.
-Worker memory is **not durable**. `GET /api/v1/machine/investigations/{id}`
-is best-effort only and returns **404** if this isolate no longer holds the
-investigation. ChatGPT / external agents should `POST` the same path with
-`{ "investigationId", "investigationState" }` to inspect state or results.
-
-`GET /api/v1/health` and `GET /api/v1/machine/capabilities` report
-`machineAuthConfigured` (boolean only — never the secret). Until the
-`CARMEN_API_KEY` Worker secret exists, machine routes stay open.
 
 ## Response envelope
 
@@ -152,6 +176,9 @@ Successful search / dive responses include:
 - `relationships` — related people, parent, derivedFrom, discovery seeds
 - `retrievalLanes` — variants, query classes, topic map, expansion
 - `investigationState` — opaque state to send back on the next call
+- `investigationStateJson` — string form of that state when it is small enough
+- `corpusDiagnosis` — live vs blocked vs thin
+- `expansion` — Deep Dive expansion metadata
 - `pipeline.function` — always `runDiscovery`
 - `samePipelineAsIphoneUi` — always `true`
 - `capabilities` — allowed vs denied actions
@@ -170,18 +197,19 @@ DIRECTORY CLAIM, FAN/REPOSTER, MIRROR, UNVERIFIED, UNKNOWN.
 
 ## ChatGPT Custom GPT / Actions setup
 
-1. Set Cloudflare Worker secret `CARMEN_API_KEY`:
-   `npx wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25`
-   Also set the GitHub Actions secret `CARMEN_API_KEY` so deploy can push it.
-   Do not reuse `API_KEY`.
-2. Create a ChatGPT Action. Import
-   `https://carmen-iphone-v25.94bwfd5grv.workers.dev/api/v1/openapi.json`.
-3. Authentication: API Key, header name `X-Carmen-Api-Key`, secret value =
-   `CARMEN_API_KEY`.
-4. Allow only search, dive, state, results, analyze, and confirm-identity.
-5. Instruct the GPT that Carmen is read-only and must never attempt messaging,
-   posting, following, purchasing, or form submission. Instruct it to echo
-   `investigationState` on every subsequent call.
+See [CHATGPT.md](CHATGPT.md). Short version:
+
+1. Import `https://carmen-iphone-v25.94bwfd5grv.workers.dev/api/v1/openapi.json`
+2. Auth: None until `CARMEN_API_KEY` exists; then API Key → Bearer
+3. Instruct the GPT to echo `investigationState` on every subsequent call
+4. A normal ChatGPT chat cannot call this API until that Action is configured
+
+Smoke test:
+
+```bash
+node machine-smoke.mjs --fixture
+CARMEN_API_KEY=… node machine-smoke.mjs
+```
 
 ## Full action catalog
 
