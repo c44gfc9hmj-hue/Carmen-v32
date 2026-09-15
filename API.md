@@ -111,3 +111,22 @@ Ownership classes: CONFIRMED CREATOR-OWNED, LIKELY CREATOR-OWNED,
 DIRECTORY CLAIM, FAN/REPOSTER, MIRROR, UNVERIFIED, UNKNOWN.
 
 A directory mention is never a confirmed account.
+
+## Browser-test surface (same UI as iPhone)
+
+Remote browser agents (ChatGPT, etc.) can drive the **real** Carmen PWA — not a
+mock — at:
+
+- `/test` (stable primary)
+- `/browser-test` (alias)
+
+Those paths load the same `public/index.html` / `app.js` and the same Worker
+routes (`/search`, `/dive`, `/retrieve`, `/api/v1/...`) as `/`. There is no
+parallel test implementation and no change to retrieval, ranking, or Deep Dive.
+
+Access: open `https://carmen-iphone-v25.94bwfd5grv.workers.dev/test`. No extra
+authentication unless `CARMEN_TEST_KEY` is configured (then send
+`X-Carmen-Test-Key` on `/api` JSON routes). Optional session:
+`GET /api/v1/browser-test-session`.
+
+`GET /health` and `GET /api` advertise `browserTest` and `testRoutes`.
