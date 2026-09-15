@@ -15,9 +15,9 @@ const appSrc = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8')
 
 console.log('--- v49 source / UX contracts ---');
 {
-  assert(/49\.2/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION 49.2');
-  assert(appSrc.includes("const VERSION = '49.2'"), 'frontend VERSION 49.2');
-  assert(/carmen-build" content="49\.2"/.test(html), 'html build 49.2');
+  assert(/49\.3/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION 49.3');
+  assert(appSrc.includes("const VERSION = '49.3'"), 'frontend VERSION 49.3');
+  assert(/carmen-build" content="49\.3"/.test(html), 'html build 49.3');
   assert(/What are you curious about\?/.test(html), 'home curiosity prompt');
   assert(/id="diveSearchQuery"/.test(html), 'persistent dive search');
   assert(/id="diveStream"/.test(html), 'dive stream');
@@ -93,10 +93,11 @@ console.log('--- v49 health ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.2', 'health version 49.2');
-  assert(body.build === '49.2-topic-map-retrieval', 'health build');
+  assert(body.version === '49.3', 'health version 49.3');
+  assert(body.build === '49.3-chatgpt-access', 'health build');
   assert((body.features || []).includes('v49-dive-context-search'), 'feature flag dive-context-search');
   assert((body.features || []).includes('v49.2-topic-map-retrieval'), 'feature flag topic-map-retrieval');
+  assert((body.features || []).includes('v49.3-chatgpt-access'), 'feature flag chatgpt-access');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

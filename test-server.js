@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import worker from './worker.js';
 
 const DIR = resolve(fileURLToPath(new URL('public/', import.meta.url)));
-const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
+const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
 const env = {
   API_KEY: process.env.API_KEY || undefined,
   Api_key: process.env.Api_key || process.env.API_KEY || undefined,

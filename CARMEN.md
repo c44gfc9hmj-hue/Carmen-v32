@@ -9,7 +9,21 @@ This is the single canonical Carmen application. There are no separate V25/V32/
 V33/V34/V35 builds — those accumulated during earlier development and have been
 consolidated into this one project.
 
+## Investigation workspace (v49.3)
+
+v49.3 adds a documented machine-readable API so ChatGPT can drive the same
+retrieval/ranking/state pipeline as the iPhone UI, plus adult-first source-class
+coverage, independent subject/topic/intersection evidence, ownership classes,
+known-site ACCESS BLOCKED handling, and identity feedback that actually changes
+later retrieval.
+
+Build identifier: **49.3-chatgpt-access**.
+
+API: `GET /api` · `POST /api/v1/investigations` · `POST /api/v1/search`.
+See [API.md](API.md).
+
 ## Investigation workspace (v49.2)
+
 
 v49.2 moves Carmen from query-centric retrieval to an investigation / topic-map
 planner. It does not replace v38–v49.1 — it sits on top of them.

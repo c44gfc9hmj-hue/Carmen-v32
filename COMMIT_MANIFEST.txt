@@ -1,37 +1,11 @@
-Carmen Phase 2 (v37) export package
-====================================
-Equivalent to local commit:
-  d94cc57da98da1a6ad09bf64cee2c2e34cfe6fd0
+Carmen v49.3 (49.3-chatgpt-access)
+==================================
+Parent: 9b61ba62b991d035c50e98abaee4ddd1ad8502b5 (v49.2)
 
-Branch target: main
+ChatGPT-accessible machine-readable API on the same iPhone retrieval pipeline.
+Adult-first source classes, independent subject/topic/intersection evidence,
+Find Everything topic maps, premium ownership classes, known-site ACCESS BLOCKED,
+identity feedback that changes ranking, semantic More Like This + distinct Find More
+intents, query-echo person-name exception, Reddit posts-only, Analyze/Learn, save/branch/reset.
 
-Files changed vs origin/main (061f0e4):
-  worker.js
-  public/app.js
-  public/index.html
-  public/sw.js
-  README.md
-  test-retrieval.mjs  (new)
-
-Unchanged (included for a complete drop-in tree):
-  .github/workflows/deploy.yml
-  .gitignore
-  public/icon.svg
-  public/manifest.webmanifest
-  test-server.js
-  wrangler.jsonc
-
-NOT included:
-  .git/ (no credentials)
-  any secrets, API keys, .env files
-  sandbox-only paths
-
-How to apply from iPhone / any machine:
-  1. Unzip this archive
-  2. In a clone of https://github.com/c44gfc9hmj-hue/Carmen-v32
-     copy the six changed files into place (or replace the whole tree)
-  3. git add worker.js public/app.js public/index.html public/sw.js README.md test-retrieval.mjs
-  4. git commit -m "Phase 2 (v37): retrieval, provenance, instructions, timeline"
-  5. git push origin main
-  6. Wait for GitHub Actions → Cloudflare deploy
-  7. Optional: npx wrangler secret put API_KEY
+No secrets. No hardcoded Drea answers. No person registry. No UI redesign.

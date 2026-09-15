@@ -46,8 +46,8 @@ console.log('--- live health ---');
   try {
     const { status, body } = await getJson('/health');
     assert(status === 200 && body.ok === true, 'GET /health 200');
-    assert(body.version === '49.2', 'live version 49.2');
-    assert(body.build === '49.2-topic-map-retrieval', 'live build');
+    assert(body.version === '49.3', 'live version 49.3');
+    assert(body.build === '49.3-chatgpt-access', 'live build');
   } catch (e) {
     console.log('  FAIL health unreachable: ' + e.message);
     process.exit(1);

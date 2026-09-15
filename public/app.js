@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.2';
+const VERSION = '49.3';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -918,8 +918,14 @@ async function discover(opts = {}) {
     if (opts.findMore) params.set('findMore', '1');
     if (opts.moreLikeThis) params.set('moreLikeThis', '1');
     if (opts.findDifferent || visualMode === 'different') params.set('findDifferent', '1');
+    if (opts.findSimilar || visualMode === 'similar') params.set('findSimilar', '1');
+    if (opts.searchThisVisual || visualMode === 'searchvisual') params.set('searchThisVisual', '1');
+    if (opts.moreFromThisSource) params.set('moreFromThisSource', '1');
+    if (opts.moreFromThisPerson) params.set('moreFromThisPerson', '1');
+    if (opts.moreOnThisTopic) params.set('moreOnThisTopic', '1');
     if (confirmedIdentity.length) params.set('confirmedIdentity', confirmedIdentity.slice(0, 6).join(','));
     if (rejectedPeople.length) params.set('rejectedPeople', rejectedPeople.slice(0, 8).join(','));
+    if ((suppressed.images || []).length) params.set('rejectedImages', suppressed.images.slice(0, 12).join(','));
     const excl = [...new Set([...(suppressed.urls || []), ...(opts.excludeUrls || [])])].filter(Boolean);
     const hosts = [...new Set([...(suppressed.hosts || []), ...(opts.excludeHosts || [])])].filter(Boolean);
     if (excl.length) params.set('exclude', excl.slice(0, 12).join(','));
@@ -1418,6 +1424,10 @@ function selectCandidate(r, i, opts = {}) {
     pushTrail({ kind: 'identity', label: 'That’s the one · ' + name, entity: name, topic: diveTopic });
     const isPerson = (selectedEntity?.type || lastClassification?.type) === 'person';
     toast(isPerson ? 'That’s the one. Later retrieval will prefer this identity.' : 'Selected. Deep Dive is ready.');
+    persistSession();
+    if (isPerson && name) {
+      discover({ keepSubject: true, entity: name, topic: diveTopic, append: true });
+    }
   }
 }
 async function persistSelection(r) {
@@ -1542,6 +1552,7 @@ function rejectVisual(im) {
   if (!im) return;
   const url = im.url || im.src || '';
   if (url) suppressed.urls.push(url);
+  if (url && !(suppressed.images || []).includes(url)) suppressed.images = [...(suppressed.images || []), url];
   if (im.pageUrl) suppressed.urls.push(im.pageUrl);
   lastVisuals = lastVisuals.filter(x => visualDedupeKey(x.url) !== visualDedupeKey(url));
   renderVisualCorpus();
@@ -1607,7 +1618,10 @@ function evidenceBadges(r) {
   if (ev.subjectEvidence && ev.subjectEvidence !== 'none') bits.push(`<span class="ev-badge">subject ${esc(ev.subjectEvidence)}</span>`);
   if (ev.topicEvidence && ev.topicEvidence !== 'none') bits.push(`<span class="ev-badge">topic ${esc(ev.topicEvidence)}</span>`);
   if ((ev.intersection && ev.intersection !== 'none') || r.intersection) bits.push(`<span class="ev-badge">∩ ${esc(ev.intersection || 'strong')}</span>`);
-  if (r && r.accountOwnership && r.accountOwnership !== 'unknown') bits.push(`<span class="ev-badge">${esc(r.accountOwnership)}</span>`);
+  if (ev.role && ev.role !== 'DISCOVERY_LEAD') bits.push(`<span class="ev-badge">${esc(ev.role.replace(/_/g, ' '))}</span>`);
+  else if (ev.isDiscoveryLead || r.isDiscoveryLead) bits.push(`<span class="ev-badge">discovery lead</span>`);
+  if (r && r.ownershipClass && r.ownershipClass !== 'UNKNOWN') bits.push(`<span class="ev-badge">${esc(r.ownershipClass)}</span>`);
+  if (r && r.accountOwnership && r.accountOwnership !== 'unknown' && !r.ownershipClass) bits.push(`<span class="ev-badge">${esc(r.accountOwnership)}</span>`);
   if (r && r.accountPlatform && r.accountPlatform !== 'UNKNOWN') bits.push(`<span class="ev-badge">${esc(r.accountPlatform)}</span>`);
   return bits.join(' ');
 }
@@ -1631,6 +1645,8 @@ function sourceClassLabel(key) {
     ENCYCLOPEDIA: 'Encyclopedia',
     'creator-owned': 'Creator-owned',
     'major-platform': 'Major adult platforms',
+    'major-video-platform': 'Major adult video platforms',
+    'premium-subscription': 'Premium / subscription',
     'premium-subscription': 'Premium / subscription',
     'creator-store': 'Creator stores',
     'fetish-publisher': 'Specialist BDSM / fetish publishers',
@@ -1956,8 +1972,11 @@ function findMoreActions(i, kind) {
     <button type="button" data-findmore="who" data-kind="${esc(kind)}" data-i="${i}">Who is this?</button>
     <button type="button" data-findmore="person" data-kind="${esc(kind)}" data-i="${i}">More from this person</button>
     <button type="button" data-findmore="like" data-kind="${esc(kind)}" data-i="${i}">More like this</button>
+    <button type="button" data-findmore="similar" data-kind="${esc(kind)}" data-i="${i}">Find similar</button>
     <button type="button" data-findmore="subject" data-kind="${esc(kind)}" data-i="${i}">Find more</button>
+    <button type="button" data-findmore="topic" data-kind="${esc(kind)}" data-i="${i}">More on this topic</button>
     <button type="button" data-findmore="source" data-kind="${esc(kind)}" data-i="${i}">More from this source</button>
+    <button type="button" data-findmore="visual" data-kind="${esc(kind)}" data-i="${i}">Search this visual</button>
     <button type="button" data-findmore="different" data-kind="${esc(kind)}" data-i="${i}">Find different</button>
     <button type="button" data-findmore="surprise" data-kind="${esc(kind)}" data-i="${i}">Surprise me</button>
   </div>`;
@@ -2112,14 +2131,28 @@ async function findMore(kind, item) {
     diveTopic = '';
     if ($('diveSearchQuery')) $('diveSearchQuery').value = '';
     pushTrail({ kind: 'find-more', label: 'More from ' + entity, entity });
-    return discover({ keepSubject: true, entity, expanded: true, append: true, findMore: true, mode: 'find-more' });
+    return discover({ keepSubject: true, entity, expanded: true, append: true, findMore: true, moreFromThisPerson: true, mode: 'more-from-this-person' });
   }
   if (kind === 'like') {
     const traits = likeThisTraits(item);
     if (!traits.length) return toast('Not enough public characteristics to find similar material.');
-    const topic = traits.join(' ');
+    const topic = diveTopic || extraContextText(lastClassification) || traits.join(' ');
     pushTrail({ kind: 'more-like-this', label: 'More like this · ' + topic, entity, topic });
     return discover({ keepSubject: !!entity, entity, topic, append: true, moreLikeThis: true, mode: 'more-like-this', seedVisual: item });
+  }
+  if (kind === 'similar') {
+    pushTrail({ kind: 'find-similar', label: 'Find similar', entity, topic: diveTopic });
+    return discover({ keepSubject: !!entity, entity, topic: diveTopic, append: true, findSimilar: true, mode: 'find-similar', visualMode: 'similar', seedVisual: item });
+  }
+  if (kind === 'visual') {
+    pushTrail({ kind: 'search-this-visual', label: 'Search this visual', entity, topic: diveTopic });
+    return discover({ keepSubject: !!entity, entity, topic: diveTopic, append: true, searchThisVisual: true, mode: 'search-this-visual', visualMode: 'searchvisual', seedVisual: item });
+  }
+  if (kind === 'topic') {
+    const topic = diveTopic || extraContextText(lastClassification);
+    if (!topic) return toast('No topic to expand yet.');
+    pushTrail({ kind: 'more-on-this-topic', label: 'More on this topic · ' + topic, entity, topic });
+    return discover({ keepSubject: !!entity, entity, topic, append: true, moreOnThisTopic: true, mode: 'more-on-this-topic' });
   }
   if (kind === 'subject') {
     const topic = diveTopic || extraContextText(lastClassification) || entity;
@@ -2131,7 +2164,7 @@ async function findMore(kind, item) {
     if (!host) return toast('No public host to follow.');
     pushTrail({ kind: 'find-more', label: 'More from ' + host + ' (host, not necessarily the creator)', entity, topic: host });
     toast('This is the hosting site. The creator or original publisher may be someone else.');
-    return discover({ keepSubject: !!entity, entity, topic: (entity + ' site:' + host).trim(), append: true, findMore: true, mode: 'find-more' });
+    return discover({ keepSubject: !!entity, entity, topic: diveTopic, append: true, moreFromThisSource: true, mode: 'more-from-this-source', seedVisual: item });
   }
   if (kind === 'different') {
     const exclHosts = [...new Set([host, ...(suppressed.hosts || []), ...((lastResults || []).map(x => x.domain || hostOf(x.url)).filter(Boolean))])].filter(Boolean).slice(0, 8);
