@@ -1,4 +1,4 @@
-// Browser-test access surface — routing only. Does not change retrieval.
+// Browser-test access surface. Routing + real-UI selectors. Does not change retrieval.
 import worker from './worker.js';
 import { PLANNER_VERSION, PLANNER_BUILD } from './investigation-planner.js';
 import { readFileSync } from 'node:fs';
@@ -27,6 +27,10 @@ const env = {
   },
 };
 
+function count(hay, needle) {
+  return hay.split(needle).length - 1;
+}
+
 console.log('--- browser-test surface ---');
 {
   const health = await worker.fetch(new Request('https://carmen.test/health'), env);
@@ -46,6 +50,7 @@ console.log('--- browser-test surface ---');
   assert(d.samePipelineAsIphoneUi === true, 'API still same pipeline');
   assert(d.browserTest.primary === '/test', 'primary /test');
   assert((d.testRoutes || []).includes('/api/v1/browser-test-session'), 'session route advertised');
+  assert(d.browserTest.selectors && d.browserTest.selectors.searchInput === '[data-testid="search-input"]', 'docs list real DOM selectors');
 }
 
 {
@@ -60,25 +65,51 @@ console.log('--- browser-test surface ---');
   const page = await worker.fetch(new Request('https://carmen.test/test'), env);
   const html = await page.text();
   assert(page.status === 200, '/test 200');
+  assert(!/location\.replace\s*\(\s*["']\//.test(html), '/test does not JS-redirect away from the UI');
+  assert(!/http-equiv=["']refresh["']/i.test(html), '/test has no meta-refresh human gesture');
+  assert(!/Opening the real Carmen application/i.test(html), '/test is not a Continue stub');
   assert(/carmen-browser-test/i.test(html), '/test marks browser-test meta');
-  assert(/<base href="\/">/i.test(html), '/test injects base href=/ so assets load from origin root');
+  assert(/<base href="\/">/i.test(html), '/test has base href=/ so assets load from origin root');
   assert(html.includes('diveBondageBtn') && html.includes('Bondage'), '/test HTML has Bondage control');
   assert(html.includes('divePeopleBtn') && html.includes('People'), '/test HTML has People control');
   assert(html.includes('diveClothingBtn') && html.includes('Clothing'), '/test HTML has Clothing control');
+  assert(count(html, 'data-testid="dive-bondage"') === 1, 'exactly one dive-bondage testid');
+  assert(count(html, 'data-testid="dive-people"') === 1, 'exactly one dive-people testid');
+  assert(count(html, 'data-testid="dive-clothing"') === 1, 'exactly one dive-clothing testid');
+  assert(count(html, 'data-testid="search-input"') === 1, 'exactly one search-input testid');
+  assert(count(html, 'data-testid="search-submit"') === 1, 'exactly one search-submit testid');
+  assert(count(html, 'data-testid="deep-dive"') === 1, 'exactly one deep-dive testid');
+  assert(count(html, 'data-testid="new-investigation"') === 1, 'exactly one new-investigation testid');
+  assert(count(html, 'data-testid="save"') === 1, 'exactly one save/keep testid');
+  assert(count(html, 'data-testid="how-i-got-here"') === 1, 'exactly one how-i-got-here testid');
+  assert(count(html, 'data-testid="find-more"') === 1, 'exactly one find-more testid');
+  assert(html.includes('src="/app.js"'), '/test loads real /app.js');
   assert(page.headers.get('x-carmen-browser-test') === '1', '/test sets diagnostic header');
   assert(page.headers.get('x-carmen-version') === PLANNER_VERSION, '/test version header');
+  assert(page.headers.get('location') == null, '/test does not send a Location redirect');
+  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]);
+  const dup = ids.filter((id, i) => ids.indexOf(id) !== i);
+  assert(dup.length === 0, 'no duplicate IDs in /test HTML' + (dup.length ? ' (' + dup.join(',') + ')' : ''));
+}
+
+{
+  const slash = await worker.fetch(new Request('https://carmen.test/test/'), env);
+  const html = await slash.text();
+  assert(slash.status === 200 && html.includes('data-testid="search-input"') && !/location\.replace/.test(html), '/test/ also serves the real UI');
 }
 
 {
   const alias = await worker.fetch(new Request('https://carmen.test/browser-test'), env);
   const html = await alias.text();
-  assert(alias.status === 200 && html.includes('diveBondageBtn'), '/browser-test serves same UI');
+  assert(alias.status === 200 && html.includes('diveBondageBtn') && html.includes('data-testid="search-input"'), '/browser-test serves same UI');
 }
 
 {
   const asset = await worker.fetch(new Request('https://carmen.test/test/app.js'), env);
   const js = await asset.text();
   assert(asset.status === 200 && js.includes("const VERSION = '49.4'"), '/test/app.js is the real frontend');
+  assert(js.includes('function setAgentState'), 'frontend exposes agent-observable state');
+  assert(js.includes("data-testid=\"result-card\""), 'result cards carry stable testids');
 }
 
 {

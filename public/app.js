@@ -76,6 +76,105 @@ let lastExpansion = null;
 let lastRelatedPeople = [];
 let lastClothingEvidence = [];
 
+/* Browser-agent observability. Does not change retrieval, ranking, or Deep Dive. */
+function carmenNewInvestigationId() {
+  try { return (crypto.randomUUID && crypto.randomUUID()) || ('inv-' + Date.now().toString(36)); }
+  catch { return 'inv-' + Date.now().toString(36); }
+}
+let liveInvestigationId = carmenNewInvestigationId();
+function setAgentState(patch) {
+  const root = document.documentElement;
+  if (!root) return;
+  const next = {
+    status: root.getAttribute('data-carmen-status') || 'idle',
+    view: root.getAttribute('data-carmen-view') || 'home',
+    busy: root.getAttribute('data-carmen-busy') === 'true',
+    results: root.getAttribute('data-carmen-results') || '0',
+    error: root.getAttribute('data-carmen-error') || '',
+    lens: root.getAttribute('data-carmen-lens') || '',
+    saved: root.getAttribute('data-carmen-saved') || '',
+    howHere: root.getAttribute('data-carmen-how-here') || 'closed',
+  };
+  if (patch) Object.assign(next, patch);
+  if (patch && patch.investigation) liveInvestigationId = patch.investigation;
+  root.setAttribute('data-carmen-status', next.status);
+  root.setAttribute('data-carmen-view', next.view);
+  root.setAttribute('data-carmen-busy', next.busy ? 'true' : 'false');
+  root.setAttribute('data-carmen-results', String(next.results == null ? '0' : next.results));
+  root.setAttribute('data-carmen-error', next.error || '');
+  root.setAttribute('data-carmen-lens', next.lens || '');
+  root.setAttribute('data-carmen-saved', next.saved || '');
+  root.setAttribute('data-carmen-how-here', next.howHere || 'closed');
+  root.setAttribute('data-carmen-investigation', liveInvestigationId);
+  root.setAttribute('aria-busy', next.busy ? 'true' : 'false');
+  const results = $('results');
+  if (results) {
+    results.setAttribute('data-testid', 'results');
+    results.setAttribute('aria-busy', next.busy ? 'true' : 'false');
+    results.setAttribute('data-carmen-status', next.status);
+  }
+  const el = $('carmenAgentStatus');
+  if (el) {
+    el.setAttribute('data-status', next.status);
+    el.setAttribute('data-view', next.view);
+    el.setAttribute('data-busy', next.busy ? 'true' : 'false');
+    el.setAttribute('data-results', String(next.results == null ? '0' : next.results));
+    el.setAttribute('data-error', next.error || '');
+    el.setAttribute('data-lens', next.lens || '');
+    el.setAttribute('data-saved', next.saved || '');
+    el.setAttribute('data-how-here', next.howHere || 'closed');
+    el.setAttribute('data-investigation', liveInvestigationId);
+    const bits = [next.status, next.view];
+    if (next.busy) bits.push('loading');
+    if (next.lens) bits.push('lens:' + next.lens);
+    if (next.error) bits.push('error:' + String(next.error).slice(0, 180));
+    el.textContent = bits.join(' · ');
+  }
+  window.__carmenAgent = {
+    status: next.status,
+    view: next.view,
+    busy: !!next.busy,
+    results: Number(next.results) || 0,
+    error: next.error || '',
+    lens: next.lens || '',
+    saved: next.saved || '',
+    howHere: next.howHere || 'closed',
+    investigation: liveInvestigationId,
+  };
+}
+function syncViewAvailability(activeView) {
+  for (const [, v] of TABS) {
+    const node = $(v);
+    if (!node) continue;
+    const on = v === activeView;
+    node.classList.toggle('hidden', !on);
+    if (on) {
+      node.removeAttribute('hidden');
+      node.removeAttribute('inert');
+      node.removeAttribute('aria-hidden');
+    } else {
+      node.setAttribute('hidden', '');
+      node.setAttribute('inert', '');
+      node.setAttribute('aria-hidden', 'true');
+    }
+  }
+  ['lightbox', 'saveSheet', 'toast', 'legacyTools'].forEach(id => {
+    const node = $(id);
+    if (!node) return;
+    const on = !node.classList.contains('hidden');
+    if (on) {
+      node.removeAttribute('hidden');
+      node.removeAttribute('inert');
+      node.removeAttribute('aria-hidden');
+    } else {
+      node.setAttribute('hidden', '');
+      node.setAttribute('inert', '');
+      node.setAttribute('aria-hidden', 'true');
+    }
+  });
+}
+
+
 
 const ACCESS_LABELS = {
   DIRECTLY_RETRIEVED: 'DIRECTLY RETRIEVED',
@@ -363,8 +462,10 @@ function setTab(name) {
   const view = map[name] || 'homeView';
   for (const [nav, v] of TABS) {
     $(nav)?.classList.toggle('active', v === view);
-    $(v)?.classList.toggle('hidden', v !== view);
   }
+  syncViewAvailability(view);
+  const viewName = view.replace(/View$/, '');
+  setAgentState({ view: viewName === 'home' ? 'home' : viewName });
   if (view === 'investigationsView') mountTools();
   if (view === 'homeView') renderHome();
   if (view === 'collectionsView') renderCollections();
@@ -889,6 +990,7 @@ async function discover(opts = {}) {
   }
   if ($('personRail') && !keepSubject) $('personRail').innerHTML = '';
   $('resultsEmpty').classList.add('hidden');
+  setAgentState({ status: 'loading', busy: true, error: '', lens: opts.diveLens || activeDiveLens || '' });
   $('searchDiagnostics').textContent = expanded
     ? 'Looking further across public sources…'
     : (visualMode || visualMore || videoMore)
@@ -1030,6 +1132,13 @@ async function discover(opts = {}) {
     });
     const scale = lastCorpusScale && lastCorpusScale.label ? lastCorpusScale.label : (lastVisuals.length + ' images · ' + lastVideos.length + ' videos · ' + lastResults.length + ' sources');
     renderExpansionNote(data);
+    setAgentState({
+      status: 'complete',
+      busy: false,
+      results: lastResults.length,
+      error: '',
+      lens: opts.diveLens || activeDiveLens || '',
+    });
     toast(data.noNewSources
       ? (data.noNewSourcesMessage || 'No new sources found from this angle.')
       : (data.noNewMedia
@@ -1052,6 +1161,7 @@ async function discover(opts = {}) {
     $('resultsEmpty').textContent = 'Discovery failed: ' + e.message;
     $('resultsEmpty').classList.remove('hidden');
     $('searchDiagnostics').textContent = '';
+    setAgentState({ status: 'error', busy: false, error: e.message || String(e), results: lastResults.length });
     toast('Discovery failed: ' + e.message);
   } finally {
     if (gen === discoverGen) {
@@ -1059,6 +1169,12 @@ async function discover(opts = {}) {
       if ($('expandedBtn')) $('expandedBtn').disabled = false;
       if ($('diveSearchBtn')) $('diveSearchBtn').disabled = false;
       updateDeepDiveState();
+      const root = document.documentElement;
+      if (root && root.getAttribute('data-carmen-status') === 'loading') {
+        setAgentState({ status: lastResults.length ? 'complete' : 'idle', busy: false, results: lastResults.length });
+      } else {
+        setAgentState({ busy: false, results: lastResults.length });
+      }
     }
   }
 }
@@ -1368,17 +1484,17 @@ function renderPersonRail() {
     const selected = (selectedCandidate && selectedCandidate.url === r.url) || (selectedEntity && selectedEntity.url === r.url);
     const kind = r.resultKind || '';
     const ctx = extraContextText(lastClassification);
-    return `<article class="person-tile${selected ? ' selected' : ''}" data-identify="${idx}" data-i="${idx}">
-      ${hero ? `<img class="hero" data-identify="${idx}" src="${esc(imgSrc(hero))}" alt="${esc(subjectName)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
+    return `<article class="person-tile${selected ? ' selected' : ''}" data-testid="person-tile" data-identify="${idx}" data-i="${idx}" data-source-url="${esc(r.url || '')}">
+      ${hero ? `<img class="hero" data-testid="result-image" data-identify="${idx}" src="${esc(imgSrc(hero))}" alt="${esc(subjectName)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
       <div class="rbody">
         <p class="pname">${esc(subjectName)}</p>
         <div class="subtle">${esc(r.domain || hostOf(r.url))}</div>
         ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
         <p class="hint" style="margin:8px 0 0">A picture is not proof of identity.</p>
         <div class="racts">
-          <button data-ract="select" data-i="${idx}">${selected ? 'That’s the one' : 'That’s the one'}</button>
-          <button data-ract="dive" data-i="${idx}">Deep Dive</button>
-          <button data-ract="notperson" data-i="${idx}">Not this one</button>
+          <button data-ract="select" data-testid="identity-confirm" data-i="${idx}">${selected ? 'That’s the one' : 'That’s the one'}</button>
+          <button data-ract="dive" data-testid="result-deep-dive" data-i="${idx}">Deep Dive</button>
+          <button data-ract="notperson" data-testid="identity-reject" data-i="${idx}">Not this one</button>
         </div>
       </div>
     </article>`;
@@ -1562,6 +1678,7 @@ async function runDiveLens(lens) {
   }
   pushTrail({ kind: 'dive-lens', label: 'Deep Dive · ' + id, entity, topic });
   setTab('dive');
+  setAgentState({ view: 'dive', lens: id, status: 'loading', busy: true });
   await discover({
     keepSubject: true,
     entity,
@@ -1606,6 +1723,9 @@ function openLightbox(src, cap, gallery, index, sourceUrl) {
   lightboxIndex = Math.max(0, index || 0);
   showLightboxSlide();
   box.classList.remove('hidden');
+  box.removeAttribute('hidden');
+  box.removeAttribute('inert');
+  box.removeAttribute('aria-hidden');
 }
 function showLightboxSlide() {
   const item = lightboxGallery[lightboxIndex] || lightboxGallery[0];
@@ -1678,6 +1798,9 @@ function closeLightbox() {
   const box = $('lightbox');
   if (!box) return;
   box.classList.add('hidden');
+  box.setAttribute('hidden', '');
+  box.setAttribute('inert', '');
+  box.setAttribute('aria-hidden', 'true');
   $('lightboxImg').src = '';
   lightboxGallery = [];
 }
@@ -1797,8 +1920,8 @@ function resultCardHtml(r, i, isPersonType) {
   const personCard = isPersonType || r.entityType === 'person';
   const displayName = personCard ? (lastClassification?.subject || r.title) : r.title;
   const ev = evidenceBadges(r);
-  return `<div class="result${selected ? ' selected' : ''}${personCard ? ' person' : ''}${r.intersection ? ' direct' : ''}" data-i="${i}"${personCard ? ` data-identify="${i}"` : ''}>
-      ${hero ? `<img class="hero"${personCard ? ` data-identify="${i}"` : ''} data-full="${esc(imgSrc(hero))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(hero))}" alt="${esc(displayName)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
+  return `<div class="result${selected ? ' selected' : ''}${personCard ? ' person' : ''}${r.intersection ? ' direct' : ''}" data-testid="result-card" data-source-url="${esc(r.url || '')}" data-i="${i}"${personCard ? ` data-identify="${i}"` : ''}>
+      ${hero ? `<img class="hero" data-testid="result-image"${personCard ? ` data-identify="${i}"` : ''} data-full="${esc(imgSrc(hero))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(hero))}" alt="${esc(displayName)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
       <div class="rbody">
         <div class="rtitle">${esc(displayName)}</div>
         <div class="rmeta">
@@ -1818,11 +1941,11 @@ function resultCardHtml(r, i, isPersonType) {
         ${provenanceRow(r)}
         ${rest.length ? `<div class="thumbs">${rest.map(u => `<img data-full="${esc(imgSrc(u))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(u))}" alt="" referrerpolicy="no-referrer">`).join('')}</div>` : ''}
         <div class="racts">
-          <button data-ract="select" data-i="${i}">${selected ? (personCard ? 'That’s the one' : 'Selected') : (personCard ? 'That’s the one' : 'Select')}</button>
-          <button data-ract="dive" data-i="${i}">Deep Dive</button>
-          <button data-ract="save" data-i="${i}">Save</button>
-          <button data-ract="open" data-i="${i}">Open source</button>
-          ${personCard ? `<button data-ract="notperson" data-i="${i}">Not this person</button>` : ''}
+          <button data-ract="select" data-testid="${personCard ? 'identity-confirm' : 'result-select'}" data-i="${i}">${selected ? (personCard ? 'That’s the one' : 'Selected') : (personCard ? 'That’s the one' : 'Select')}</button>
+          <button data-ract="dive" data-testid="result-deep-dive" data-i="${i}">Deep Dive</button>
+          <button data-ract="save" data-testid="result-save" data-i="${i}">Save</button>
+          <button data-ract="open" data-testid="result-open" data-source-url="${esc(r.url || '')}" data-i="${i}">Open source</button>
+          ${personCard ? `<button data-ract="notperson" data-testid="identity-reject" data-i="${i}">Not this person</button>` : ''}
         </div>
       </div>
     </div>`;
@@ -2033,6 +2156,16 @@ function hardNewInvestigation(opts = {}) {
   if ($('diveStream')) $('diveStream').innerHTML = '';
   if ($('resultCount')) $('resultCount').textContent = '';
   persistSession();
+  setAgentState({
+    status: 'idle',
+    busy: false,
+    results: 0,
+    error: '',
+    lens: '',
+    saved: '',
+    howHere: 'closed',
+    investigation: carmenNewInvestigationId(),
+  });
   if (!opts.silent) toast('New investigation. Saved collections stay. Live search state is cleared.');
   if (!opts.stay) setTab('home');
 }
@@ -2962,7 +3095,7 @@ async function openSaveSheet(item) {
   pendingSaveItem = item;
   const cols = await all('collections');
   $('saveSheetList').innerHTML = cols.map(c => `<label class="refitem"><input type="checkbox" data-col="${esc(c.id)}"><span>${esc(c.name)}</span></label>`).join('') || '<p class="muted">Create a collection below.</p>';
-  $('saveSheet').classList.remove('hidden');
+  $('saveSheet').classList.remove('hidden'); $('saveSheet').removeAttribute('hidden'); $('saveSheet').removeAttribute('inert'); $('saveSheet').removeAttribute('aria-hidden');
 }
 
 async function confirmSaveSheet() {
@@ -2981,7 +3114,7 @@ async function confirmSaveSheet() {
       existing.collectionIds = [...new Set(ids)];
       await put('collectionItems', existing);
     }
-    $('saveSheet').classList.add('hidden');
+    $('saveSheet').classList.add('hidden'); if ($('saveSheet')) { $('saveSheet').setAttribute('hidden',''); $('saveSheet').setAttribute('inert',''); $('saveSheet').setAttribute('aria-hidden','true'); }
     $('saveSheetNew').value = '';
     pendingSaveItem = null;
     toast('Moved. The item can belong to more than one collection.');
@@ -3011,7 +3144,7 @@ async function confirmSaveSheet() {
   lastSavedItemId = item.id;
   lastFoundThrough = item.foundThrough;
   pushTrail({ kind: 'save', label: 'Saved “' + item.title + '”', itemId: item.id, itemUrl: item.url, entity: item.subject, topic: item.topic });
-  $('saveSheet').classList.add('hidden');
+  $('saveSheet').classList.add('hidden'); if ($('saveSheet')) { $('saveSheet').setAttribute('hidden',''); $('saveSheet').setAttribute('inert',''); $('saveSheet').setAttribute('aria-hidden','true'); }
   $('saveSheetNew').value = '';
   pendingSaveItem = null;
   toast('Saved. Carmen remembers how you got here. Nothing else was auto-saved.');
@@ -3105,13 +3238,14 @@ async function makeTutorial(opts = {}) {
 
 /* ---------- event wiring ---------- */
 function wire() {
+  setAgentState({ status: 'idle', view: 'home', busy: false, investigation: liveInvestigationId });
   $('navHome').onclick = () => setTab('home');
   $('navSearch').onclick = () => setTab('search');
   if ($('navDive')) $('navDive').onclick = () => setTab('dive');
   $('navCollections').onclick = () => setTab('collections');
   $('navInvestigations').onclick = () => setTab('investigations');
   $('navLearn').onclick = () => setTab('learn');
-  $('homeSearchBtn').onclick = () => {
+  const submitHomeSearch = () => {
     const q = $('homeQuery').value.trim();
     hardNewInvestigation({ silent: true, stay: true });
     if ($('searchQuery')) $('searchQuery').value = q;
@@ -3119,6 +3253,8 @@ function wire() {
     setTab('search');
     if (q) discover();
   };
+  if ($('homeSearchForm')) $('homeSearchForm').onsubmit = e => { e.preventDefault(); submitHomeSearch(); };
+  $('homeSearchBtn').onclick = e => { if (e) e.preventDefault(); submitHomeSearch(); };
   if ($('newInvestigationBtn')) $('newInvestigationBtn').onclick = () => hardNewInvestigation();
   if ($('surpriseMeBtn')) $('surpriseMeBtn').onclick = () => surpriseMe();
   if ($('diveSearchBtn')) $('diveSearchBtn').onclick = () => investigateTopic($('diveSearchQuery')?.value || '');
@@ -3148,7 +3284,13 @@ function wire() {
     if (!panel) return;
     const open = panel.classList.contains('hidden');
     panel.classList.toggle('hidden', !open);
-    if (open) renderHowHere();
+    if (open) {
+      panel.removeAttribute('hidden');
+      renderHowHere();
+    } else {
+      panel.setAttribute('hidden', '');
+    }
+    setAgentState({ howHere: open ? 'open' : 'closed' });
   };
   if ($('diveSurpriseBtn')) $('diveSurpriseBtn').onclick = () => surpriseMe();
   if ($('diveTabs')) $('diveTabs').onclick = e => {
@@ -3346,6 +3488,7 @@ function wire() {
   };
   $('keepBtn').onclick = async () => {
     const p = await keepInvestigation();
+    setAgentState({ saved: p ? (p.id || 'kept') : '' });
     toast(p ? 'Investigation kept on this phone.' : 'Nothing to keep yet.');
     await refresh();
   };
@@ -3431,7 +3574,7 @@ function wire() {
   };
   if ($('lightbox')) $('lightbox').addEventListener('click', e => { if (e.target.id === 'lightbox') closeLightbox(); });
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeLightbox(); $('saveSheet')?.classList.add('hidden'); }
+    if (e.key === 'Escape') { closeLightbox(); const sheet = $('saveSheet'); if (sheet) { sheet.classList.add('hidden'); sheet.setAttribute('hidden',''); sheet.setAttribute('inert',''); sheet.setAttribute('aria-hidden','true'); } }
     if (!$('lightbox')?.classList.contains('hidden')) {
       if (e.key === 'ArrowLeft') lightboxStep(-1);
       if (e.key === 'ArrowRight') lightboxStep(1);
@@ -3464,7 +3607,7 @@ function wire() {
     toast('Collection created. Nothing else was saved.');
   };
   $('saveSheetConfirm').onclick = confirmSaveSheet;
-  $('saveSheetCancel').onclick = () => { $('saveSheet').classList.add('hidden'); pendingSaveItem = null; };
+  $('saveSheetCancel').onclick = () => { $('saveSheet').classList.add('hidden'); if ($('saveSheet')) { $('saveSheet').setAttribute('hidden',''); $('saveSheet').setAttribute('inert',''); $('saveSheet').setAttribute('aria-hidden','true'); } pendingSaveItem = null; };
   $('learnBtn').onclick = runLearn;
   $('learnChips').onclick = e => {
     const c = e.target.closest('.chip'); if (!c) return;
@@ -3562,7 +3705,7 @@ function wire() {
       pendingSaveItem = { ...it, _moveId: it.id };
       const cols = await all('collections');
       $('saveSheetList').innerHTML = cols.map(c => `<label class="refitem"><input type="checkbox" data-col="${esc(c.id)}"${(it.collectionIds || []).includes(c.id) ? ' checked' : ''}><span>${esc(c.name)}</span></label>`).join('') || '<p class="muted">Create a collection below.</p>';
-      $('saveSheet').classList.remove('hidden');
+      $('saveSheet').classList.remove('hidden'); $('saveSheet').removeAttribute('hidden'); $('saveSheet').removeAttribute('inert'); $('saveSheet').removeAttribute('aria-hidden');
     }
   });
   $('deepDiveResult').addEventListener('click', e => {

@@ -25,7 +25,14 @@ const env = {
         const body = await readFile(full);
         const types = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.jsonc': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8', '.svg': 'image/svg+xml', '.md': 'text/markdown; charset=utf-8' };
         return new Response(body, { status: 200, headers: { 'content-type': types[extname(full)] || 'application/octet-stream' } });
-      } catch { return new Response('Not found', { status: 404 }); }
+      } catch {
+        const wantsHtml = !extname(path) || path.endsWith('/') || path.endsWith('.html');
+        if (wantsHtml) {
+          const body = await readFile(resolve(DIR, 'index.html'));
+          return new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
+        }
+        return new Response('Not found', { status: 404 });
+      }
     },
   },
 };

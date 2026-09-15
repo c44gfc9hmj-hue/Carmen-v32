@@ -1,6 +1,7 @@
 // Carmen — canonical Cloudflare Worker backend.
 // Routes: GET /health, GET /search, GET /img, POST /dive, GET|POST /retrieve, GET|POST /source,
-// POST /chat, POST /analyze, POST /synthesize.
+// POST /chat, POST /analyze, POST /synthesize, GET /test, GET /browser-test.
+// /test and /browser-test serve the SAME frontend as / via ASSETS (no parallel UI, no redirect).
 // Everything else is served from static assets (the Carmen frontend) via the ASSETS binding.
 //
 // Safety contract: Carmen is a research/analysis tool only. It never contacts
@@ -140,7 +141,7 @@ function cors(req) {
     'access-control-allow-origin': allow,
     'access-control-allow-methods': 'GET,POST,OPTIONS',
     'access-control-allow-headers': 'content-type, x-carmen-client, x-carmen-test-key',
-    'access-control-expose-headers': 'x-carmen-version, x-carmen-build',
+    'access-control-expose-headers': 'x-carmen-version, x-carmen-build, x-carmen-browser-test',
     'access-control-max-age': '86400',
     'vary': 'Origin',
   };
@@ -6582,6 +6583,17 @@ function apiDocsPayload() {
     ownershipClasses: ['CONFIRMED CREATOR-OWNED', 'LIKELY CREATOR-OWNED', 'DIRECTORY CLAIM', 'FAN/REPOSTER', 'MIRROR', 'UNVERIFIED', 'UNKNOWN'],
     diagnosisStatuses: ['ok', 'thin_corpus', 'search_failed', 'source_inaccessible', 'identity_unresolved', 'evidence_unavailable'],
     liveVsFixture: 'A live provider timeout/block is BLOCKED, never PASS. Use fixture=provider-blocked to verify Carmen reports search_failed.',
+    browserTest: {
+      available: true,
+      sameUiAsIphone: true,
+      samePipelineAsIphoneUi: true,
+      primary: '/test',
+      routes: ['/test', '/browser-test'],
+      session: '/api/v1/browser-test-session',
+      access: 'Open /test or /browser-test on this origin. Loads the real Carmen PWA and the real backend with no redirect and no extra auth unless CARMEN_TEST_KEY is configured.',
+      capabilities: ['open Carmen', 'enter searches', 'new investigation', 'select subject', 'deep dive', 'bondage', 'people', 'clothing', 'find more', 'inspect result cards', 'inspect images and source URLs', 'follow discovered sources', 'save/keep results', 'branch investigations', 'identity confirmation/rejection', 'how I got here', 'repeat searches', 'observe loading/error states', 'inspect returned evidence'],
+      forbidden: ['send messages', 'post', 'follow accounts', 'purchase', 'submit external forms', 'any other external action'],
+    },
   };
 }
 
@@ -6656,7 +6668,12 @@ async function handleCarmenApi(req, env) {
   const u = new URL(req.url);
   const path = u.pathname.replace(/\/+$/, '') || '/';
   if ((path === '/api' || path === '/api/v1' || path === '/api/v1/docs') && req.method === 'GET') {
-    return json(apiDocsPayload(), 200, req);
+    const payload = apiDocsPayload();
+    const ai = getAiConfig(env);
+    payload.environment = describeCarmenEnvironment(env, ai);
+    payload.browserTest = browserTestDescriptor(env);
+    payload.testRoutes = ['/test', '/browser-test', '/api/v1/browser-test-session'];
+    return json(payload, 200, req);
   }
   if ((path === '/api/v1/health' || path === '/api/health') && req.method === 'GET') {
     const ai = getAiConfig(env);
@@ -6670,7 +6687,14 @@ async function handleCarmenApi(req, env) {
       model: ai.model,
       api: 'v1',
       secretsExposed: false,
+      environment: describeCarmenEnvironment(env, ai),
+      browserTest: browserTestDescriptor(env),
+      testRoutes: ['/test', '/browser-test', '/api/v1/browser-test-session'],
     }, 200, req);
+  }
+
+  if ((path === '/api/v1/browser-test-session' || path === '/api/browser-test-session') && (req.method === 'GET' || req.method === 'POST')) {
+    return issueBrowserTestSession(req, env);
   }
 
   let body = {};
@@ -6853,6 +6877,138 @@ async function handleCarmenApi(req, env) {
   return json(packed, 200, req);
 }
 
+
+function describeCarmenEnvironment(env, ai) {
+  const testKeyRequired = !!(env && env.CARMEN_TEST_KEY);
+  return {
+    name: (env && (env.CARMEN_ENV || env.ENVIRONMENT)) || 'cloudflare-worker',
+    worker: 'carmen',
+    workerBinding: 'carmen-iphone-v25',
+    assetsBound: !!(env && env.ASSETS && typeof env.ASSETS.fetch === 'function'),
+    aiConfigured: !!(ai && ai.configured),
+    testKeyRequired,
+    secretsExposed: false,
+  };
+}
+
+function browserTestDescriptor(env) {
+  return {
+    available: true,
+    sameUiAsIphone: true,
+    samePipelineAsIphoneUi: true,
+    primary: '/test',
+    routes: ['/test', '/browser-test'],
+    session: '/api/v1/browser-test-session',
+    interaction: 'real-dom',
+    selectors: {
+      searchInput: '[data-testid="search-input"]',
+      searchSubmit: '[data-testid="search-submit"]',
+      newInvestigation: '[data-testid="new-investigation"]',
+      deepDive: '[data-testid="deep-dive"]',
+      diveBondage: '[data-testid="dive-bondage"]',
+      divePeople: '[data-testid="dive-people"]',
+      diveClothing: '[data-testid="dive-clothing"]',
+      findMore: '[data-testid="find-more"]',
+      save: '[data-testid="save"]',
+      howIGotHere: '[data-testid="how-i-got-here"]',
+      results: '[data-testid="results"]',
+      status: '[data-testid="carmen-status"]',
+    },
+    wait: 'document.documentElement[data-carmen-status] and document.documentElement[data-carmen-busy]',
+    testKeyRequired: !!(env && env.CARMEN_TEST_KEY),
+    access: (env && env.CARMEN_TEST_KEY)
+      ? 'Open /test. If API JSON routes require it, send X-Carmen-Test-Key. The UI itself uses the same /search /dive routes as the iPhone app.'
+      : 'Open /test or /browser-test on this origin — no extra authentication. No redirect, no Continue click.',
+  };
+}
+
+function issueBrowserTestSession(req, env) {
+  const sessionId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('bt-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+  return json({
+    ok: true,
+    mode: 'browser-test',
+    sessionId,
+    issuedAt: new Date().toISOString(),
+    expiresInSeconds: 86400,
+    ui: '/test',
+    aliases: ['/test', '/browser-test'],
+    sameUiAsIphone: true,
+    samePipelineAsIphoneUi: true,
+    testKeyRequired: !!(env && env.CARMEN_TEST_KEY),
+    capabilities: ['research', 'retrieve', 'save internal investigation state', 'analyze', 'branch', 'click', 'type', 'wait for async state', 'inspect DOM'],
+    forbidden: ['send messages', 'post', 'follow accounts', 'purchase', 'submit external forms'],
+    note: 'Optional correlation id for a remote browser agent. Does not grant extra privileges. Never returns secrets or production credentials.',
+  }, 200, req, {
+    'set-cookie': 'carmen_browser_test=' + sessionId + '; Path=/; Max-Age=86400; SameSite=Lax',
+  });
+}
+
+const BROWSER_TEST_UI = new Set(['/test', '/browser-test']);
+
+function browserTestRewritePath(pathname) {
+  const raw = String(pathname || '/');
+  const trimmed = raw.replace(/\/+$/, '') || '/';
+  if (BROWSER_TEST_UI.has(trimmed)) return '/index.html';
+  for (const prefix of ['/test/', '/browser-test/']) {
+    if (raw === prefix) return '/index.html';
+    if (raw.startsWith(prefix)) {
+      const rest = raw.slice(prefix.length);
+      if (!rest || rest === 'index.html') return '/index.html';
+      if (rest.includes('..') || rest.includes('\\')) return null;
+      return '/' + rest.replace(/^\/+/, '');
+    }
+  }
+  return null;
+}
+
+async function serveBrowserTestSurface(req, env) {
+  const u = new URL(req.url);
+  const rewrite = browserTestRewritePath(u.pathname);
+  if (!rewrite) return null;
+  if (!env.ASSETS || typeof env.ASSETS.fetch !== 'function') {
+    return new Response('Carmen static assets binding is missing. Set the ASSETS binding in wrangler.jsonc.', {
+      status: 500,
+      headers: { ...cors(req), 'content-type': 'text/plain; charset=utf-8' },
+    });
+  }
+  const assetUrl = new URL(req.url);
+  assetUrl.pathname = rewrite;
+  if (rewrite !== '/index.html') assetUrl.search = '';
+  const assetReq = new Request(assetUrl.toString(), { method: 'GET', headers: req.headers });
+  const res = await env.ASSETS.fetch(assetReq);
+  const headers = new Headers(res.headers);
+  headers.set('x-carmen-browser-test', '1');
+  headers.set('x-carmen-version', PLANNER_VERSION);
+  headers.set('x-carmen-build', PLANNER_BUILD);
+  headers.set('cache-control', 'no-store');
+  headers.delete('location');
+  const corsHeaders = cors(req);
+  for (const [k, v] of Object.entries(corsHeaders)) headers.set(k, v);
+  if (rewrite === '/index.html') {
+    let html = await res.text();
+    if (/location\.replace\s*\(\s*["']\//i.test(html) || /http-equiv=["']refresh["']/i.test(html)) {
+      const fallbackUrl = new URL(req.url);
+      fallbackUrl.pathname = '/index.html';
+      const fallback = await env.ASSETS.fetch(new Request(fallbackUrl.toString(), { method: 'GET', headers: req.headers }));
+      html = await fallback.text();
+    }
+    if (!/name=["']carmen-browser-test["']/i.test(html)) {
+      html = html.replace(/<head([^>]*)>/i, '<head$1>\n  <meta name="carmen-browser-test" content="1">');
+    }
+    if (!/<base\s/i.test(html)) {
+      html = html.replace(/<head([^>]*)>/i, '<head$1>\n  <base href="/">');
+    }
+    html = html.replace(/<html([^>]*)>/i, (m, attrs) => {
+      if (/data-carmen-browser-test=/i.test(attrs)) return m;
+      return '<html' + attrs + ' data-carmen-browser-test="1">';
+    });
+    headers.set('content-type', 'text/html; charset=utf-8');
+    headers.set('set-cookie', 'carmen_browser_test=1; Path=/; Max-Age=86400; SameSite=Lax');
+    return new Response(html, { status: 200, headers });
+  }
+  return new Response(res.body, { status: res.status, headers });
+}
+
 export default {
   async fetch(req, env) {
     const u = new URL(req.url);
@@ -6865,10 +7021,13 @@ export default {
         version: PLANNER_VERSION,
         build: PLANNER_BUILD,
         schemaVersion: 2,
+        environment: describeCarmenEnvironment(env, ai),
         provider: ai.provider,
         model: ai.model,
         configured: ai.configured,
-        routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize', '/api', '/api/v1'],
+        browserTest: browserTestDescriptor(env),
+        testRoutes: ['/test', '/browser-test', '/api/v1/browser-test-session'],
+        routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize', '/api', '/api/v1', '/test', '/browser-test'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
         api: { docs: '/api', version: 'v1', samePipelineAsIphoneUi: true },
@@ -6886,6 +7045,9 @@ export default {
     if (u.pathname === '/synthesize' && req.method === 'POST') return synthesize(req, env);
     if ((u.pathname === '/retrieve' || u.pathname === '/source') && (req.method === 'GET' || req.method === 'POST')) return retrieveHandler(req);
     if (u.pathname === '/api' || u.pathname === '/api/' || u.pathname.startsWith('/api/')) return handleCarmenApi(req, env);
+    // Browser-test surface: same PWA + same backend as /. No parallel UI. No redirect.
+    const browserTestPage = await serveBrowserTestSurface(req, env);
+    if (browserTestPage) return browserTestPage;
     // SPA fallback: serve static assets for everything else.
     if (env.ASSETS && typeof env.ASSETS.fetch === 'function') return env.ASSETS.fetch(req);
     return new Response('Carmen static assets binding is missing. Set the ASSETS binding in wrangler.jsonc.', { status: 500, headers: { ...cors(req), 'content-type': 'text/plain; charset=utf-8' } });

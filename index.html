@@ -1,13 +1,14 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-testid="carmen-app" data-carmen-status="idle" data-carmen-view="home" data-carmen-busy="false" data-carmen-results="0">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#07080a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="icon.svg">
+<base href="/">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>Carmen</title>
 <meta name="carmen-build" content="49.4">
 <style>
@@ -235,13 +236,16 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 .appbar .rowbits{display:flex;gap:8px;align-items:center;justify-content:space-between}
 
 @media (prefers-reduced-motion:reduce){.skeleton{animation:none}}
+[inert]{pointer-events:none}
+.carmen-agent-status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 </style>
 </head>
 <body>
+<div id="carmenAgentStatus" class="carmen-agent-status" data-testid="carmen-status" aria-live="polite" data-status="idle" data-view="home" data-busy="false">idle · home</div>
 <header class="appbar">
   <div class="rowbits">
     <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.4</span></h1>
-    <button class="btn ghost" id="newInvestigationBtn" type="button">New investigation</button>
+    <button class="btn ghost" id="newInvestigationBtn" type="button" data-testid="new-investigation">New investigation</button>
   </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
 </header>
@@ -251,10 +255,10 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <div class="hero-home">
     <p class="kicker">Public research</p>
     <h2>What are you curious about?</h2>
-    <div class="searchbox stack">
-      <input id="homeQuery" placeholder="A name, question, URL, photo, topic — anything public" enterkeyhint="search" autocapitalize="words">
-      <button class="btn primary" id="homeSearchBtn">Search</button>
-    </div>
+    <form class="searchbox stack" id="homeSearchForm" data-testid="search-form" action="#" method="get">
+      <input id="homeQuery" data-testid="search-input" name="q" placeholder="A name, question, URL, photo, topic — anything public" enterkeyhint="search" autocapitalize="words" autocomplete="off">
+      <button class="btn primary" id="homeSearchBtn" type="submit" data-testid="search-submit">Search</button>
+    </form>
     <div class="filter-block" style="margin-top:14px">
       <p class="flabel">Adult research lens</p>
       <div class="chips" id="homeAdultChips" style="margin-top:0">
@@ -276,11 +280,11 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   </div>
 </section>
 
-<section id="searchView" class="view hidden">
+<section id="searchView" class="view hidden" hidden inert aria-hidden="true">
   <div class="card">
     <p class="kicker">Search</p>
     <h3 style="font-size:22px;letter-spacing:-.03em;margin:0 0 12px">What are you looking for?</h3>
-    <textarea id="searchQuery" placeholder="A name, question, URL, photo, topic — anything public"></textarea>
+    <textarea id="searchQuery" data-testid="search-input-workspace" placeholder="A name, question, URL, photo, topic — anything public"></textarea>
     <div id="lensStack" class="hidden"></div>
     <div class="filter-block">
       <p class="flabel">Adult research lens</p>
@@ -326,9 +330,9 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       </div>
     </details>
     <div class="row" style="margin-top:8px">
-      <button class="btn primary" id="discoverBtn">Search</button>
-      <button class="btn" id="deepDiveBtn" disabled>Deep Dive</button>
-      <button class="btn" id="keepBtn">Keep</button>
+      <button class="btn primary" id="discoverBtn" data-testid="search-submit-workspace">Search</button>
+      <button class="btn" id="deepDiveBtn" data-testid="deep-dive" disabled>Deep Dive</button>
+      <button class="btn" id="keepBtn" data-testid="save">Keep</button>
     </div>
     <p id="deepDiveHint" class="hint">Search, tap the person or thing you mean, then Deep Dive.</p>
     <div id="classBar"></div>
@@ -349,36 +353,36 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <div id="personRail"></div>
     <div id="visualCorpus"></div>
     <div id="videoCorpus"></div>
-    <div id="results"></div>
+    <div id="results" data-testid="results"></div>
     <p id="resultsEmpty" class="muted">Public sources will appear here after Search.</p>
   </div>
 </section>
 
-<section id="diveView" class="view hidden">
+<section id="diveView" class="view hidden" hidden inert aria-hidden="true">
   <div class="card" id="diveIdentityCard">
     <p class="kicker">Investigate</p>
     <div id="diveIdentity"><p class="muted">Search and pick someone or something first. Deep Dive investigates that selection.</p></div>
     <div class="searchbox" style="margin-top:12px">
-      <input id="diveSearchQuery" placeholder="Search this investigation…" enterkeyhint="search">
-      <button class="btn primary" id="diveSearchBtn" type="button">Search</button>
+      <input id="diveSearchQuery" data-testid="search-input-dive" placeholder="Search this investigation…" enterkeyhint="search" autocomplete="off">
+      <button class="btn primary" id="diveSearchBtn" type="button" data-testid="search-submit-dive">Search</button>
     </div>
     <p class="hint" id="diveSearchHint">Type a topic (interviews, career, photos) — Carmen keeps the current subject.</p>
     <div class="dive-primary" id="divePrimaryLenses">
       <p class="flabel">Deep Dive</p>
       <div class="row">
-        <button class="btn primary" id="diveBondageBtn" type="button">Bondage</button>
-        <button class="btn" id="divePeopleBtn" type="button">People</button>
-        <button class="btn" id="diveClothingBtn" type="button">Clothing</button>
+        <button class="btn primary" id="diveBondageBtn" type="button" data-testid="dive-bondage">Bondage</button>
+        <button class="btn" id="divePeopleBtn" type="button" data-testid="dive-people">People</button>
+        <button class="btn" id="diveClothingBtn" type="button" data-testid="dive-clothing">Clothing</button>
       </div>
       <div class="row" style="margin-top:8px">
-        <button class="btn ghost" id="diveFindMoreBtn" type="button">Find More</button>
+        <button class="btn ghost" id="diveFindMoreBtn" type="button" data-testid="find-more">Find More</button>
       </div>
       <p class="hint" id="diveLensHint">One tap investigates that dimension using everything already found — not a repeat of the same search.</p>
       <p class="expansion-note hidden" id="diveExpansionNote"></p>
     </div>
     <div class="row" style="margin-top:8px">
 
-      <button class="btn ghost" id="howGotHereBtn" type="button">How I got here?</button>
+      <button class="btn ghost" id="howGotHereBtn" type="button" data-testid="how-i-got-here">How I got here?</button>
       <button class="btn ghost" id="diveSurpriseBtn" type="button">Surprise me</button>
     </div>
     <div class="ws-tabs" id="diveTabs" style="margin-top:12px">
@@ -390,9 +394,9 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     </div>
   </div>
   <div id="identityBanner"></div>
-  <div id="howHerePanel" class="card hidden">
+  <div id="howHerePanel" class="card hidden" data-testid="how-i-got-here-panel" hidden>
     <h3>How I got here</h3>
-    <div id="howHereList"><p class="muted">Start an investigation to see the trail.</p></div>
+    <div id="howHereList" data-testid="how-i-got-here-list"><p class="muted">Start an investigation to see the trail.</p></div>
   </div>
   <div id="surpriseWhy" class="surprise-why hidden"></div>
   <div id="diveStream"></div>
@@ -414,12 +418,12 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
         <input id="diveExpanded" type="checkbox" style="width:auto;flex:0 0 auto"> Look further if sources are blocked
       </label>
       <div class="row" style="margin-top:8px">
-        <button class="btn primary" id="startDiveBtn">Deep Dive</button>
+        <button class="btn primary" id="startDiveBtn" data-testid="deep-dive-more">Deep Dive</button>
         <button class="btn hidden" id="continueDiveBtn">Continue</button>
         <button class="btn hidden" id="furtherDiveBtn">Investigate further</button>
         <button class="btn hidden" id="retryAnalysisBtn">Retry analysis</button>
         <button class="btn ghost hidden" id="makeTutorialBtn">Make tutorial</button>
-        <button class="btn ghost" id="cancelDiveBtn">Back to Search</button>
+        <button class="btn ghost" id="cancelDiveBtn" data-testid="back-to-search">Back to Search</button>
       </div>
     </div>
     </details>
@@ -429,7 +433,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <div id="deepDiveResult"></div>
 </section>
 
-<section id="collectionsView" class="view hidden">
+<section id="collectionsView" class="view hidden" hidden inert aria-hidden="true">
   <div class="card">
     <h3>Saved Collections</h3>
     <p class="muted">Only what you explicitly save. Viewing or investigating never auto-saves.</p>
@@ -460,7 +464,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <div id="collectionDetail"></div>
 </section>
 
-<section id="investigationsView" class="view hidden">
+<section id="investigationsView" class="view hidden" hidden inert aria-hidden="true">
   <div class="card">
     <h3>Investigations</h3>
     <p class="muted">Persistent work. Search and Deep Dive stay temporary until you Keep or Save.</p>
@@ -487,7 +491,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   </details>
 </section>
 
-<section id="learnView" class="view hidden">
+<section id="learnView" class="view hidden" hidden inert aria-hidden="true">
   <div class="card">
     <h3>Learn</h3>
     <p class="muted">Turn public research into an organized brief. The layout follows the kind of thing you are learning — not a single hardcoded subject.</p>
@@ -509,7 +513,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 </section>
 
 <!-- Hidden durable IDs for capture / evidence / connection (mounted into investigations) -->
-<div id="legacyTools" class="hidden">
+<div id="legacyTools" class="hidden" hidden inert aria-hidden="true">
   <div class="card">
     <h3>Capture</h3>
     <div class="urlrow row">
@@ -632,19 +636,19 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 </main>
 
 <nav class="bottomnav">
-  <button id="navHome" class="active">
+  <button id="navHome" class="active" data-testid="nav-home">
     <svg viewBox="0 0 24 24"><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-8.5Z"/></svg>
     Home
   </button>
-  <button id="navSearch">
+  <button id="navSearch" data-testid="nav-search">
     <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 5 5"/></svg>
     Search
   </button>
-  <button id="navDive">
+  <button id="navDive" data-testid="nav-dive">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
     Investigate
   </button>
-  <button id="navCollections">
+  <button id="navCollections" data-testid="nav-saved">
     <svg viewBox="0 0 24 24"><path d="M6 7h12v12H6z"/><path d="M8 7V5h8v2"/></svg>
     Saved
   </button>
@@ -658,8 +662,8 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   </button>
 </nav>
 
-<div id="toast" class="toast hidden"></div>
-<div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true">
+<div id="toast" class="toast hidden" data-testid="toast" hidden inert aria-hidden="true"></div>
+<div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" data-testid="result-lightbox" hidden inert aria-hidden="true">
   <p id="lightboxPos" class="subtle"></p>
   <div class="zoomwrap"><img id="lightboxImg" alt="Evidence image"></div>
   <p id="lightboxCap" class="hint"></p>
@@ -667,29 +671,29 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <div class="navrow">
     <button class="btn" id="lightboxPrev">Prev</button>
     <button class="btn" id="lightboxNext">Next</button>
-    <button class="btn" id="lightboxSource">Open source</button>
+    <button class="btn" id="lightboxSource" data-testid="lightbox-source">Open source</button>
     <button class="btn" id="lightboxInvestigate">Investigate</button>
     <button class="btn" id="lightboxSimilar">Find similar</button>
     <button class="btn" id="lightboxSearchVisual">Search this visual</button>
     <button class="btn" id="lightboxTutorial">Make tutorial</button>
-    <button class="btn" id="lightboxSave">Save</button>
+    <button class="btn" id="lightboxSave" data-testid="lightbox-save">Save</button>
     <button class="btn" id="lightboxNotImage">Not this image</button>
-    <button class="btn" id="lightboxNotPerson">Not this person</button>
-    <button class="btn ghost" id="lightboxClose">Close</button>
+    <button class="btn" id="lightboxNotPerson" data-testid="identity-reject-lightbox">Not this person</button>
+    <button class="btn ghost" id="lightboxClose" data-testid="lightbox-close">Close</button>
   </div>
 </div>
-<div id="saveSheet" class="sheet hidden">
+<div id="saveSheet" class="sheet hidden" data-testid="save-sheet" hidden inert aria-hidden="true">
   <div class="panel">
     <h3 style="margin:0 0 8px">Save to collection</h3>
     <p class="muted">Nothing is stored in a collection unless you confirm.</p>
     <div id="saveSheetList"></div>
     <div class="row" style="margin-top:10px">
       <input id="saveSheetNew" placeholder="Or create a collection">
-      <button class="btn primary" id="saveSheetConfirm" style="flex:0 0 auto">Save</button>
+      <button class="btn primary" id="saveSheetConfirm" style="flex:0 0 auto" data-testid="save-confirm">Save</button>
     </div>
     <button class="btn ghost" id="saveSheetCancel" style="margin-top:8px;width:100%">Cancel</button>
   </div>
 </div>
-<script src="app.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>
