@@ -43,12 +43,20 @@ console.log('--- unauthenticated docs / openapi / capabilities ---');
   const openapi = await spec.json();
   assert(spec.status === 200 && openapi.openapi === '3.0.3', 'GET /api/v1/openapi.json');
   assert(openapi.paths['/api/v1/machine/search'], 'spec includes machine search');
+  assert(openapi.paths['/api/v1/machine/investigations/{id}'].post, 'spec includes POST inspect for durable state');
   assert(openapi.components.securitySchemes.CarmenApiKey, 'spec documents X-Carmen-Api-Key');
+  assert(openapi.components.schemas && openapi.components.schemas.DiscoveryEnvelope, 'spec includes response schemas');
+  assert(/investigationState/.test(JSON.stringify(openapi)), 'spec documents investigationState continuity');
   assert(/CARMEN_API_KEY/.test(JSON.stringify(openapi)), 'spec names CARMEN_API_KEY not provider secrets as the assistant key');
 
   const caps = await worker.fetch(new Request('https://test/api/v1/machine/capabilities'), {});
   const cbody = await caps.json();
   assert(caps.status === 200 && cbody.capabilities.readOnly === true, 'capabilities are read-only');
+  assert(cbody.machineAuthConfigured === false, 'capabilities report machineAuthConfigured=false when secret absent');
+  const health = await worker.fetch(new Request('https://test/api/v1/health'), { CARMEN_API_KEY: 'carmen-machine-secret' });
+  const hbody = await health.json();
+  assert(hbody.machineAuthConfigured === true, 'health reports machineAuthConfigured when CARMEN_API_KEY is present');
+  assert(!JSON.stringify(hbody).includes('carmen-machine-secret'), 'health does not echo the machine key');
   assert(cbody.capabilities.denied.includes('external-action'), 'capabilities deny external actions');
   assert(cbody.capabilities.pipelineFunction === 'runDiscovery', 'capabilities name runDiscovery');
 }
@@ -165,7 +173,7 @@ console.log('--- Deep Dive machine route uses dive lens + runDiscovery ---');
     headers: { 'x-carmen-api-key': 'carmen-machine-secret' },
   }), env);
   const sbody = await state.json();
-  assert(state.status === 200 && sbody.investigationState, 'GET investigation state');
+  assert(state.status === 200 && sbody.investigationState, 'GET investigation state while isolate still holds it');
   assert(sbody.identityState, 'state includes identityState');
   assert(sbody.capabilities.readOnly === true, 'state is read-only contract');
 
@@ -174,6 +182,20 @@ console.log('--- Deep Dive machine route uses dive lens + runDiscovery ---');
   }), env);
   const rbody = await results.json();
   assert(results.status === 200 && Array.isArray(rbody.results), 'GET investigation results');
+
+  const missing = await worker.fetch(new Request('https://test/api/v1/machine/investigations/inv_not_in_store', {
+    headers: { 'x-carmen-api-key': 'carmen-machine-secret' },
+  }), env);
+  const mbody = await missing.json();
+  assert(missing.status === 404 && /not in this Worker isolate/i.test(mbody.error || ''), 'GET unknown id is 404, not a new empty investigation');
+
+  const inspected = await worker.fetch(new Request('https://test/api/v1/machine/investigations/' + dbody.investigationId, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-carmen-api-key': 'carmen-machine-secret' },
+    body: JSON.stringify({ investigationState: dbody.investigationState, investigationId: dbody.investigationId }),
+  }), env);
+  const ibody = await inspected.json();
+  assert(inspected.status === 200 && ibody.investigationState && ibody.investigationState.investigationId === dbody.investigationId, 'POST inspect reconstructs client-held state');
 }
 
 console.log('--- analyze + explicit external-action denial ---');
