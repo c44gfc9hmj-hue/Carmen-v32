@@ -1,0 +1,176 @@
+diff --git a/worker.js b/worker.js
+index 0a7dce2..9b4c158 100644
+--- a/worker.js
++++ b/worker.js
+@@ -6616,7 +6616,8 @@ function presentedMachineCredential(req) {
+   return header || bearer || test;
+ }
+ 
+-function machineCapabilities() {
++function machineCapabilities(env) {
++  const machineKeyConfigured = !!(env && String(env.CARMEN_API_KEY || '').trim());
+   return {
+     readOnly: true,
+     pipelineFunction: 'runDiscovery',
+@@ -6628,6 +6629,8 @@ function machineCapabilities() {
+     primaryDiveLenses: ['bondage', 'people', 'clothing'],
+     findMore: 'additive expansion via the next unexplored retrieval lane',
+     authentication: 'CARMEN_API_KEY via X-Carmen-Api-Key or Authorization Bearer. Never send API_KEY.',
++    machineAuthConfigured: machineKeyConfigured,
++    continuity: 'Worker memory is not durable. Echo investigationState (and investigationId) on every subsequent search, dive, analyze, or inspect call.',
+   };
+ }
+ 
+@@ -6701,7 +6704,7 @@ function machineOpenApiSpec() {
+     },
+   };
+   const security = [{ CarmenApiKey: [] }, { BearerAuth: [] }];
+-  return {
++  const spec = {
+     openapi: '3.0.3',
+     info: {
+       title: 'Carmen machine-readable investigation API',
+@@ -6786,12 +6789,40 @@ function machineOpenApiSpec() {
+           operationId: 'machineAnalyze',
+           security,
+           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+-          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' }, kind: { type: 'string' } } } } } },
+-          responses: { 200: { description: 'Analyze evidence object' } },
++          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' }, kind: { type: 'string' }, investigationId: { type: 'string' }, investigationState: { type: 'object' } } } } } },
++          responses: { 200: { description: 'Analyze evidence object' }, 401: { description: 'Unauthorized' } },
+         },
+       },
+     },
+   };
++  spec.components.schemas = spec.components.schemas || {};
++  spec.components.schemas.DiscoveryEnvelope = {
++    type: 'object',
++    properties: {
++      ok: { type: 'boolean' },
++      investigationId: { type: 'string' },
++      results: { type: 'array' },
++      identityState: { type: 'object' },
++      investigationState: { type: 'object', description: 'Pass back on the next call. Worker memory is not durable.' },
++    },
++  };
++  spec.components.schemas.MachineError = { type: 'object', properties: { error: { type: 'string' }, hint: { type: 'string' } } };
++  spec.paths['/api/v1/machine/investigations/{id}'].post = {
++    operationId: 'machineInvestigationInspect',
++    summary: 'Inspect investigation from client-held investigationState',
++    security,
++    parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
++    requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { investigationId: { type: 'string' }, investigationState: { type: 'object' } } } } } },
++    responses: { 200: { description: 'Investigation state reconstructed from the client payload' }, 404: { description: 'No state provided and not in memory' } },
++  };
++  spec.paths['/api/v1/machine/investigations/{id}/results'].post = {
++    operationId: 'machineResultsInspect',
++    security,
++    parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
++    requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { investigationId: { type: 'string' }, investigationState: { type: 'object' } } } } } },
++    responses: { 200: { description: 'Structured evidence items from investigationState' } },
++  };
++  return spec;
+ }
+ 
+ function apiUnauthorized(req, env) {
+@@ -6935,6 +6966,8 @@ async function handleCarmenApi(req, env) {
+       model: ai.model,
+       api: 'v1',
+       secretsExposed: false,
++      machineAuthConfigured: !!(env && String(env.CARMEN_API_KEY || '').trim()),
++      machineAuth: !!(env && String(env.CARMEN_API_KEY || '').trim()) ? 'CARMEN_API_KEY required' : 'CARMEN_API_KEY not configured — machine routes are open',
+       environment: describeCarmenEnvironment(env, ai),
+       browserTest: browserTestDescriptor(env),
+       testRoutes: ['/test', '/browser-test', '/api/v1/browser-test-session'],
+@@ -6946,7 +6979,7 @@ async function handleCarmenApi(req, env) {
+   }
+ 
+   if ((path === '/api/v1/openapi.json' || path === '/openapi.json') && req.method === 'GET') {
+-    return json(machineOpenApiSpec(), 200, req);
++    return json(machineOpenApiSpec(env), 200, req);
+   }
+   if ((path === '/api/v1/machine/capabilities' || path === '/api/v1/capabilities') && req.method === 'GET') {
+     return json({
+@@ -6956,13 +6989,14 @@ async function handleCarmenApi(req, env) {
+       samePipelineAsIphoneUi: true,
+       readOnly: true,
+       pipelineFunction: 'runDiscovery',
+-      capabilities: machineCapabilities(),
++      machineAuthConfigured: !!(env && String(env.CARMEN_API_KEY || '').trim()),
++      capabilities: machineCapabilities(env),
+       pipeline: machinePipeline(),
+     }, 200, req);
+   }
+ 
+   if (isDeniedExternalAction(path, '')) {
+-    return json({ error: 'External action denied', readOnly: true, capabilities: machineCapabilities() }, 403, req);
++    return json({ error: 'External action denied', readOnly: true, capabilities: machineCapabilities(env) }, 403, req);
+   }
+ 
+   let body = {};
+@@ -6982,7 +7016,7 @@ async function handleCarmenApi(req, env) {
+     } else if (leaf === 'investigations') {
+       investigationId = investigationId || parts[4] || '';
+       const sub = parts[5] || '';
+-      if (req.method === 'GET' && !sub) action = action || 'get';
++      if (!sub && (req.method === 'GET' || req.method === 'POST')) action = action || 'get';
+       else if (sub) action = action || sub;
+     }
+   }
+@@ -7031,12 +7065,23 @@ async function handleCarmenApi(req, env) {
+     }, 200, req);
+   }
+ 
+-  let state = loadInvestigation(investigationId, body.investigationState) || createInvestigationState({ ...body, investigationId: investigationId || undefined });
+-  if (body.investigationState && body.investigationState.investigationId) state = { ...createInvestigationState(), ...body.investigationState };
+-  if (!state.investigationId) state.investigationId = investigationId || newInvestigationId();
+-  if (investigationId && !state.investigationId) state.investigationId = investigationId;
+-
++  const loaded = loadInvestigation(investigationId, body.investigationState);
+   if (action === 'get' || action === 'trail' || action === 'evidence' || action === 'results') {
++    if (!loaded) {
++      return json({
++        ok: false,
++        error: 'Investigation not in this Worker isolate',
++        hint: 'Worker memory is not durable. POST this same path with the investigationState returned by search/dive, or continue via POST /api/v1/machine/search or /dive with that state.',
++        investigationId: investigationId || null,
++        action,
++      }, 404, req);
++    }
++    const state = (body.investigationState && body.investigationState.investigationId)
++      ? { ...createInvestigationState(), ...body.investigationState }
++      : loaded;
++    if (investigationId && state.investigationId && investigationId !== state.investigationId) {
++      state.investigationId = investigationId;
++    }
+     rememberInvestigation(state);
+     return json({
+       ok: true,
+@@ -7053,13 +7098,18 @@ async function handleCarmenApi(req, env) {
+       candidates: state.candidates,
+       results: action === 'results' || action === 'evidence' ? (state.lastApiResults || state.results || []) : undefined,
+       investigationState: state,
+-      capabilities: machineCapabilities(),
++      capabilities: machineCapabilities(env),
+       pipeline: machinePipeline(),
+       samePipelineAsIphoneUi: true,
+       readOnly: true,
+     }, 200, req);
+   }
+ 
++  let state = loaded || createInvestigationState({ ...body, investigationId: investigationId || undefined });
++  if (body.investigationState && body.investigationState.investigationId) state = { ...createInvestigationState(), ...body.investigationState };
++  if (!state.investigationId) state.investigationId = investigationId || newInvestigationId();
++  if (investigationId && !state.investigationId) state.investigationId = investigationId;
++
+   if (action === 'confirm-identity' || action === 'reject-identity' || action === 'reject-image' || action === 'branch' || action === 'save') {
+     state = applyInvestigationAction(state, action, body);
+     rememberInvestigation(state);
+@@ -7176,6 +7226,7 @@ function describeCarmenEnvironment(env, ai) {
+     workerBinding: 'carmen-iphone-v25',
+     assetsBound: !!(env && env.ASSETS && typeof env.ASSETS.fetch === 'function'),
+     aiConfigured: !!(ai && ai.configured),
++    machineAuthConfigured: !!(env && String(env.CARMEN_API_KEY || '').trim()),
+     testKeyRequired,
+     secretsExposed: false,
+   };
