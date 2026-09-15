@@ -53,6 +53,14 @@ jobs:
               exit 1
             fi
           fi
+          if [ -f patches/apply-v49.4-surgical.py ]; then
+            if python3 patches/apply-v49.4-surgical.py; then
+              echo "v49.4 surgical retrieval fixes applied before tests/deploy"
+            else
+              echo "v49.4 surgical patch failed" >&2
+              exit 1
+            fi
+          fi
           if [ -f patches/v47.8-video-urls.patch ] && git apply --check patches/v47.8-video-urls.patch; then
             git apply patches/v47.8-video-urls.patch
             echo "applied leftover v47.8 patch"
@@ -78,6 +86,7 @@ jobs:
           node test-v49.4.mjs
           node test-v49.4-machine-api.mjs
           node test-v49.4-identity-anchor.mjs
+          node test-v49.4-surgical.mjs
           node test-browser-test.mjs
 
       - name: Install Wrangler
