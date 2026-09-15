@@ -21,6 +21,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Apply v49.2 patch if present
+        run: |
+          if [ -f patches/apply-v49.2.sh ]; then
+            if sh patches/apply-v49.2.sh; then
+              echo "v49.2 source patch applied before tests/deploy"
+            else
+              echo "v49.2 patch already applied or tree mismatch — continuing with current tree"
+            fi
+          fi
+
       - name: Apply v48.1 patch if present
         run: |
           if [ -f patches/apply-v48.1.sh ]; then
@@ -49,8 +59,14 @@ jobs:
           node test-ai-provider.mjs
           node test-v48.1.mjs
           node test-v49.mjs
+          node test-v49.2.mjs
 
       - name: Install Wrangler
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Wrangler pkg
         run: npm install --no-save wrangler@4
 
       - name: List Worker secret names (before deploy)
