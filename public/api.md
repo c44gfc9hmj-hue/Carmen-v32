@@ -1,4 +1,5 @@
-# Carmen machine-readable API (v49.3)
+# Carmen machine-readable API (v49.4)
+
 
 ChatGPT and other assistants can drive Carmen through these routes. They exercise
 the **same** `runDiscovery` / retrieve / analyze / learn pipeline as the iPhone UI.
@@ -55,7 +56,11 @@ identity confirmation, rejections, and the trail persist.
 | find everything | POST | `/api/v1/investigations/:id/find-everything` |
 | premium accounts | POST | `/api/v1/investigations/:id/premium-accounts` |
 | find more | POST | `/api/v1/investigations/:id/find-more` |
+| dive bondage | POST | `/api/v1/investigations/:id/dive-bondage` |
+| dive people | POST | `/api/v1/investigations/:id/dive-people` |
+| dive clothing | POST | `/api/v1/investigations/:id/dive-clothing` |
 | more like this | POST | `/api/v1/investigations/:id/more-like-this` |
+
 | find different | POST | `/api/v1/investigations/:id/find-different` |
 | find similar | POST | `/api/v1/investigations/:id/find-similar` |
 | search this visual | POST | `/api/v1/investigations/:id/search-this-visual` |

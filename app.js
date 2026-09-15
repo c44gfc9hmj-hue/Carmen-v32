@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.3';
+const VERSION = '49.4';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -71,6 +71,11 @@ let lastTopicMap = null;
 let confirmedIdentity = [];
 let rejectedPeople = [];
 let inFlightController = null;
+let activeDiveLens = '';
+let lastExpansion = null;
+let lastRelatedPeople = [];
+let lastClothingEvidence = [];
+
 
 const ACCESS_LABELS = {
   DIRECTLY_RETRIEVED: 'DIRECTLY RETRIEVED',
@@ -923,7 +928,10 @@ async function discover(opts = {}) {
     if (opts.moreFromThisSource) params.set('moreFromThisSource', '1');
     if (opts.moreFromThisPerson) params.set('moreFromThisPerson', '1');
     if (opts.moreOnThisTopic) params.set('moreOnThisTopic', '1');
+    if (opts.diveLens) params.set('diveLens', opts.diveLens);
+    if (opts.mode && /^dive-/.test(opts.mode)) params.set('mode', opts.mode);
     if (confirmedIdentity.length) params.set('confirmedIdentity', confirmedIdentity.slice(0, 6).join(','));
+
     if (rejectedPeople.length) params.set('rejectedPeople', rejectedPeople.slice(0, 8).join(','));
     if ((suppressed.images || []).length) params.set('rejectedImages', suppressed.images.slice(0, 12).join(','));
     const excl = [...new Set([...(suppressed.urls || []), ...(opts.excludeUrls || [])])].filter(Boolean);
@@ -941,12 +949,24 @@ async function discover(opts = {}) {
     if (knownVids.length && (videoMore || visualMode)) params.set('knownVideos', knownVids.join('\n'));
     if ((keepSubject || opts.append) && lastResults.length) {
       try {
-        params.set('prior', JSON.stringify(lastResults.slice(0, 24).map(r => ({
-          url: r.url, title: r.title, snippet: r.snippet, domain: r.domain, source: r.source,
-          sourceClass: r.sourceClass, discoveryLane: r.discoveryLane, evidence: r.evidence,
-          host: r.host, publisher: r.publisher, creator: r.creator, originalSource: r.originalSource,
+        params.set('prior', JSON.stringify(lastResults.slice(0, 16).map(r => ({
+          url: r.url, title: r.title, snippet: String(r.snippet || '').slice(0, 220),
+          domain: r.domain, source: r.source,
+          sourceClass: r.sourceClass, discoveryLane: r.discoveryLane,
+          provenance: r.provenance, retrievalStatus: r.retrievalStatus, accessState: r.accessState,
+          textExcerpt: String(r.textExcerpt || r.snippet || '').slice(0, 280),
           subjectEvidence: r.subjectEvidence, topicEvidence: r.topicEvidence, intersection: r.intersection,
         }))));
+      } catch {}
+    }
+    if ((opts.diveLens || opts.findMore || keepSubject) && ((lastDiscoveryMeta && lastDiscoveryMeta.graphLeads) || (lastRelatedPeople && lastRelatedPeople.length))) {
+      try {
+        const leads = ((lastDiscoveryMeta && lastDiscoveryMeta.graphLeads) || []).slice(0, 10);
+        const people = (lastRelatedPeople || []).slice(0, 8).map(p => ({
+          kind: 'collaborator', name: p.name, label: p.name, role: p.role,
+          observationState: p.observationState, why: p.why, foundThrough: p.foundThrough,
+        }));
+        params.set('graphLeads', JSON.stringify(leads.concat(people)));
       } catch {}
     }
     const fetchOpts = { headers: { accept: 'application/json' } };
@@ -976,7 +996,11 @@ async function discover(opts = {}) {
     else if (Array.isArray(data.variants)) attemptedQueries = [...new Set([...(attemptedQueries || []), ...data.variants.map(v => v.q || v)])].slice(0, 48);
     if (Array.isArray(data.premiumContent)) lastPremium = data.premiumContent;
     lastRetrievalTrace = data.retrievalTrace || lastRetrievalTrace;
+    lastExpansion = data.expansion || null;
+    lastRelatedPeople = Array.isArray(data.relatedPeople) ? data.relatedPeople : lastRelatedPeople;
+    lastClothingEvidence = Array.isArray(data.clothingEvidence) ? data.clothingEvidence : lastClothingEvidence;
     originalQuery = data.query || q;
+
     if (data.classification && data.classification.subject && !keepSubject) researchSubject = data.classification.subject;
     else if (entityName) researchSubject = entityName;
     if (Array.isArray(data.lenses) && data.lenses.length) lastLenses = data.lenses;
@@ -1005,12 +1029,17 @@ async function discover(opts = {}) {
       topic: topicName,
     });
     const scale = lastCorpusScale && lastCorpusScale.label ? lastCorpusScale.label : (lastVisuals.length + ' images · ' + lastVideos.length + ' videos · ' + lastResults.length + ' sources');
-    toast(data.noNewMedia
+    renderExpansionNote(data);
+    toast(data.noNewSources
+      ? (data.noNewSourcesMessage || 'No new sources found from this angle.')
+      : (data.noNewMedia
       ? 'No new media — pivoted to the next query class.'
       : (lastResults.length || lastVisuals.length || lastVideos.length
-      ? (visualMode || visualMore || videoMore ? 'Corpus updated — ' + scale : (opts.progressive ? scale : (expanded ? 'Looked further — ' + scale : scale)))
-      : 'No public results. See diagnostics.'));
-    if (!opts.expanded && !visualMore && !visualMode && !videoMore && lastResults.length && lastResults.length < 18 && !data.noNewMedia) {
+      ? (visualMode || visualMore || videoMore ? 'Corpus updated — ' + scale : (opts.progressive ? scale : (expanded ? 'Looked further — ' + scale : (data.expansion && data.expansion.genuinelyNew ? ('Learned ' + data.expansion.genuinelyNew + ' new source' + (data.expansion.genuinelyNew === 1 ? '' : 's')) : scale))))
+      : 'No public results. See diagnostics.')));
+
+    if (!opts.expanded && !visualMore && !visualMode && !videoMore && !opts.diveLens && !opts.findMore && lastResults.length && lastResults.length < 18 && !data.noNewMedia && !data.noNewSources) {
+
       progressiveTimer = setTimeout(() => {
         if (gen !== discoverGen) return;
         discover({ expanded: true, keepSubject, entity: entityName, topic: topicName, append: true, progressive: true });
@@ -1484,7 +1513,68 @@ function renderDiveSelectChips() {
   const choice = list.find(c => c.id === id);
   $('diveQuestionWrap')?.classList.toggle('hidden', !(choice && choice.question));
 }
+function renderExpansionNote(data) {
+  const el = $('diveExpansionNote');
+  if (!el) return;
+  const exp = (data && data.expansion) || lastExpansion;
+  if (!exp) {
+    el.classList.add('hidden');
+    return;
+  }
+  if (exp.learnedSomething === false || data && data.noNewSources) {
+    el.classList.remove('hidden');
+    el.innerHTML = '<b>No new sources found from this angle.</b> Carmen did not reword the same search.';
+    return;
+  }
+  const bits = [];
+  if (exp.genuinelyNew) bits.push(exp.genuinelyNew + ' new');
+  if (exp.duplicatesRemoved) bits.push(exp.duplicatesRemoved + ' duplicates removed');
+  if (exp.queryEchoesRemoved) bits.push(exp.queryEchoesRemoved + ' query echoes removed');
+  if (exp.newEntitiesDiscovered) bits.push(exp.newEntitiesDiscovered + ' new entities');
+  if (exp.newDomainsDiscovered) bits.push(exp.newDomainsDiscovered + ' new domains');
+  if (!bits.length) {
+    el.classList.add('hidden');
+    return;
+  }
+  el.classList.remove('hidden');
+  el.innerHTML = '<b>Expansion:</b> ' + bits.join(' · ') + (exp.lens ? ' · ' + esc(String(exp.lens).replace(/^dive-/, '')) : '');
+}
+
+async function runDiveLens(lens) {
+  const entity = selectedEntity?.canonicalName || lastClassification?.subject || researchSubject || '';
+  if (!entity) return toast('Search and pick a subject first.');
+  const id = String(lens || '').toLowerCase();
+  if (!['bondage', 'people', 'clothing'].includes(id)) return;
+  activeDiveLens = id;
+  document.querySelectorAll('#divePrimaryLenses .btn').forEach(b => {
+    if (b.id === 'diveFindMoreBtn') return;
+    b.classList.toggle('active', (b.id || '').toLowerCase().includes(id));
+  });
+  const topic = id === 'people' ? (diveTopic || extraContextText(lastClassification) || '') : id;
+  if (id !== 'people') diveTopic = id;
+  if ($('diveSearchQuery') && id !== 'people') $('diveSearchQuery').value = id;
+  if ($('diveLensHint')) {
+    $('diveLensHint').textContent = id === 'bondage'
+      ? 'Investigating bondage through sources, productions, and people already found — not “' + entity + ' bondage” again.'
+      : (id === 'people'
+        ? 'Looking for people connected to this investigation. Relationships stay OBSERVED / SUPPORTED / INFERRED / UNKNOWN.'
+        : 'Looking for clothing and outfits tied to this investigation. Unverified garments stay UNKNOWN.');
+  }
+  pushTrail({ kind: 'dive-lens', label: 'Deep Dive · ' + id, entity, topic });
+  setTab('dive');
+  await discover({
+    keepSubject: true,
+    entity,
+    topic,
+    append: true,
+    diveLens: id,
+    mode: 'dive-' + id,
+    findMore: false,
+  });
+}
+
 function selectInvestigation(id) {
+
   selectedInvestigationId = id || 'everything';
   const choice = (lastInvestigationChoices || []).find(c => c && c.id === selectedInvestigationId);
   if (choice && Array.isArray(choice.paths) && choice.paths.length) {
@@ -1500,7 +1590,11 @@ function selectInvestigation(id) {
     selectedDivePathIds = (lastPaths || []).map(p => p.id);
   }
   renderDiveSelectChips();
+  if (['bondage', 'people', 'clothing'].includes(selectedInvestigationId)) {
+    runDiveLens(selectedInvestigationId);
+  }
 }
+
 function toggleDivePath(id) {
   if (id === 'all' || id === 'everything') selectInvestigation('everything');
   else selectInvestigation(id);
@@ -1883,7 +1977,14 @@ function resetInvestigationContext() {
   identityVerdict = null;
   surpriseReason = '';
   diveTab = 'overview';
+  activeDiveLens = '';
+  lastExpansion = null;
+  lastRelatedPeople = [];
+  lastClothingEvidence = [];
   if ($('diveSearchQuery')) $('diveSearchQuery').value = '';
+  if ($('diveExpansionNote')) $('diveExpansionNote').classList.add('hidden');
+  if ($('diveLensHint')) $('diveLensHint').textContent = 'One tap investigates that dimension using everything already found — not a repeat of the same search.';
+
   if ($('howHerePanel')) $('howHerePanel').classList.add('hidden');
   if ($('surpriseWhy')) $('surpriseWhy').classList.add('hidden');
   if ($('teachPanel')) $('teachPanel').classList.add('hidden');
@@ -1996,8 +2097,9 @@ function renderDiveStream() {
     return;
   }
   const why = surpriseReason ? `<div class="surprise-why">${esc(surpriseReason)}</div>` : '';
-  const exhausted = lastDiscoveryMeta && lastDiscoveryMeta.noNewMedia;
-  const head = `<div class="stream-head"><b>${n ? n + ' public ' + (n === 1 ? 'item' : 'items') : 'No items yet'}</b><span class="subtle">${esc(entity)}${ctx ? ' + ' + esc(ctx) : ''}${exhausted ? ' · reached the end of useful public results' : ''}</span></div>`;
+  const exhausted = lastDiscoveryMeta && (lastDiscoveryMeta.noNewMedia || lastDiscoveryMeta.noNewSources);
+  const head = `<div class="stream-head"><b>${n ? n + ' public ' + (n === 1 ? 'item' : 'items') : 'No items yet'}</b><span class="subtle">${esc(entity)}${ctx ? ' + ' + esc(ctx) : ''}${exhausted ? (lastDiscoveryMeta.noNewSources ? ' · no new sources from this angle' : ' · reached the end of useful public results') : ''}</span></div>`;
+
   const postHtml = results.map((r, i) => {
     const reddit = resultIsReddit(r);
     const host = r.domain || hostOf(r.url);
@@ -2038,7 +2140,19 @@ function renderDiveStream() {
         ${findMoreActions(i, 'video')}
       </article>`).join('')
     : '';
-  el.innerHTML = `<div class="card">${why}${head}${n ? '' : '<p class="muted">No public material on this tab yet. Search this investigation or switch tabs.</p>'}${imgHtml}${postHtml}${vidHtml}${exhausted ? '<p class="hint">Carmen stopped because remaining results were repeats or empty — not because the investigation is finished forever.</p>' : ''}</div>`;
+  const people = (lastRelatedPeople || []).filter(p => p && p.name && p.observationState !== 'UNKNOWN');
+  const peopleHtml = people.length && (diveTab === 'overview' || activeDiveLens === 'people')
+    ? '<div class="stream-head" style="margin-top:8px"><b>Connected people</b></div>' + people.map(p => `<div class="person-rel"><b>${esc(p.name)}</b> <span class="badge">${esc(p.role || 'person')}</span> <span class="badge ${esc((p.observationState || 'UNKNOWN').toLowerCase())}">${esc(p.observationState || 'UNKNOWN')}</span><div class="why">${esc(p.why || 'Connected through retrieved evidence.')}</div></div>`).join('')
+    : (activeDiveLens === 'people' && !people.length && (diveTab === 'overview') ? '<p class="hint">No connected people with relationship evidence yet. Co-occurrence on a search page is not a relationship.</p>' : '');
+  const clothes = (lastClothingEvidence || []).filter(c => c && (c.term || c.observationState === 'UNKNOWN'));
+  const clothHtml = activeDiveLens === 'clothing' && (diveTab === 'overview')
+    ? (clothes.some(c => c.term)
+      ? '<div class="stream-head" style="margin-top:8px"><b>Clothing / outfits</b></div>' + clothes.filter(c => c.term).map(c => `<div class="person-rel"><b>${esc(c.term)}</b> <span class="badge ${esc((c.observationState || 'UNKNOWN').toLowerCase())}">${esc(c.observationState || 'UNKNOWN')}</span><div class="why">${esc(c.why || '')}</div></div>`).join('')
+      : '<p class="hint">Clothing remains UNKNOWN — no visually verified garments yet. Carmen will not pretend an outfit was confirmed from a title keyword.</p>')
+    : '';
+
+  el.innerHTML = `<div class="card">${why}${head}${n ? '' : '<p class="muted">No public material on this tab yet. Search this investigation or switch tabs.</p>'}${peopleHtml}${clothHtml}${imgHtml}${postHtml}${vidHtml}${exhausted ? '<p class="hint">' + (lastDiscoveryMeta && lastDiscoveryMeta.noNewSources ? 'No new sources found from this angle. Carmen did not manufacture expansion by rewording the same search.' : 'Carmen stopped because remaining results were repeats or empty — not because the investigation is finished forever.') + '</p>' : ''}</div>`;
+
 }
 function renderIdentityBanner() {
   const el = $('identityBanner');
@@ -3008,6 +3122,24 @@ function wire() {
   if ($('newInvestigationBtn')) $('newInvestigationBtn').onclick = () => hardNewInvestigation();
   if ($('surpriseMeBtn')) $('surpriseMeBtn').onclick = () => surpriseMe();
   if ($('diveSearchBtn')) $('diveSearchBtn').onclick = () => investigateTopic($('diveSearchQuery')?.value || '');
+  if ($('diveBondageBtn')) $('diveBondageBtn').onclick = () => runDiveLens('bondage');
+  if ($('divePeopleBtn')) $('divePeopleBtn').onclick = () => runDiveLens('people');
+  if ($('diveClothingBtn')) $('diveClothingBtn').onclick = () => runDiveLens('clothing');
+  if ($('diveFindMoreBtn')) $('diveFindMoreBtn').onclick = () => {
+    const entity = selectedEntity?.canonicalName || lastClassification?.subject || '';
+    if (!entity && !lastResults.length) return toast('Investigate something first.');
+    pushTrail({ kind: 'find-more', label: 'Find more', entity, topic: diveTopic });
+    discover({
+      keepSubject: !!entity,
+      entity,
+      topic: diveTopic || extraContextText(lastClassification) || '',
+      expanded: true,
+      append: true,
+      findMore: true,
+      mode: 'find-more',
+    });
+  };
+
   if ($('diveSearchQuery')) $('diveSearchQuery').addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); investigateTopic($('diveSearchQuery').value); }
   });

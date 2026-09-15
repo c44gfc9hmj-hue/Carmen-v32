@@ -54,6 +54,17 @@ import {
   DETERMINISTIC_FIXTURES,
   fixtureItems,
   newInvestigationId,
+  buildLensQueries,
+  nextFindMoreLane,
+  additiveMerge,
+  extractDiscoverySeeds,
+  applyVisualIdentityFilter,
+  visualIdentityGrade,
+  expansionReport,
+  PRIMARY_DIVE_LENSES,
+  NO_NEW_SOURCES_MESSAGE,
+  primaryDiveLenses,
+  isNaiveLensQuery,
 } from './investigation-planner.js';
 
 
@@ -1844,7 +1855,11 @@ function investigationChoices(type, classification) {
   const byType = {
     person: [
       { id: 'everything', label: 'Everything', paths: ['all'] },
+      { id: 'bondage', label: 'Bondage', paths: ['context', 'projects', 'images', 'videos'] },
+      { id: 'people', label: 'People', paths: ['related', 'entities'] },
+      { id: 'clothing', label: 'Clothing', paths: ['images', 'visuals'] },
       { id: 'videos', label: 'Videos', paths: ['videos'] },
+
       { id: 'images', label: 'Images', paths: ['images'] },
       { id: 'interviews', label: 'Interviews', paths: ['interviews'] },
       { id: 'career', label: adultOn ? 'Career & credits' : 'Career & history', paths: adultOn ? ['career', 'projects', 'timeline'] : ['career', 'timeline', 'presence'] },
@@ -3596,20 +3611,24 @@ function visualCandidatesFor(ranked, classification) {
   const pri = (k) => ({ VISUAL_ENTITY_MATCH: 6, ENTITY_MATCH: 5, INTERSECTION_MATCH: 4, INTERVIEW_MATCH: 4, MEDIA_MATCH: 3, RELATIONSHIP_MATCH: 2 }[k] || 0);
   const out = [];
   const seen = new Set();
+  const subject = classification.subject || '';
   for (const r of ranked || []) {
     if (!r) continue;
     if (r.resultKind === 'AGGREGATOR' || r.resultKind === 'JUNK' || r.resultKind === 'WEAK_MATCH') continue;
     if (GENERIC_BIO_HOST_RE.test(hostOf(r.url))) continue;
+    const grade = visualIdentityGrade(r, subject, { identityFeedback: classification.identityFeedback || {} });
+    if (grade.excludeFromPrimaryCorpus || grade.collision || grade.firstNameOnly) continue;
     const imgs = [...new Set([r.image, ...(r.images || [])].filter(Boolean))];
     if (!imgs.length) continue;
     const key = (r.domain || '') + '|' + imgs[0];
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(r);
+    out.push({ ...r, identityGrade: grade.grade, identityConfidence: grade.identityConfidence || grade.grade });
   }
   out.sort((a, b) => pri(b.resultKind) - pri(a.resultKind) || (b.score || 0) - (a.score || 0));
   return out.slice(0, 6);
 }
+
 
 function entityIdFor(type, name) {
   const t = String(type || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -4813,7 +4832,11 @@ async function runDiscovery(query, opts = {}) {
     priorResults: opts.priorResults || opts.prior || [],
     identityFeedback: opts.identityFeedback || {},
     keepSubject: !!keepEntity,
+    diveLens: opts.diveLens || '',
+    attemptedQueries,
+    graphLeads: opts.graphLeads || [],
   });
+
   if (intent.knownEntity) {
     if (!keepEntity) classification.subject = intent.knownEntity.aliases[0] || intent.knownEntity.domain;
     if (intent.knownEntity.type) classification.type = intent.knownEntity.type;
@@ -4848,6 +4871,16 @@ async function runDiscovery(query, opts = {}) {
     if (attemptedQueries.some(a => String(a).toLowerCase() === t.toLowerCase())) return;
     variants.push({ q: t, why: why || '', lane: lane || '', kind: kind || 'web', sourceClass: (extra && extra.sourceClass) || '' });
   };
+  const priorCorpus = opts.priorResults || intent.priorResults || [];
+  const isDiveLens = intent.mode === 'dive-bondage' || intent.mode === 'dive-people' || intent.mode === 'dive-clothing' || !!intent.diveLens;
+  const lensQs = isDiveLens ? buildLensQueries(intent, priorCorpus, attemptedQueries, { visuals: opts.knownVisuals || [], graphLeads: opts.graphLeads || [], relatedPeople: opts.relatedPeople || [] }) : [];
+  const moreQs = intent.mode === 'find-more' ? findMoreQueries(intent, attemptedQueries, priorCorpus) : [];
+  const chainFirst = [...lensQs, ...moreQs];
+  if (chainFirst.length) {
+    for (const x of chainFirst) addVar(x.q, x.why, x.lane || intent.mode, x.kind, { sourceClass: x.sourceClass });
+  }
+  const skipNaive = chainFirst.length > 0 && priorCorpus.length > 0;
+  const allowPrimary = !(skipNaive && isNaiveLensQuery(q, intent));
   if (further && Array.isArray(opts.extraQueries) && opts.extraQueries.length) {
     for (const extra of opts.extraQueries) {
       const t = typeof extra === 'string' ? extra : extra && extra.q;
@@ -4860,11 +4893,14 @@ async function runDiscovery(query, opts = {}) {
     for (const v of buildSearchVariants(q, classification)) addVar(v.q, v.why, 'identity', 'web');
   } else {
     const adultOnPerson = (adult === 'on' || adult === 'both') && classification.type === 'person';
-    if (!adultOnPerson) addVar(q, 'primary query', 'primary', 'web');
+    if (!adultOnPerson && allowPrimary) addVar(q, 'primary query', 'primary', 'web');
     for (const lane of graph.lanes) {
-      for (const qv of lane.queries) addVar(qv, lane.why, lane.id, lane.kind || 'web');
+      for (const qv of lane.queries) {
+        if (skipNaive && isNaiveLensQuery(qv, intent)) continue;
+        addVar(qv, lane.why, lane.id, lane.kind || 'web');
+      }
     }
-    if (adultOnPerson) addVar(q, 'primary query', 'primary', 'web');
+    if (adultOnPerson && allowPrimary) addVar(q, 'primary query', 'primary', 'web');
   }
   if (expanded) {
     for (const v of buildExpandedVariants(q, classification)) addVar(v.q, v.why, 'expanded', 'web');
@@ -4889,8 +4925,19 @@ async function runDiscovery(query, opts = {}) {
   }
   {
     const plannerQs = plannerLaneQueries(topicMap, { attemptedQueries, limit: intent.findEverything || intent.premiumAccounts ? 22 : 14 });
-    for (const pq of plannerQs) addVar(pq.q, pq.why, pq.lane, pq.kind, { sourceClass: pq.sourceClass });
-    if (intent.mode === 'find-more') for (const x of findMoreQueries(intent, attemptedQueries)) addVar(x.q, x.why, x.lane, x.kind);
+    for (const pq of plannerQs) {
+      if (skipNaive && isNaiveLensQuery(pq.q, intent)) continue;
+      addVar(pq.q, pq.why, pq.lane, pq.kind, { sourceClass: pq.sourceClass });
+    }
+    if (intent.mode === 'find-more') {
+      const moreQs = findMoreQueries(intent, attemptedQueries, opts.priorResults || intent.priorResults || []);
+      for (const x of moreQs) addVar(x.q, x.why, x.lane, x.kind, { sourceClass: x.sourceClass });
+    }
+    if (intent.mode === 'dive-bondage' || intent.mode === 'dive-people' || intent.mode === 'dive-clothing' || intent.diveLens) {
+      const lensQs = buildLensQueries(intent, opts.priorResults || intent.priorResults || [], attemptedQueries, { visuals: opts.knownVisuals || [], graphLeads: opts.graphLeads || [] });
+      for (const x of lensQs) addVar(x.q, x.why, x.lane || intent.mode, x.kind, { sourceClass: x.sourceClass });
+    }
+
     if (intent.mode === 'more-like-this') for (const x of moreLikeThisQueries(intent, seedVisual || intent.seed)) addVar(x.q, x.why, x.lane, x.kind);
     if (intent.mode === 'find-different') for (const x of findDifferentQueries(intent, { excludeHosts })) addVar(x.q, x.why, x.lane, x.kind);
     if (intent.mode === 'find-similar') for (const x of findSimilarQueries(intent, seedVisual || intent.seed)) addVar(x.q, x.why, x.lane, x.kind);
@@ -5231,9 +5278,57 @@ async function runDiscovery(query, opts = {}) {
     ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
     if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
   }
+  let additive = {
+    merged: ranked,
+    newItems: ranked,
+    genuinelyNew: ranked.length,
+    duplicatesRemoved: 0,
+    queryEchoesRemoved: 0,
+    mirrorsRemoved: 0,
+    nearDuplicatesRemoved: 0,
+    exhausted: false,
+    learnedSomething: ranked.length > 0,
+    message: '',
+    rejected: [],
+  };
   if (Array.isArray(opts.priorResults) && opts.priorResults.length) {
-    ranked = mergeInvestigationEvidence(opts.priorResults, ranked);
+    additive = additiveMerge(opts.priorResults, ranked, {
+      intent,
+      query: q,
+      foundThrough: intent.mode || intent.diveLens || 'search',
+      parent: (opts.priorResults[0] && opts.priorResults[0].url) || null,
+      relatedTo: classification.subject,
+    });
+    ranked = additive.merged;
   }
+
+  const lensMode = intent.mode === 'dive-bondage' || intent.mode === 'dive-people' || intent.mode === 'dive-clothing' || intent.mode === 'find-more' || !!intent.diveLens;
+  if (!skipLive && lensMode && additive.genuinelyNew === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 3) {
+    const nextLane = nextFindMoreLane(intent, ranked, variants.map(v => v.q).concat(attemptedQueries), { visuals: visualHits });
+    diagnostics.AdditiveExpansion = {
+      reason: 'this angle added no new evidence — pivoting to the next unexplored retrieval lane rather than rewriting the same query',
+      lane: nextLane.lane,
+      exhausted: !!nextLane.exhausted,
+    };
+    if (!nextLane.exhausted) {
+      for (const x of (nextLane.queries || []).slice(0, 3)) {
+        if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
+        addVar(x.q, x.why, x.lane, x.kind);
+        await Promise.all([ddg(x.q, results, seen, diagnostics), bing(x.q, results, seen, diagnostics)]);
+      }
+      ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification);
+      if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
+      if (opts.priorResults && opts.priorResults.length) {
+        additive = additiveMerge(opts.priorResults, ranked, { intent, query: q, foundThrough: nextLane.lane || intent.mode });
+        ranked = additive.merged;
+      }
+    } else {
+      additive.exhausted = true;
+      additive.message = NO_NEW_SOURCES_MESSAGE;
+    }
+  }
+
+
   ranked = applyExclusions(ranked, { excludeUrls, excludeHosts });
   const knownImageSet = new Set(knownMedia.map(k => visualDedupeKey(k)).filter(Boolean));
   const knownVidSet = new Set(knownVideoIds.map(k => String(k).toLowerCase()).filter(Boolean));
@@ -5254,6 +5349,11 @@ async function runDiscovery(query, opts = {}) {
     if (key && knownImageSet.has(key)) { duplicateMediaRejected++; return false; }
     return true;
   });
+  const visualIdentity = applyVisualIdentityFilter(visualCorpus, classification.subject, { identityFeedback: intent.identityFeedback });
+  visualCorpus = visualIdentity.kept.concat(visualIdentity.dropped.map(im => ({ ...im, primaryCorpus: false })));
+  const primaryVisuals = visualIdentity.kept;
+  const wrongPersonVisuals = visualIdentity.dropped.filter(im => im.identityCollision || im.identityGrade === 'unverified' && im.identityCollision);
+
   let videoCorpus = collectDiveVideos(ranked.filter(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'), ranked, classification);
   const beforeVid = videoCorpus.length;
   videoCorpus = videoCorpus.filter(v => {
@@ -5288,7 +5388,24 @@ async function runDiscovery(query, opts = {}) {
     b.results = n;
     b.status = n > 0 ? 'ran' : (diagnosis.status === 'source_inaccessible' ? 'blocked' : 'thin');
   }
+  const discoverySeeds = extractDiscoverySeeds(ranked, intent, { visuals: visualCorpus, graphLeads });
+  const expansion = expansionReport(additive, {
+    totalResults: ranked.length,
+    lens: intent.diveLens || intent.mode || '',
+    lane: (diagnostics.AdditiveExpansion && diagnostics.AdditiveExpansion.lane) || intent.mode,
+    newEntitiesDiscovered: (discoverySeeds.people || []).length + (discoverySeeds.productions || []).length,
+    newDomainsDiscovered: (discoverySeeds.domains || []).filter(d => !(opts.priorResults || []).some(r => (r.domain || hostOf(r.url)) === d)).length,
+    wrongPersonCandidates: (visualIdentity.dropped || []).length,
+    identityConfidence: identityCluster.ambiguous ? 'low' : (identityCluster.userConfirmed ? 'verified' : 'supported'),
+    sourceQuality: diversity,
+  });
   let warning = ranked.length || visualCorpus.length ? undefined : 'No public-web results were returned. Provider diagnostics are included for troubleshooting.';
+  if (additive.exhausted && lensMode) {
+
+    const note = NO_NEW_SOURCES_MESSAGE;
+    warning = warning ? warning + ' ' + note : note;
+  }
+
   if (diagnosis.status !== 'ok' && diagnosis.status !== 'thin_corpus') {
     const note = 'Retrieval status: ' + diagnosis.label + '. This is not automatically a thin public corpus.';
     warning = warning ? warning + ' ' + note : note;
@@ -5377,14 +5494,28 @@ async function runDiscovery(query, opts = {}) {
     duplicateMediaRejected,
     premiumContent,
     noNewMedia,
+    noNewSources: !!(additive.exhausted && lensMode),
+    noNewSourcesMessage: (additive.exhausted && lensMode) ? NO_NEW_SOURCES_MESSAGE : '',
+    expansion,
+    discoverySeeds,
+    relatedPeople: discoverySeeds.people,
+    clothingEvidence: discoverySeeds.clothing,
+    primaryVisuals,
+    visualIdentityDropped: visualIdentity.dropped || [],
+    primaryDiveLenses: primaryDiveLenses(),
     retrievalTrace: {
+
       queryClassesAttempted: variants.length,
       sourceClassesReached: sourceClassesReached.length,
       providerFailures: pivot.failures.length,
       successfulPivots: (diagnostics.ProviderPivot ? 1 : 0),
       duplicateMediaRejected,
-      newEntities: (graphLeads || []).length,
+      newEntities: (graphLeads || []).length + ((discoverySeeds.people || []).length),
+      genuinelyNew: additive.genuinelyNew || 0,
+      duplicatesRemoved: (additive.duplicatesRemoved || 0) + (additive.nearDuplicatesRemoved || 0),
+      queryEchoesRemoved: additive.queryEchoesRemoved || 0,
     },
+
     researchMetrics: buildResearchMetrics(ranked, diagnostics, {
       queryClassCount: variants.length,
       sourceClassesReached: sourceClassesReached.length,
@@ -5472,6 +5603,12 @@ async function searchWeb(req) {
   const moreFromThisSource = u.searchParams.get('moreFromThisSource') === '1' || intentMode === 'more-from-this-source';
   const moreFromThisPerson = u.searchParams.get('moreFromThisPerson') === '1' || intentMode === 'more-from-this-person';
   const moreOnThisTopic = u.searchParams.get('moreOnThisTopic') === '1' || intentMode === 'more-on-this-topic';
+  const diveLens = (u.searchParams.get('diveLens') || '').trim().toLowerCase();
+  const resolvedMode = intentMode
+    || (diveLens === 'bondage' || u.searchParams.get('diveBondage') === '1' ? 'dive-bondage' : '')
+    || (diveLens === 'people' || u.searchParams.get('divePeople') === '1' ? 'dive-people' : '')
+    || (diveLens === 'clothing' || u.searchParams.get('diveClothing') === '1' ? 'dive-clothing' : '');
+
   const confirmed = (u.searchParams.get('confirmedIdentity') || '').split(',').map(x => x.trim()).filter(Boolean);
   const rejectedPeople = (u.searchParams.get('rejectedPeople') || '').split(',').map(x => x.trim()).filter(Boolean);
   const rejectedImages = (u.searchParams.get('rejectedImages') || '').split(',').map(x => x.trim()).filter(Boolean);
@@ -5485,15 +5622,25 @@ async function searchWeb(req) {
       if (Array.isArray(parsed)) priorResults = parsed.slice(0, 40);
     }
   } catch {}
+  let graphLeads = [];
+  try {
+    const raw = u.searchParams.get('graphLeads');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) graphLeads = parsed.slice(0, 16);
+    }
+  } catch {}
   if (!q) return json({ results: [], query: '', count: 0, providers: {}, classification: applyResearchFilter(classifyQuery(''), adult, ''), expanded: false, adultContent: adult, depth: normalizeDepth(depth), researchMetrics: buildResearchMetrics([], {}) }, 200, req);
   resetFetchBudget();
   const discovery = await runDiscovery(q, {
     hint, enrich: true, expanded, visualMore, visualMode, visualOffset, videoMore,
     excludeUrls, excludeHosts, seedVisual, adult, depth, attemptedQueries, knownMedia, knownVideoIds,
-    entity, topic, findEverything, premiumAccounts, mode: intentMode, findMore, moreLikeThis, findDifferent,
+    entity, topic, findEverything, premiumAccounts, mode: resolvedMode, findMore, moreLikeThis, findDifferent,
     findSimilar, searchThisVisual, moreFromThisSource, moreFromThisPerson, moreOnThisTopic,
     identityFeedback: { confirmed, rejectedPeople, rejectedHosts: excludeHosts, rejectedImages },
     priorResults,
+    diveLens: diveLens || (resolvedMode.startsWith('dive-') ? resolvedMode.replace(/^dive-/, '') : ''),
+    graphLeads,
     fixture,
     diagnostic,
   });
@@ -6488,6 +6635,14 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
     identityFeedback: state.identityFeedback,
     warning: discovery.warning,
     fixture: discovery.fixture || null,
+    expansion: discovery.expansion,
+    relatedPeople: discovery.relatedPeople,
+    clothingEvidence: discovery.clothingEvidence,
+    noNewSources: discovery.noNewSources,
+    noNewSourcesMessage: discovery.noNewSourcesMessage,
+    discoverySeeds: discovery.discoverySeeds,
+    primaryVisuals: discovery.primaryVisuals,
+    primaryDiveLenses: discovery.primaryDiveLenses,
     diagnostic: extra.diagnostic ? { variants: discovery.variants, budget: discovery.budget, retrievalTrace: discovery.retrievalTrace, providerStatuses: discovery.providerStatuses } : undefined,
     investigationState: state,
     samePipelineAsIphoneUi: true,
@@ -6544,6 +6699,9 @@ async function handleCarmenApi(req, env) {
     visual: 'search-this-visual',
     confirm: 'confirm-identity',
     reject: 'reject-identity',
+    bondage: 'dive-bondage',
+    people: 'dive-people',
+    clothing: 'dive-clothing',
   };
   if (actionAlias[action]) action = actionAlias[action];
   if (!action && req.method === 'POST' && (path === '/api/v1' || path === '/api/v1/search' || path === '/search')) action = body.action || 'search';
@@ -6621,6 +6779,9 @@ async function handleCarmenApi(req, env) {
     'more-from-this-source': 'more-from-this-source',
     'more-from-this-person': 'more-from-this-person',
     'more-on-this-topic': 'more-on-this-topic',
+    'dive-bondage': 'dive-bondage',
+    'dive-people': 'dive-people',
+    'dive-clothing': 'dive-clothing',
     'confirm-identity': '',
     'reject-identity': 'find-different',
     'reject-image': 'find-different',
@@ -6675,11 +6836,15 @@ async function handleCarmenApi(req, env) {
     moreFromThisSource: action === 'more-from-this-source',
     moreFromThisPerson: action === 'more-from-this-person',
     moreOnThisTopic: action === 'more-on-this-topic',
+    diveLens: action === 'dive-bondage' ? 'bondage' : (action === 'dive-people' ? 'people' : (action === 'dive-clothing' ? 'clothing' : (body.diveLens || ''))),
     seedVisual: seed,
+
     excludeUrls: [].concat(body.excludeUrls || [], state.identityFeedback.rejectedUrls || [], state.identityFeedback.rejectedImages || []),
     excludeHosts: [].concat(body.excludeHosts || [], state.identityFeedback.rejectedHosts || []),
     identityFeedback: state.identityFeedback,
     priorResults: body.priorResults || [],
+    graphLeads: body.graphLeads || [],
+    attemptedQueries: body.attemptedQueries || [],
     fixture,
     diagnostic,
     enrich: !fixture,
@@ -6707,7 +6872,7 @@ export default {
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
         api: { docs: '/api', version: 'v1', samePipelineAsIphoneUi: true },
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);

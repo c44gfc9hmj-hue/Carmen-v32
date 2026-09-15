@@ -1,14 +1,19 @@
-// Carmen v49.3 — investigation / topic-map planner + ChatGPT-access helpers.
+// Carmen v49.4 — investigation / topic-map planner + ChatGPT-access helpers.
 // Query-centric retrieval is the fallback. The planner independently
 // establishes subject evidence, topic evidence, and intersection evidence,
 // then opens source-class lanes (especially adult) instead of stuffing
 // tokens into one search string.
 //
+// v49.4: Deep Dive is three investigation lenses (Bondage / People / Clothing)
+// that expand THROUGH already-discovered evidence. Additive merge refuses
+// query clones, mirrors, and near-duplicates. Find More picks the next
+// unexplored retrieval lane. Visual identity stays separate from text hits.
+//
 // This module is self-contained: no import from worker.js (avoids cycles).
 // worker.js imports it. The machine-readable API uses these same functions.
 
-export const PLANNER_VERSION = '49.3';
-export const PLANNER_BUILD = '49.3-chatgpt-access';
+export const PLANNER_VERSION = '49.4';
+export const PLANNER_BUILD = '49.4-deep-dive-lenses';
 
 function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
@@ -128,7 +133,17 @@ export const GENERIC_INDEX_HOSTS = [
 
 export const TOPIC_VOCAB = {
   bondage: ['bondage', 'bdsm', 'fetish', 'kink', 'restrained', 'bound', 'rope bondage', 'metal bondage', 'gag', 'gagged', 'cinch', 'hogtie'],
+  clothing: ['outfit', 'garment', 'dress', 'heels', 'boots', 'collar', 'corset', 'latex', 'leather', 'lingerie', 'harness', 'stockings'],
 };
+
+export const PRIMARY_DIVE_LENSES = [
+  { id: 'bondage', label: 'Bondage', mode: 'dive-bondage', topic: 'bondage' },
+  { id: 'people', label: 'People', mode: 'dive-people', topic: 'people' },
+  { id: 'clothing', label: 'Clothing', mode: 'dive-clothing', topic: 'clothing' },
+];
+
+export const NO_NEW_SOURCES_MESSAGE = 'No new sources found from this angle.';
+
 
 export function topicTerms(topic) {
   const t = norm(topic);
@@ -157,6 +172,10 @@ const NEW_INVESTIGATION_RE = /\b(new investigation|start over|clear investigatio
 const CONFIRM_IDENTITY_RE = /\b(that(?:'|’)s the one|this is the (?:person|one)|positive identity|confirm(?:ed)? identity)\b/i;
 const REJECT_IDENTITY_RE = /\b(not this person|not this one|wrong person|negative identity)\b/i;
 const REJECT_IMAGE_RE = /\b(not this image|wrong image|reject(?:ed)? image)\b/i;
+const DIVE_BONDAGE_RE = /\b(dive[- ]?bondage|investigate bondage|bondage (?:path|lens|deep dive))\b/i;
+const DIVE_PEOPLE_RE = /\b(dive[- ]?people|investigate people|people (?:path|lens|deep dive)|related people|collaborators?)\b/i;
+const DIVE_CLOTHING_RE = /\b(dive[- ]?clothing|investigate clothing|clothing (?:path|lens|deep dive)|outfits?|garments?)\b/i;
+
 
 export function parseInvestigationIntent(query, opts = {}) {
   const raw = String(query || '').trim();
@@ -167,7 +186,11 @@ export function parseInvestigationIntent(query, opts = {}) {
 
   let mode = 'search';
   if (opts.mode) mode = String(opts.mode);
+  else if (opts.diveLens === 'bondage' || DIVE_BONDAGE_RE.test(raw)) mode = 'dive-bondage';
+  else if (opts.diveLens === 'people' || DIVE_PEOPLE_RE.test(raw)) mode = 'dive-people';
+  else if (opts.diveLens === 'clothing' || DIVE_CLOTHING_RE.test(raw)) mode = 'dive-clothing';
   else if (FIND_EVERYTHING_RE.test(raw) || opts.findEverything) mode = 'find-everything';
+
   else if (PREMIUM_RE.test(raw) || opts.premiumAccounts) mode = 'premium-accounts';
   else if (SEARCH_VISUAL_RE.test(raw) || opts.visualMode === 'searchvisual' || opts.searchThisVisual) mode = 'search-this-visual';
   else if (FIND_SIMILAR_RE.test(raw) || opts.visualMode === 'similar' || opts.findSimilar) mode = 'find-similar';
@@ -206,6 +229,10 @@ export function parseInvestigationIntent(query, opts = {}) {
   if (PREMIUM_RE.test(raw) && mode !== 'premium-accounts') {
     if (!topic) topic = 'premium accounts';
   }
+  if (mode === 'dive-bondage' && !topic) topic = 'bondage';
+  if (mode === 'dive-clothing' && !topic) topic = 'clothing';
+  // People is a lens, not a stuffed topic keyword — keep any existing topic.
+
 
   const findEverything = mode === 'find-everything' || FIND_EVERYTHING_RE.test(raw) || opts.findEverything === true;
   const premiumAccounts = mode === 'premium-accounts' || PREMIUM_RE.test(raw) || opts.premiumAccounts === true;
@@ -229,6 +256,10 @@ export function parseInvestigationIntent(query, opts = {}) {
     seed: opts.seedVisual || opts.seed || null,
     excludeUrls: [].concat(opts.excludeUrls || []),
     excludeHosts: [].concat(opts.excludeHosts || []),
+    diveLens: mode === 'dive-bondage' ? 'bondage' : (mode === 'dive-people' ? 'people' : (mode === 'dive-clothing' ? 'clothing' : (opts.diveLens || ''))),
+    attemptedQueries: [].concat(opts.attemptedQueries || opts.attempted || []),
+    discoveredEntities: Array.isArray(opts.discoveredEntities) ? opts.discoveredEntities : [],
+    graphLeads: Array.isArray(opts.graphLeads) ? opts.graphLeads : [],
   };
 }
 
@@ -327,11 +358,14 @@ export function buildTopicMap(intent, classification) {
   }
 
   if (topic) {
-    add('intersection', 'subject × topic intersection', 'intersection', [
-      qSub + ' ' + topic,
-      qSub + ' "' + topic + '"',
-      qSub + ' ' + topic + ' (scene OR photoset OR interview OR feature)',
-    ], 8);
+    const diveActive = !!(intent && (intent.diveLens || /^(dive-bondage|dive-people|dive-clothing)$/.test(intent.mode || '')));
+    add('intersection', 'subject × topic intersection', 'intersection', diveActive
+      ? [qSub + ' ' + topic + ' (scene OR photoset OR interview OR feature)']
+      : [
+        qSub + ' ' + topic,
+        qSub + ' "' + topic + '"',
+        qSub + ' ' + topic + ' (scene OR photoset OR interview OR feature)',
+      ], 8);
     add('topic-only', 'topic evidence (not counted as intersection)', 'topic', [
       topic + ' (glossary OR meaning OR studio OR publisher)',
     ], 40);
@@ -408,6 +442,24 @@ export function buildTopicMap(intent, classification) {
       qSub + ' ' + topic + ' (article OR feature OR glossary OR production)',
     ], 7);
   }
+
+  if (intent && (intent.mode === 'dive-bondage' || intent.diveLens === 'bondage')) {
+    add('dive-bondage-chain', 'bondage investigation via discovered evidence', 'fetish-publisher', [
+      qSub + ' (photoset OR scene OR feature) (studio OR publisher OR production)',
+      qSub + ' (metal OR rope OR cinch OR hogtie OR restrained) (credits OR stills)',
+    ], 5);
+  }
+  if (intent && (intent.mode === 'dive-people' || intent.diveLens === 'people')) {
+    add('dive-people-chain', 'people connected to this investigation', 'collaborators', [
+      qSub + ' (with OR featuring OR "co-star" OR photographer OR director OR producer)',
+    ], 5);
+  }
+  if (intent && (intent.mode === 'dive-clothing' || intent.diveLens === 'clothing')) {
+    add('dive-clothing-chain', 'clothing/outfit visual relationships', 'images-galleries', [
+      qSub + ' (outfit OR garment OR "wearing" OR wardrobe OR lookbook OR stills)',
+    ], 5);
+  }
+
 
   branches.sort((a, b) => a.priority - b.priority);
   const seenQ = new Set();
@@ -709,10 +761,807 @@ export function mergeInvestigationEvidence(prior, next) {
     const key = canonicalizeUrl(r.url);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    out.push({ ...r, url: r.url });
+    out.push({ ...r, url: r.url, canonicalUrl: key });
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Deep Dive 3-path retrieval: Bondage / People / Clothing
+// Expand THROUGH discovered evidence. Never reword the same search.
+// ---------------------------------------------------------------------------
+const GENERIC_NAME_STOP = new Set([
+  'the', 'and', 'with', 'from', 'this', 'that', 'official', 'profile', 'search',
+  'video', 'videos', 'photo', 'photos', 'image', 'images', 'gallery', 'model',
+  'performer', 'porn', 'xxx', 'free', 'watch', 'site', 'home', 'page', 'wiki',
+  'bondage', 'bdsm', 'fetish', 'kink', 'interview', 'photoset', 'scene',
+  'photographed', 'directed', 'produced', 'published', 'featuring', 'starring',
+  'credits', 'studio', 'feature', 'presents', 'alongside', 'opposite',
+]);
+
+const PERSON_NAME_CAPTURE = '([A-Z][a-z]+(?:\\s+(?:de|da|van|von|di|le|la|del))?\\s+[A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?)';
+
+const RELATIONAL_PEOPLE_PATTERNS = [
+  { re: new RegExp('\\b(?:with|featuring|alongside|co-?starring|opposite)\\s+' + PERSON_NAME_CAPTURE, 'g'), role: 'collaborator', grade: 'OBSERVED' },
+  { re: new RegExp('\\bphotographed by\\s+' + PERSON_NAME_CAPTURE, 'gi'), role: 'photographer', grade: 'OBSERVED' },
+  { re: new RegExp('\\b(?:photo(?:graphy)? by|photos by)\\s+' + PERSON_NAME_CAPTURE, 'gi'), role: 'photographer', grade: 'OBSERVED' },
+  { re: new RegExp('\\bdirected by\\s+' + PERSON_NAME_CAPTURE, 'gi'), role: 'director', grade: 'OBSERVED' },
+  { re: new RegExp('\\bproduced by\\s+' + PERSON_NAME_CAPTURE, 'gi'), role: 'producer', grade: 'OBSERVED' },
+  { re: new RegExp('\\bpublished by\\s+' + PERSON_NAME_CAPTURE, 'gi'), role: 'publisher', grade: 'OBSERVED' },
+  { re: new RegExp('\\b(?:studio|for)\\s+' + PERSON_NAME_CAPTURE, 'g'), role: 'studio', grade: 'SUPPORTED' },
+];
+
+const CLOTHING_TERM_RE = /\b(dress|skirt|blouse|shirt|heels|boots|collar|cinch(?:\s+straps?)?|straps?|harness|corset|latex|leather|stockings?|outfit|lingerie|bodysuit|leotard|gloves?|jacket|coat|uniform|bikini|catsuit|hoodie|jeans|suit|gag|hood|cincher|ballet\s+boots?|metal\s+collar|rope)\b/ig;
+
+const MIRROR_HOST_RE = /(^|\.)(web\.archive\.org|archive\.org|archive\.is|archive\.ph|archive\.today|megalodon\.jp)$/i;
+const SEARCH_WRAPPER_HOST_RE = /(google|bing|duckduckgo|yahoo|startpage|mojeek|pinterest)\./i;
+
+export function originalFromMirror(url) {
+  const s = String(url || '');
+  const wb = s.match(/web\.archive\.org\/web\/\d+(?:id_|if_)?\/(https?:\/\/\S+)/i);
+  if (wb) return canonicalizeUrl(wb[1]);
+  const ai = s.match(/archive\.(?:is|ph|today)\/(?:[a-z0-9]+\/)?(https?:\/\/\S+)/i);
+  if (ai) return canonicalizeUrl(ai[1]);
+  return canonicalizeUrl(s);
+}
+
+export function isMirrorUrl(url) {
+  const host = hostOf(url);
+  return MIRROR_HOST_RE.test(host);
+}
+
+export function nearDuplicateKey(item) {
+  const url = String((item && (item.url || item.pageUrl)) || '');
+  const orig = originalFromMirror(url);
+  try {
+    const u = new URL(orig);
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    return host + path;
+  } catch {
+    return orig || url;
+  }
+}
+
+export function isQueryClone(item, query, intent) {
+  const title = String((item && item.title) || '');
+  const url = String((item && item.url) || '');
+  const host = hostOf(url);
+  if (SEARCH_WRAPPER_HOST_RE.test(host) && /[?&]q=/.test(url)) return true;
+  if (isRedditSearchPage(url, title)) return true;
+  if (isQueryEchoTitle(title, query, { subject: (intent && intent.subject) || '' })) return true;
+  if (intent && intent.subject && intent.topic) {
+    if (isQueryEchoTitle(title, intent.subject + ' ' + intent.topic, { subject: intent.subject })) return true;
+  }
+  return false;
+}
+
+function titleHostKey(item) {
+  const t = norm(item && item.title);
+  const h = String((item && (item.domain || hostOf(item && item.url))) || '').replace(/^www\./, '').toLowerCase();
+  return t && h ? t + '|' + h : '';
+}
+
+export function classifyNovelty(item, seen, query, intent) {
+  if (!item) return { novel: false, reason: 'empty' };
+  const canon = canonicalizeUrl(item.url || item.pageUrl || '');
+  const orig = originalFromMirror(item.url || item.pageUrl || '');
+  const near = nearDuplicateKey(item);
+  const th = titleHostKey(item);
+  if (canon && seen.urls && seen.urls.has(canon)) return { novel: false, reason: 'duplicate' };
+  if (orig && seen.urls && seen.urls.has(orig)) return { novel: false, reason: 'mirror' };
+  if (near && seen.near && seen.near.has(near)) return { novel: false, reason: 'near-duplicate' };
+  if (th && seen.titles && seen.titles.has(th)) return { novel: false, reason: 'same-title-same-host' };
+  if (isQueryClone(item, query, intent)) return { novel: false, reason: 'query-echo' };
+  return { novel: true, reason: 'new' };
+}
+
+export function buildSeenIndex(results) {
+  const urls = new Set();
+  const near = new Set();
+  const titles = new Set();
+  const hosts = new Set();
+  const entities = new Set();
+  for (const r of results || []) {
+    const canon = canonicalizeUrl(r.url || r.pageUrl || '');
+    const orig = originalFromMirror(r.url || r.pageUrl || '');
+    if (canon) urls.add(canon);
+    if (orig) urls.add(orig);
+    const n = nearDuplicateKey(r);
+    if (n) near.add(n);
+    const th = titleHostKey(r);
+    if (th) titles.add(th);
+    const host = String(r.domain || hostOf(r.url) || '').replace(/^www\./, '').toLowerCase();
+    if (host) hosts.add(host);
+    if (r.canonicalName) entities.add(norm(r.canonicalName));
+    if (r.label) entities.add(norm(r.label));
+  }
+  return { urls, near, titles, hosts, entities };
+}
+
+export function additiveMerge(prior, next, opts = {}) {
+  const intent = opts.intent || {};
+  const query = opts.query || [intent.subject, intent.topic].filter(Boolean).join(' ');
+  const seen = buildSeenIndex(prior);
+  const kept = [];
+  const rejected = [];
+  let duplicatesRemoved = 0;
+  let queryEchoesRemoved = 0;
+  let mirrorsRemoved = 0;
+  let nearDuplicatesRemoved = 0;
+  for (const r of next || []) {
+    if (!r || !r.url) continue;
+    const verdict = classifyNovelty(r, seen, query, intent);
+    if (!verdict.novel) {
+      rejected.push({ url: r.url, title: r.title, reason: verdict.reason });
+      if (verdict.reason === 'query-echo') queryEchoesRemoved++;
+      else if (verdict.reason === 'mirror') mirrorsRemoved++;
+      else if (verdict.reason === 'near-duplicate' || verdict.reason === 'same-title-same-host') nearDuplicatesRemoved++;
+      else duplicatesRemoved++;
+      continue;
+    }
+    const canon = canonicalizeUrl(r.url);
+    const orig = originalFromMirror(r.url);
+    const near = nearDuplicateKey(r);
+    const th = titleHostKey(r);
+    if (canon) seen.urls.add(canon);
+    if (orig) seen.urls.add(orig);
+    if (near) seen.near.add(near);
+    if (th) seen.titles.add(th);
+    kept.push({
+      ...r,
+      canonicalUrl: canon,
+      foundThrough: r.foundThrough || opts.foundThrough || intent.mode || 'search',
+      parent: r.parent || opts.parent || null,
+      derivedFrom: r.derivedFrom || opts.derivedFrom || null,
+      relatedTo: r.relatedTo || opts.relatedTo || intent.subject || null,
+      sameSubject: intent.subject || '',
+      sameSource: r.sameSource || r.domain || hostOf(r.url),
+      similarTo: r.similarTo || null,
+      novelty: 'new',
+    });
+  }
+  const genuinelyNew = kept.length;
+  const merged = mergeInvestigationEvidence(prior, kept);
+  const exhausted = genuinelyNew === 0;
+  return {
+    merged,
+    newItems: kept,
+    rejected,
+    genuinelyNew,
+    duplicatesRemoved,
+    queryEchoesRemoved,
+    mirrorsRemoved,
+    nearDuplicatesRemoved,
+    totalNext: (next || []).length,
+    totalMerged: merged.length,
+    exhausted,
+    message: exhausted ? NO_NEW_SOURCES_MESSAGE : '',
+    learnedSomething: genuinelyNew > 0,
+  };
+}
+
+function looksLikePersonName(s) {
+  const t = String(s || '').trim();
+  if (!t || t.length < 4 || t.length > 48) return false;
+  const parts = t.split(/\s+/);
+  if (parts.length < 2 || parts.length > 4) return false;
+  if (parts.some(p => GENERIC_NAME_STOP.has(p.toLowerCase()))) return false;
+  if (parts.some(p => !/^[A-Z][a-zA-Z'’-]+$/.test(p) && !/^(de|da|van|von|di|le|la|del)$/i.test(p))) return false;
+  return parts.filter(p => /^[A-Z]/.test(p)).length >= 2;
+}
+
+function subjectNameSet(subject) {
+  return new Set(tokens(subject).filter(t => t.length > 1));
+}
+
+export function extractRelatedPeople(results, subject, opts = {}) {
+  const subj = String(subject || '').trim();
+  const subjToks = subjectNameSet(subj);
+  const out = [];
+  const seen = new Set();
+  const add = (name, role, grade, source, why) => {
+    let clean = String(name || '').replace(/\s+/g, ' ').trim();
+    const bits = clean.split(/\s+/);
+    while (bits.length > 2 && GENERIC_NAME_STOP.has(bits[bits.length - 1].toLowerCase())) bits.pop();
+    clean = bits.join(' ');
+    if (!looksLikePersonName(clean)) return;
+    if (norm(clean) === norm(subj)) return;
+    const parts = tokens(clean);
+    // Same first+last as subject is the subject, not a collaborator.
+    if (subjToks.size && parts.every(p => subjToks.has(p))) return;
+    const key = norm(clean) + '|' + role;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      name: clean,
+      role,
+      observationState: grade,
+      why,
+      foundThrough: source && source.url,
+      parent: source && source.url,
+      derivedFrom: source && source.url,
+      relatedTo: subj,
+      sameSubject: subj,
+      evidenceUrl: source && source.url,
+      evidenceTitle: source && source.title,
+    });
+  };
+  for (const r of results || []) {
+    const retrieved = r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED' || r.accessState === 'DIRECTLY_RETRIEVED';
+    const searchPage = isRedditSearchPage(r.url, r.title) || isQueryEchoTitle(r.title, opts.query || subj, { subject: subj });
+    const text = String((r.textExcerpt || '') + ' ' + (retrieved ? (r.snippet || '') : '')).slice(0, 6000);
+    const titleSnip = String((r.title || '') + ' ' + (r.snippet || ''));
+    if (searchPage) {
+      // Co-occurrence on a search page is UNKNOWN — never a relationship.
+      continue;
+    }
+    for (const pat of RELATIONAL_PEOPLE_PATTERNS) {
+      pat.re.lastIndex = 0;
+      const pool = retrieved ? (text + ' ' + titleSnip) : titleSnip;
+      let m;
+      while ((m = pat.re.exec(pool))) {
+        const grade = retrieved && text.includes(m[1]) ? 'OBSERVED' : (retrieved ? 'OBSERVED' : 'SUPPORTED');
+        add(m[1], pat.role, grade, r, pat.role + ' language on “' + (r.title || r.url) + '”');
+      }
+    }
+    // Names that merely share a search-result title with the subject stay UNKNOWN and are not added.
+  }
+  return out.slice(0, 12);
+}
+
+export function extractStudiosAndDomains(results, subject) {
+  const out = [];
+  const seen = new Set();
+  const add = (label, kind, grade, source, domain) => {
+    const key = norm(label || domain);
+    if (!key || seen.has(key)) return;
+    if (GENERIC_INDEX_HOSTS.some(g => (domain || '').endsWith(g))) return;
+    seen.add(key);
+    out.push({
+      label: label || domain,
+      kind,
+      observationState: grade,
+      domain: domain || '',
+      foundThrough: source && source.url,
+      parent: source && source.url,
+      relatedTo: subject,
+      why: kind + ' observed via ' + (source && (source.domain || hostOf(source.url)) || 'source'),
+    });
+  };
+  for (const r of results || []) {
+    const host = String(r.domain || hostOf(r.url) || '').replace(/^www\./, '');
+    if (!host) continue;
+    const adultHit = ADULT_SOURCE_CLASSES.some(c => (c.seeds || []).some(s => host === s || host.endsWith('.' + s)));
+    const retrieved = r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED';
+    if (adultHit) add(host, 'domain', retrieved ? 'OBSERVED' : 'SUPPORTED', r, host);
+    else if (!SEARCH_WRAPPER_HOST_RE.test(host) && !isRedditSearchPage(r.url, r.title)) {
+      add(host, 'domain', retrieved ? 'OBSERVED' : 'INFERRED', r, host);
+    }
+    const blob = String((r.title || '') + ' ' + (r.snippet || '') + ' ' + (r.textExcerpt || ''));
+    const studio = blob.match(/\b(?:studio|produced by|publisher)\s*[:\-]?\s*([A-Z][A-Za-z0-9][A-Za-z0-9'&.\- ]{2,40})/);
+    if (studio) add(studio[1].trim(), 'studio', retrieved ? 'OBSERVED' : 'SUPPORTED', r, host);
+  }
+  return out.slice(0, 16);
+}
+
+export function extractProductions(results, subject) {
+  const out = [];
+  const seen = new Set();
+  for (const r of results || []) {
+    const retrieved = r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED';
+    const text = String((r.textExcerpt || '') + ' ' + (r.title || '') + ' ' + (r.snippet || '')).slice(0, 4000);
+    const yearTitle = /\b([A-Z][A-Za-z0-9:'&.\-]*(?:\s+[A-Z][A-Za-z0-9:'&.\-]*){1,5})\s*\(((?:19|20)\d{2})\)/g;
+    let m;
+    while ((m = yearTitle.exec(text))) {
+      const title = m[1].trim();
+      if (title.split(/\s+/).length < 2) continue;
+      if (norm(title) === norm(subject)) continue;
+      if (/wikipedia|retrieved|official site|home page|search results/i.test(title)) continue;
+      const key = norm(title);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        label: title,
+        year: m[2],
+        kind: 'production',
+        observationState: retrieved ? 'OBSERVED' : 'SUPPORTED',
+        foundThrough: r.url,
+        parent: r.url,
+        relatedTo: subject,
+        why: 'Title/year on “' + (r.title || r.url) + '”',
+      });
+    }
+  }
+  return out.slice(0, 10);
+}
+
+export function extractClothingEvidence(results, visuals, opts = {}) {
+  const out = [];
+  const seen = new Set();
+  const push = (term, grade, source, visual) => {
+    const t = String(term || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!t || t.length < 3 || seen.has(t)) return;
+    seen.add(t);
+    out.push({
+      term: t,
+      observationState: grade,
+      foundThrough: (source && source.url) || (visual && (visual.pageUrl || visual.url)) || null,
+      visual: !!(visual && (visual.url || visual.image)),
+      why: grade === 'OBSERVED'
+        ? 'Garment term on a retrieved page or visual caption'
+        : (grade === 'INFERRED' ? 'Garment term in a title/snippet — not visually verified' : 'No visual clothing evidence'),
+    });
+  };
+  for (const r of results || []) {
+    const retrieved = r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED';
+    const pool = retrieved
+      ? String((r.textExcerpt || '') + ' ' + (r.title || '') + ' ' + (r.snippet || ''))
+      : String((r.title || '') + ' ' + (r.snippet || ''));
+    pool.replace(CLOTHING_TERM_RE, (m) => {
+      push(m, retrieved ? 'OBSERVED' : 'INFERRED', r, null);
+      return m;
+    });
+  }
+  for (const v of visuals || []) {
+    const cap = String((v.caption || '') + ' ' + (v.title || '') + ' ' + (v.reason || ''));
+    const pageRetrieved = v.provenance === 'RETRIEVED';
+    cap.replace(CLOTHING_TERM_RE, (m) => {
+      push(m, pageRetrieved ? 'OBSERVED' : 'UNKNOWN', null, v);
+      return m;
+    });
+  }
+  if (!out.length) {
+    out.push({
+      term: '',
+      observationState: 'UNKNOWN',
+      foundThrough: null,
+      visual: false,
+      why: 'No clothing/outfit evidence was visually or textually verified. UNKNOWN rather than invented.',
+    });
+  }
+  return out.slice(0, 12);
+}
+
+export function extractDiscoverySeeds(results, intent, extras = {}) {
+  const subject = String((intent && intent.subject) || '').trim();
+  const people = extractRelatedPeople(results, subject, { query: intent && intent.rawQuery });
+  const studios = extractStudiosAndDomains(results, subject);
+  const productions = extractProductions(results, subject);
+  const clothing = extractClothingEvidence(results, extras.visuals || [], extras);
+  const sourceClasses = [...new Set((results || []).map(r => r.sourceClass || r.plannerSourceClass).filter(Boolean))];
+  const domains = [...new Set((results || []).map(r => String(r.domain || hostOf(r.url) || '').replace(/^www\./, '')).filter(Boolean))];
+  const graphLeads = extras.graphLeads || intent.graphLeads || [];
+  const extraLeads = [].concat(extras.relatedPeople || [], graphLeads || [], extras.productions || []);
+  for (const g of extraLeads) {
+    if (!g) continue;
+    const personName = String(g.name || ((g.role || g.kind === 'collaborator' || g.kind === 'person' || g.kind === 'photographer' || g.kind === 'director') ? (g.label || '') : '') || '').trim();
+    if (personName && looksLikePersonName(personName) && !people.some(p => norm(p.name) === norm(personName))) {
+      people.push({
+        name: personName,
+        role: g.role || (g.kind === 'photographer' ? 'photographer' : (g.kind === 'director' ? 'director' : 'collaborator')),
+        observationState: g.observationState || 'SUPPORTED',
+        why: g.why || 'Discovered in a previous retrieval of this investigation',
+        foundThrough: g.foundThrough || g.url || null,
+        parent: g.parent || g.foundThrough || g.url || null,
+        relatedTo: subject,
+        sameSubject: subject,
+      });
+    }
+    if ((g.kind === 'production' || g.kind === 'title') && g.label && !productions.some(p => norm(p.label) === norm(g.label))) {
+      productions.push({
+        label: g.label,
+        year: g.year || '',
+        kind: 'production',
+        observationState: g.observationState || 'SUPPORTED',
+        foundThrough: g.foundThrough || g.url || null,
+        parent: g.parent || g.foundThrough || g.url || null,
+        relatedTo: subject,
+        why: g.why || 'Production observed in a previous retrieval',
+      });
+    }
+    const domain = String(g.domain || ((g.kind === 'domain' || g.kind === 'studio') && /\./.test(g.label || '') ? g.label : '') || '').replace(/^www\./, '').toLowerCase();
+    if (domain && domain.includes('.') && !domains.includes(domain) && !GENERIC_INDEX_HOSTS.some(h => domain === h || domain.endsWith('.' + h))) {
+      domains.push(domain);
+      if (!studios.some(s => norm(s.domain || s.label) === norm(domain))) {
+        studios.push({
+          label: g.label || domain,
+          kind: g.kind === 'studio' ? 'studio' : 'domain',
+          observationState: g.observationState || 'SUPPORTED',
+          domain,
+          foundThrough: g.foundThrough || g.url || null,
+          relatedTo: subject,
+          why: 'Domain carried forward from this investigation',
+        });
+      }
+    }
+  }
+  return {
+    subject,
+    topic: (intent && intent.topic) || '',
+    people,
+    studios,
+    productions,
+    clothing,
+    sourceClasses,
+    domains,
+    graphLeads,
+  };
+}
+
+function attemptedSet(attempted) {
+  return new Set((attempted || []).map(s => String(s || '').trim().toLowerCase()).filter(Boolean));
+}
+
+export function isNaiveLensQuery(q, intent) {
+  const n = String(q || '').replace(/["']/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const sub = String((intent && intent.subject) || '').replace(/["']/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!n || !sub) return false;
+  const lens = String((intent && intent.diveLens) || '').toLowerCase();
+  const topic = String((intent && intent.topic) || '').toLowerCase();
+  const words = [...new Set([lens, topic, 'bondage', 'people', 'clothing'].filter(Boolean))];
+  return words.some(w => n === sub + ' ' + w);
+}
+
+function pushQuery(out, seen, q, why, lane, kind, extra) {
+  const t = String(q || '').trim();
+  if (!t) return;
+  const k = t.toLowerCase();
+  if (seen.has(k)) return;
+  seen.add(k);
+  out.push({ q: t, why, lane: lane || 'lens', kind: kind || 'web', sourceClass: (extra && extra.sourceClass) || '', foundThrough: extra && extra.foundThrough, parent: extra && extra.parent, relatedTo: extra && extra.relatedTo });
+}
+
+export function buildLensQueries(intent, corpus, attempted, extras = {}) {
+  const subject = quote(intent && intent.subject) || (intent && intent.subject) || '';
+  const rawSubject = String((intent && intent.subject) || '').trim();
+  const topic = String((intent && intent.topic) || '').trim();
+  const lens = (intent && intent.diveLens) || (intent && intent.mode === 'dive-bondage' ? 'bondage' : (intent && intent.mode === 'dive-people' ? 'people' : (intent && intent.mode === 'dive-clothing' ? 'clothing' : '')));
+  const adultOn = intent && (intent.adultLens === 'on' || intent.adultLens === 'both');
+  const seeds = extractDiscoverySeeds(corpus || intent.priorResults || [], intent, extras);
+  const seen = attemptedSet(attempted || intent.attemptedQueries);
+  const out = [];
+  const add = (q, why, lane, kind, extra) => pushQuery(out, seen, q, why, lane, kind, extra);
+
+  // Never emit the naive "subject + lens-word" clone if it was already tried.
+  const naiveBondage = (rawSubject + ' bondage').trim().toLowerCase();
+  const naivePeople = (rawSubject + ' people').trim().toLowerCase();
+  const naiveClothing = (rawSubject + ' clothing').trim().toLowerCase();
+
+  if (lens === 'bondage') {
+    for (const st of seeds.studios.slice(0, 6)) {
+      if (st.domain) add(subject + ' site:' + st.domain, 'bondage expansion via discovered domain ' + st.domain, 'bondage-domain', 'web', { sourceClass: 'fetish-publisher', foundThrough: st.foundThrough, parent: st.parent, relatedTo: st.label });
+      if (st.kind === 'studio' && st.label) add(subject + ' "' + st.label + '" (production OR photoset OR scene)', 'bondage expansion via discovered studio', 'bondage-studio', 'web', { foundThrough: st.foundThrough, relatedTo: st.label });
+    }
+    for (const p of seeds.productions.slice(0, 4)) {
+      add(subject + ' "' + p.label + '"', 'bondage expansion via discovered production', 'bondage-production', 'web', { foundThrough: p.foundThrough, relatedTo: p.label });
+    }
+    for (const person of seeds.people.slice(0, 4)) {
+      add(subject + ' "' + person.name + '"', 'bondage expansion via discovered collaborator (' + person.observationState + ')', 'bondage-collaborator', 'web', { foundThrough: person.foundThrough, relatedTo: person.name });
+    }
+    if (adultOn) {
+      const usedDomains = new Set(seeds.domains);
+      for (const cls of ADULT_SOURCE_CLASSES) {
+        if (cls.id !== 'fetish-publisher' && cls.id !== 'studio-producer' && cls.id !== 'video' && cls.id !== 'images-galleries' && cls.id !== 'archival' && cls.id !== 'community-social') continue;
+        for (const seed of (cls.seeds || []).slice(0, 3)) {
+          if (usedDomains.has(seed)) continue;
+          add(subject + ' site:' + seed, 'unexplored bondage source class ' + cls.label, 'bondage-' + cls.id, cls.kind === 'image' ? 'image' : (cls.kind === 'video' ? 'video' : 'web'), { sourceClass: cls.id });
+        }
+      }
+    }
+    const observedGarments = seeds.clothing.filter(c => c.observationState === 'OBSERVED' && c.term);
+    for (const g of observedGarments.slice(0, 3)) {
+      add(subject + ' "' + g.term + '" (photoset OR stills OR scene)', 'bondage visual via observed garment', 'bondage-garment', 'image', { foundThrough: g.foundThrough, relatedTo: g.term });
+    }
+    add(subject + ' (photoset OR stills OR gallery) (bound OR restrained OR metal OR rope)', 'bondage image lane from investigation state, not a query rewrite', 'bondage-images', 'image', { sourceClass: 'images-galleries' });
+    add(subject + ' (scene OR clip OR feature) (studio OR production)', 'bondage video lane from investigation state', 'bondage-video', 'video', { sourceClass: 'video' });
+    add(subject + ' (interview OR article OR archive OR history) (studio OR production OR feature)', 'historical bondage references', 'bondage-historical', 'web', { sourceClass: 'interviews' });
+    // Only use the naive clone if nothing else is available AND it was never attempted.
+    if (!out.length && !seen.has(naiveBondage) && rawSubject) {
+      add(rawSubject + ' bondage', 'first bondage intersection — no prior evidence to chain from yet', 'bondage-intersection', 'web');
+    }
+  } else if (lens === 'people') {
+    for (const person of seeds.people) {
+      if (person.observationState === 'UNKNOWN') continue;
+      add(subject + ' "' + person.name + '"', 'connected person (' + person.role + ', ' + person.observationState + '): ' + person.why, 'people-collaborator', 'web', { foundThrough: person.foundThrough, relatedTo: person.name });
+      if (person.role === 'photographer' || person.role === 'director' || person.role === 'producer') {
+        add('"' + person.name + '" ' + subject, 'follow the ' + person.role + ' relationship', 'people-role', 'web', { relatedTo: person.name });
+      }
+    }
+    for (const st of seeds.studios.slice(0, 4)) {
+      if (st.domain) add(subject + ' (cast OR models OR featuring) site:' + st.domain, 'people listed on discovered studio/domain', 'people-studio', 'web', { foundThrough: st.foundThrough, relatedTo: st.label });
+    }
+    add(subject + ' (credits OR filmography OR "photographed by" OR "directed by" OR featuring)', 'credits/relationship pages for connected people', 'people-credits', 'web', { sourceClass: 'collaborators' });
+    if (!seeds.people.length) {
+      add(subject + ' (with OR featuring OR "co-star" OR photographer OR director)', 'no connected people observed yet — look for relationship language', 'people-seek', 'web');
+    }
+    if (seen.has(naivePeople)) {
+      // drop any accidental clone
+    }
+  } else if (lens === 'clothing') {
+    const observed = seeds.clothing.filter(c => c.term && c.observationState === 'OBSERVED');
+    const inferred = seeds.clothing.filter(c => c.term && c.observationState === 'INFERRED');
+    for (const g of observed.slice(0, 5)) {
+      add(subject + ' "' + g.term + '" (outfit OR wearing OR stills OR photoset)', 'clothing expansion from OBSERVED garment', 'clothing-observed', 'image', { foundThrough: g.foundThrough, relatedTo: g.term });
+    }
+    for (const g of inferred.slice(0, 3)) {
+      add(subject + ' "' + g.term + '" (lookbook OR wardrobe OR garment)', 'clothing lead from title/snippet — remains INFERRED until visual evidence', 'clothing-inferred', 'web', { foundThrough: g.foundThrough, relatedTo: g.term });
+    }
+    add(subject + ' (outfit OR wardrobe OR "wearing" OR lookbook OR garment OR stills)', 'clothing/outfit visual relationships', 'clothing-visual', 'image', { sourceClass: 'images-galleries' });
+    if (topic && topic !== 'clothing') add(subject + ' ' + topic + ' (outfit OR garment OR wearing)', 'clothing × current topic', 'clothing-topic', 'web');
+    if (!observed.length) {
+      // Honest: no verified clothing yet.
+      extras.clothingUnknown = true;
+    }
+    if (seen.has(naiveClothing) && out.every(x => x.q.toLowerCase() !== naiveClothing)) {
+      // never re-add
+    }
+  } else {
+    // Find-more / generic expansion uses next unexplored lane below.
+  }
+
+  return out.slice(0, extras.limit || 12);
+}
+
+export const FIND_MORE_LANE_ORDER = [
+  'unexplored-source-class',
+  'discovered-entity',
+  'discovered-domain',
+  'collaborator',
+  'production',
+  'historical',
+  'related-topic',
+  'visual-source',
+  'community',
+  'premium',
+];
+
+export function nextFindMoreLane(intent, corpus, attempted, extras = {}) {
+  const subject = quote(intent && intent.subject) || (intent && intent.subject) || '';
+  const rawSubject = String((intent && intent.subject) || '').trim();
+  const topic = String((intent && intent.topic) || '').trim();
+  const adultOn = intent && (intent.adultLens === 'on' || intent.adultLens === 'both');
+  const seeds = extractDiscoverySeeds(corpus || [], intent, extras);
+  const seen = attemptedSet(attempted);
+  const reached = new Set((seeds.sourceClasses || []).map(s => String(s).toLowerCase()));
+  const usedDomains = new Set((seeds.domains || []).map(d => String(d).replace(/^www\./, '').toLowerCase()));
+  const out = [];
+  const add = (q, why, lane, kind, extra) => pushQuery(out, seen, q, why, lane, kind, extra);
+  const picked = [];
+
+  const tryLane = (id) => {
+    if (out.length) return;
+    if (id === 'unexplored-source-class') {
+      const catalog = adultOn ? ADULT_SOURCE_CLASSES : ADULT_SOURCE_CLASSES.filter(c => ['interviews', 'identity-profile', 'related-sites', 'archival', 'community-social'].includes(c.id));
+      for (const cls of catalog) {
+        if (reached.has(cls.id) || reached.has(cls.kind)) continue;
+        const seed = (cls.seeds || []).find(s => !usedDomains.has(s));
+        if (seed) {
+          add(subject + ' site:' + seed, 'unexplored source class: ' + cls.label, id, cls.kind === 'image' ? 'image' : (cls.kind === 'video' ? 'video' : 'web'), { sourceClass: cls.id });
+          picked.push(id);
+          break;
+        }
+        const qword = (cls.queries || [])[0];
+        if (qword) {
+          add(subject + (topic ? ' ' + topic : '') + ' ' + qword, 'unexplored source class: ' + cls.label, id, 'web', { sourceClass: cls.id });
+          picked.push(id);
+          break;
+        }
+      }
+    } else if (id === 'discovered-entity') {
+      const person = seeds.people.find(p => p.observationState !== 'UNKNOWN' && !seen.has((rawSubject + ' "' + p.name + '"').toLowerCase()));
+      if (person) {
+        add(subject + ' "' + person.name + '"', 'newly discovered entity: ' + person.name + ' (' + person.observationState + ')', id, 'web', { relatedTo: person.name, foundThrough: person.foundThrough });
+        picked.push(id);
+      }
+    } else if (id === 'discovered-domain') {
+      const domain = seeds.domains.find(d => d && !GENERIC_INDEX_HOSTS.some(g => d === g || d.endsWith('.' + g)) && !seen.has((rawSubject + ' site:' + d).toLowerCase()));
+      if (domain) {
+        add(subject + ' site:' + domain, 'newly discovered domain ' + domain, id, 'web', { relatedTo: domain });
+        picked.push(id);
+      }
+    } else if (id === 'collaborator') {
+      const person = seeds.people.find(p => p.role === 'collaborator' || p.role === 'photographer' || p.role === 'director');
+      if (person) {
+        add('"' + person.name + '" ' + subject, 'follow collaborator relationship', id, 'web', { relatedTo: person.name });
+        picked.push(id);
+      }
+    } else if (id === 'production') {
+      const prod = seeds.productions[0];
+      if (prod) {
+        add('"' + prod.label + '" ' + (topic || subject), 'follow discovered production', id, 'web', { relatedTo: prod.label });
+        picked.push(id);
+      }
+    } else if (id === 'historical') {
+      add(subject + (topic ? ' ' + topic : '') + ' (archive OR history OR "wayback" OR interview OR founded)', 'historical/archive lane', id, 'web', { sourceClass: 'archival' });
+      picked.push(id);
+    } else if (id === 'related-topic') {
+      const extra = (topicTerms(topic) || []).filter(t => t && t !== norm(topic) && t.length > 3)[0];
+      if (extra) {
+        add(subject + ' ' + extra, 'related topic term observed in planning vocab — still needs evidence', id, 'web');
+        picked.push(id);
+      }
+    } else if (id === 'visual-source') {
+      add(subject + (topic ? ' ' + topic : '') + ' (photoset OR gallery OR stills OR lookbook)', 'visual source lane', id, 'image', { sourceClass: 'images-galleries' });
+      picked.push(id);
+    } else if (id === 'community') {
+      add(subject + (topic ? ' ' + topic : '') + ' site:reddit.com', 'community source lane', id, 'web', { sourceClass: 'reddit' });
+      picked.push(id);
+    } else if (id === 'premium') {
+      if (adultOn) {
+        const plat = PREMIUM_PLATFORM_SEEDS.find(p => !usedDomains.has(p.host));
+        if (plat) {
+          add(subject + ' site:' + plat.host, 'unexplored premium/source relationship', id, 'web', { sourceClass: 'premium-subscription' });
+          picked.push(id);
+        }
+      }
+    }
+  };
+
+  for (const id of FIND_MORE_LANE_ORDER) tryLane(id);
+  if (!out.length) {
+    return {
+      exhausted: true,
+      message: NO_NEW_SOURCES_MESSAGE,
+      queries: [],
+      lane: null,
+      seeds,
+    };
+  }
+  return {
+    exhausted: false,
+    message: '',
+    queries: out.slice(0, extras.limit || 6),
+    lane: picked[0] || out[0].lane,
+    seeds,
+  };
+}
+
+export function competingFullNameInText(blob, subject) {
+  const toks = tokens(subject).filter(t => t.length > 1);
+  if (toks.length < 2) return '';
+  const first = toks[0];
+  const last = toks[toks.length - 1];
+  const original = String(blob || '');
+  const re = new RegExp('\\b' + first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+((?:de|da|van|von|di|le|la|del)\\s+)?([A-Za-z][A-Za-z\'-]{1,20})(?:\\s+([A-Za-z][A-Za-z\'-]{1,20}))?', 'gi');
+  let m;
+  while ((m = re.exec(original))) {
+    const particle = (m[1] || '').trim();
+    const mid = m[2] || '';
+    const end = m[3] || '';
+    const lastName = particle ? mid : mid;
+    // A competing identity is a capitalized last name (Drea de Matteo), not "Drea on set".
+    if (!/^[A-Z]/.test(lastName)) continue;
+    if (GENERIC_NAME_STOP.has(mid.toLowerCase()) || GENERIC_NAME_STOP.has(end.toLowerCase())) continue;
+    if (mid.length < 3) continue;
+    const rest = [particle, mid, end].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!rest) continue;
+    if (rest === last || rest.endsWith(' ' + last) || rest.startsWith(last + ' ')) continue;
+    if (TOPIC_VOCAB.bondage.some(v => norm(v) === mid.toLowerCase()) || TOPIC_VOCAB.clothing.some(v => norm(v) === mid.toLowerCase())) continue;
+    if (/^(official|onlyfans|loyalfans|photos?|videos?|gallery|interview|wikipedia|profile|model|performer)$/i.test(mid)) continue;
+    return (first + ' ' + rest).trim();
+  }
+  return '';
+}
+
+export function visualIdentityGrade(item, subject, opts = {}) {
+  const name = String(subject || '').trim();
+  const toks = tokens(name).filter(t => t.length > 1);
+  const blob = String((item && (item.title || '')) + ' ' + ((item && (item.snippet || item.caption || item.reason || '')) || '') + ' ' + ((item && (item.url || item.pageUrl || '')) || ''));
+  const nblob = norm(blob);
+  const host = hostOf((item && (item.pageUrl || item.url)) || '');
+  const feedback = opts.feedback || opts.identityFeedback || {};
+  const confirmed = (feedback.confirmed || []).map(norm);
+  const rejectedPeople = (feedback.rejectedPeople || []).map(norm);
+  const rejectedImages = new Set((feedback.rejectedImages || []).concat(feedback.rejectedUrls || []).map(u => canonicalizeUrl(u)).filter(Boolean));
+  const key = canonicalizeUrl((item && (item.url || item.image || item.pageUrl)) || '');
+
+  if (key && rejectedImages.has(key)) {
+    return { grade: 'unverified', reason: 'negatively confirmed visual', excludeFromPrimaryCorpus: true, identityConfidence: 'unverified' };
+  }
+  if (rejectedPeople.some(p => p && nblob.includes(p))) {
+    return { grade: 'unverified', reason: 'rejected identity', excludeFromPrimaryCorpus: true, identityConfidence: 'unverified' };
+  }
+
+  const collision = competingFullNameInText(blob, name);
+  if (collision) {
+    return {
+      grade: 'unverified',
+      collision,
+      reason: 'competing full name in the evidence (“' + collision + '”) — not counted as the subject',
+      excludeFromPrimaryCorpus: true,
+      firstNameOnly: false,
+      identityConfidence: 'unverified',
+      textRelevance: 'possible',
+      visualRelevance: 'unverified',
+    };
+  }
+
+  if (toks.length < 2) {
+    return { grade: 'unverified', reason: 'incomplete subject name — first-name matches are not identity evidence', firstNameOnly: true, excludeFromPrimaryCorpus: true, identityConfidence: 'unverified' };
+  }
+
+  const first = toks[0];
+  const last = toks[toks.length - 1];
+  const fullHit = toks.every(t => nblob.includes(t));
+  const firstHit = nblob.includes(first);
+  const lastHit = nblob.includes(last);
+  const identityHost = /(iafd|babepedia|adultfilmdatabase|wikipedia|imdb|loyalfans|onlyfans|houseofgord|clips4sale|indexxx)\./i.test(host);
+
+  if (firstHit && !lastHit) {
+    return {
+      grade: 'unverified',
+      firstNameOnly: true,
+      reason: 'first-name match is not identity evidence',
+      excludeFromPrimaryCorpus: true,
+      identityConfidence: 'unverified',
+      textRelevance: 'weak',
+      visualRelevance: 'unverified',
+    };
+  }
+
+  if (fullHit) {
+    if (confirmed.some(c => c === norm(name) || nblob.includes(c))) {
+      return { grade: 'verified', reason: 'user-confirmed identity and full name present', identityConfidence: 'verified', textRelevance: 'supported', visualRelevance: 'possible' };
+    }
+    if (identityHost) {
+      return { grade: 'supported', reason: 'full name on an identity/source host — visual likeness is still not identity proof', identityConfidence: 'supported', textRelevance: 'supported', visualRelevance: 'possible' };
+    }
+    return { grade: 'possible', reason: 'full name present — a page mentioning the name does not prove the image depicts them', identityConfidence: 'possible', textRelevance: 'supported', visualRelevance: 'possible' };
+  }
+
+  return {
+    grade: 'unverified',
+    reason: 'no full-name identity evidence on this visual',
+    identityConfidence: 'unverified',
+    textRelevance: firstHit ? 'weak' : 'none',
+    visualRelevance: 'unverified',
+    excludeFromPrimaryCorpus: !lastHit,
+  };
+}
+
+export function applyVisualIdentityFilter(visuals, subject, opts = {}) {
+  const out = [];
+  const dropped = [];
+  for (const im of visuals || []) {
+    const grade = visualIdentityGrade(im, subject, opts);
+    const row = { ...im, identityGrade: grade.grade, identityConfidence: grade.identityConfidence || grade.grade, identityReason: grade.reason, visualLikenessIsNotIdentityProof: true };
+    if (grade.collision) row.identityCollision = grade.collision;
+    if (grade.excludeFromPrimaryCorpus) {
+      row.primaryCorpus = false;
+      dropped.push(row);
+      continue;
+    }
+    row.primaryCorpus = true;
+    out.push(row);
+  }
+  return { kept: out, dropped, primary: out, unverified: dropped };
+}
+
+export function expansionReport(pack, extras = {}) {
+  const p = pack || {};
+  return {
+    totalResults: extras.totalResults != null ? extras.totalResults : (p.totalMerged || 0),
+    genuinelyNew: p.genuinelyNew || 0,
+    duplicatesRemoved: (p.duplicatesRemoved || 0) + (p.nearDuplicatesRemoved || 0),
+    queryEchoesRemoved: p.queryEchoesRemoved || 0,
+    mirrorsRemoved: p.mirrorsRemoved || 0,
+    wrongPersonCandidates: extras.wrongPersonCandidates || 0,
+    sourceQuality: extras.sourceQuality || null,
+    identityConfidence: extras.identityConfidence || null,
+    newEntitiesDiscovered: extras.newEntitiesDiscovered || 0,
+    newDomainsDiscovered: extras.newDomainsDiscovered || 0,
+    learnedSomething: !!p.learnedSomething,
+    message: p.exhausted ? NO_NEW_SOURCES_MESSAGE : (p.learnedSomething ? 'Investigation expanded with new evidence.' : ''),
+    lens: extras.lens || '',
+    lane: extras.lane || '',
+  };
+}
+
+export function primaryDiveLenses() {
+  return PRIMARY_DIVE_LENSES.map(l => ({ ...l }));
+}
+
 
 export function sourceDiversityReport(results, opts = {}) {
   const adultOn = !!(opts.adultOn);
@@ -928,9 +1777,14 @@ function clusterByIdentity(rows) {
 // ---------------------------------------------------------------------------
 // Distinct expansion intents
 // ---------------------------------------------------------------------------
-export function findMoreQueries(intent, attempted) {
+export function findMoreQueries(intent, attempted, corpus) {
   const subject = quote(intent.subject) || intent.subject;
   const topic = intent.topic || '';
+  if (corpus && corpus.length) {
+    const lane = nextFindMoreLane(intent, corpus, attempted);
+    if (lane.exhausted) return [];
+    return lane.queries.map(q => ({ ...q, lane: q.lane || 'find-more' }));
+  }
   const out = [];
   const add = (q, why) => {
     const t = String(q || '').trim();
@@ -943,6 +1797,7 @@ export function findMoreQueries(intent, attempted) {
   if (topic) add(subject + ' "' + topic + '" (photoset OR scene OR article)', 'more intersection evidence');
   return out;
 }
+
 
 export function moreLikeThisQueries(intent, seed) {
   const subject = quote(intent.subject) || intent.subject;
@@ -1300,7 +2155,7 @@ export function applyInvestigationAction(state, action, payload = {}) {
     next.trail = [{ kind: 'new', label: 'Hard live-state reset — saved collections kept', at: next.createdAt }];
     return next;
   }
-  if (act === 'search' || act === 'identify' || act === 'topic-search' || act === 'intersection' || act === 'find-everything') {
+  if (act === 'search' || act === 'identify' || act === 'topic-search' || act === 'intersection' || act === 'find-everything' || act === 'find-more' || act === 'premium-accounts' || act === 'dive-bondage' || act === 'dive-people' || act === 'dive-clothing') {
     if (payload.subject) s.subject = payload.subject;
     if (payload.topic) s.topic = payload.topic;
     s.retrievalRuns = (s.retrievalRuns || 0) + 1;
@@ -1364,7 +2219,8 @@ export const API_ACTION_CATALOG = [
   { action: 'intersection', method: 'POST', path: '/api/v1/investigations/:id/intersection', description: 'Subject × topic intersection retrieval.' },
   { action: 'find-everything', method: 'POST', path: '/api/v1/investigations/:id/find-everything', description: 'Topic-map retrieval grouped by source class.' },
   { action: 'premium-accounts', method: 'POST', path: '/api/v1/investigations/:id/premium-accounts', description: 'Premium/creator account discovery with ownership classes.' },
-  { action: 'find-more', method: 'POST', path: '/api/v1/investigations/:id/find-more', description: 'Expand within the current investigation.' },
+  { action: 'find-more', method: 'POST', path: '/api/v1/investigations/:id/find-more', description: 'Expand within the current investigation using the next unexplored retrieval lane.' },
+
   { action: 'more-like-this', method: 'POST', path: '/api/v1/investigations/:id/more-like-this', description: 'Semantic similarity — not title-token stuffing.' },
   { action: 'find-different', method: 'POST', path: '/api/v1/investigations/:id/find-different', description: 'Alternative sources, excluding seen hosts.' },
   { action: 'find-similar', method: 'POST', path: '/api/v1/investigations/:id/find-similar', description: 'Visual/source-class similarity.' },
@@ -1372,6 +2228,10 @@ export const API_ACTION_CATALOG = [
   { action: 'more-from-this-source', method: 'POST', path: '/api/v1/investigations/:id/more-from-this-source', description: 'More from this host (host ≠ creator).' },
   { action: 'more-from-this-person', method: 'POST', path: '/api/v1/investigations/:id/more-from-this-person', description: 'More from the confirmed person.' },
   { action: 'more-on-this-topic', method: 'POST', path: '/api/v1/investigations/:id/more-on-this-topic', description: 'More on the current topic.' },
+  { action: 'dive-bondage', method: 'POST', path: '/api/v1/investigations/:id/dive-bondage', description: 'Bondage investigation lens — expands through discovered evidence, not a query rewrite.' },
+  { action: 'dive-people', method: 'POST', path: '/api/v1/investigations/:id/dive-people', description: 'People investigation lens — connected people with OBSERVED/SUPPORTED/INFERRED/UNKNOWN evidence.' },
+  { action: 'dive-clothing', method: 'POST', path: '/api/v1/investigations/:id/dive-clothing', description: 'Clothing investigation lens — visual/textual garments; UNKNOWN when unverified.' },
+
   { action: 'confirm-identity', method: 'POST', path: '/api/v1/investigations/:id/confirm-identity', description: 'That’s the one — persistent retrieval state.' },
   { action: 'reject-identity', method: 'POST', path: '/api/v1/investigations/:id/reject-identity', description: 'Not this person — negative weight on later retrieval.' },
   { action: 'reject-image', method: 'POST', path: '/api/v1/investigations/:id/reject-image', description: 'Not this image — suppress the visual.' },

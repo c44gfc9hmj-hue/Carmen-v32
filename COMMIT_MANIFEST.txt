@@ -1,11 +1,14 @@
-Carmen v49.3 (49.3-chatgpt-access)
-==================================
-Parent: 9b61ba62b991d035c50e98abaee4ddd1ad8502b5 (v49.2)
+Carmen v49.4 (49.4-deep-dive-lenses)
+====================================
+Parent: ed31848e64a22b5ac4346aed799513299d6ae7ef (v49.3)
 
-ChatGPT-accessible machine-readable API on the same iPhone retrieval pipeline.
-Adult-first source classes, independent subject/topic/intersection evidence,
-Find Everything topic maps, premium ownership classes, known-site ACCESS BLOCKED,
-identity feedback that changes ranking, semantic More Like This + distinct Find More
-intents, query-echo person-name exception, Reddit posts-only, Analyze/Learn, save/branch/reset.
+Deep Dive is three investigation lenses — Bondage, People, Clothing — that
+expand THROUGH discovered evidence instead of rewriting “subject + keyword”.
+Additive merge refuses duplicates, mirrors, near-duplicates, and query echoes.
+Find More picks the next unexplored retrieval lane. Visual identity stays
+separate from text hits (first-name matches are not identity; competing names
+are excluded from the primary visual corpus).
 
 No secrets. No hardcoded Drea answers. No person registry. No UI redesign.
+Bondage remains a primary Deep Dive button.
+

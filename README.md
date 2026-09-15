@@ -9,7 +9,31 @@ This is the single canonical Carmen application. There are no separate V25/V32/
 V33/V34/V35 builds — those accumulated during earlier development and have been
 consolidated into this one project.
 
-## Investigation workspace (v49.3)
+## Investigation workspace (v49.4)
+
+v49.4 is a Deep Dive retrieval-architecture pass on live v49.3. It does not
+replace the ChatGPT API, adult source classes, identity feedback, or the
+investigation loop.
+
+- **Three primary Deep Dive lenses:** Bondage, People, Clothing. The UI stays
+  simple; the retrieval underneath expands through already-discovered evidence
+  (studios, productions, collaborators, domains) instead of repeating
+  “subject + keyword”.
+- **Additive expansion.** Canonicalize, compare, drop duplicates / mirrors /
+  query clones. If an angle adds nothing: “No new sources found from this
+  angle.” Find More picks the next unexplored lane.
+- **Discovery chains.** New entities, domains, and productions become retrieval
+  seeds, with foundThrough / parent / derivedFrom / relatedTo preserved.
+- **Visual identity ≠ text hit.** A page mentioning the name does not prove the
+  image depicts them. First-name matches are not identity evidence. Competing
+  full names stay out of the primary visual corpus.
+- **People** require relationship evidence (OBSERVED / SUPPORTED / INFERRED /
+  UNKNOWN). Co-occurrence on a search page is not a relationship.
+- **Clothing** uses visual and textual evidence; unverified garments stay UNKNOWN.
+
+Build identifier: **49.4-deep-dive-lenses**.
+
+
 
 v49.3 adds a documented machine-readable API so ChatGPT can drive the same
 retrieval/ranking/state pipeline as the iPhone UI, plus adult-first source-class

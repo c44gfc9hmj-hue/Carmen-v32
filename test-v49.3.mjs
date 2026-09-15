@@ -45,10 +45,11 @@ const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8
 
 console.log('--- v49.3 version / API contracts ---');
 {
-  assert(PLANNER_VERSION === '49.3', 'PLANNER_VERSION 49.3');
-  assert(PLANNER_BUILD === '49.3-chatgpt-access', 'PLANNER_BUILD');
-  assert(appSrc.includes("const VERSION = '49.3'"), 'frontend VERSION');
-  assert(/carmen-build" content="49\.3"/.test(html), 'html build');
+  assert(PLANNER_VERSION === '49.4' || PLANNER_VERSION === '49.3', 'PLANNER_VERSION current');
+  assert(/49\.(3|4)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.[34]'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.[34]"/.test(html), 'html build');
+
   assert(/handleCarmenApi/.test(workerSrc), 'worker has ChatGPT API handler');
   assert(/\/api\/v1/.test(workerSrc), 'worker routes /api/v1');
   assert(API_ACTION_CATALOG.length >= 20, 'API catalog documents the investigation actions');
@@ -237,7 +238,7 @@ console.log('--- v49.3 /api docs + health ---');
   assert(d.safety && d.safety.noSecrets && d.safety.noAutonomousExternalActions, 'API safety contract');
   const health = await worker.fetch(new Request('https://test/health'), {});
   const h = await health.json();
-  assert(h.version === '49.3' && h.build === '49.3-chatgpt-access', 'health 49.3');
+  assert((h.version === '49.4' || h.version === '49.3') && /49\.(3|4)/.test(h.build || ''), 'health current');
   assert((h.features || []).includes('v49.3-chatgpt-access'), 'feature flag');
   assert((h.routes || []).includes('/api'), 'health lists /api');
 }

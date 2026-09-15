@@ -1174,7 +1174,11 @@ console.log('--- v47.3 investigation choices adapt by type ---');
   assert(personOn.some(x => /Career & credits/.test(x.label)), 'adult ON person career is Career & credits');
   assert(personOn.some(x => x.id === 'related'), 'person has Related people');
   assert(personOn.some(x => x.id === 'question' && x.question), 'person has Custom question');
-  assert(!personOn.some(x => /bondage|riley|abella|angela|drea/i.test(x.id + x.label)), 'choices are not hardcoded to a test subject');
+  assert(personOn.some(x => x.id === 'bondage' && x.label === 'Bondage'), 'Bondage is a primary Deep Dive path');
+  assert(personOn.some(x => x.id === 'people' && x.label === 'People'), 'People is a primary Deep Dive path');
+  assert(personOn.some(x => x.id === 'clothing' && x.label === 'Clothing'), 'Clothing is a primary Deep Dive path');
+  assert(!personOn.some(x => /riley|abella|angela|drea/i.test(x.id + x.label)), 'choices are not hardcoded to a test subject');
+
   const personOff = investigationChoices('person', { type: 'person', adultContent: 'off' });
   assert(personOff.some(x => /Career & history/.test(x.label)), 'adult OFF person career is Career & history');
   assert(!personOff.some(x => /credits/i.test(x.label)), 'adult OFF does not inject credits wording');

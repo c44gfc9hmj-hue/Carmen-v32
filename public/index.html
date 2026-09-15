@@ -9,7 +9,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon.svg">
 <title>Carmen</title>
-<meta name="carmen-build" content="49.3">
+<meta name="carmen-build" content="49.4">
 <style>
 :root{
   color-scheme:dark;
@@ -116,6 +116,15 @@ details.adv summary::-webkit-details-marker{display:none}
 .dive-id img{width:104px;height:104px;object-fit:cover;border-radius:var(--radius-md);background:#050607;flex:0 0 auto}
 .dive-id .body{min-width:0;flex:1}
 .dive-id h2{margin:0 0 4px;font-size:24px;letter-spacing:-.03em;font-weight:600}
+.dive-primary{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.dive-primary .flabel{margin-bottom:8px}
+.dive-primary .row .btn{flex:1 1 0;min-width:96px;text-transform:uppercase;letter-spacing:.06em;font-size:13px}
+.dive-primary .btn.active{background:var(--fg);color:var(--bg);border-color:transparent}
+.expansion-note{margin:8px 0 0;font-size:12px;color:var(--muted)}
+.expansion-note b{color:var(--fg)}
+.person-rel{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:8px 0;background:var(--card2)}
+.person-rel .why{font-size:12px;color:var(--muted);margin-top:4px}
+
 .sel-cta{margin-top:10px}
 .bottomnav button{flex:1;background:transparent;border:0;color:var(--subtle);font-size:9px;font-weight:600;padding:6px 1px;display:flex;flex-direction:column;align-items:center;gap:3px}
 .thumbs{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;padding-bottom:2px}
@@ -231,7 +240,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <body>
 <header class="appbar">
   <div class="rowbits">
-    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.2</span></h1>
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.4</span></h1>
     <button class="btn ghost" id="newInvestigationBtn" type="button">New investigation</button>
   </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
@@ -354,7 +363,21 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <button class="btn primary" id="diveSearchBtn" type="button">Search</button>
     </div>
     <p class="hint" id="diveSearchHint">Type a topic (interviews, career, photos) — Carmen keeps the current subject.</p>
+    <div class="dive-primary" id="divePrimaryLenses">
+      <p class="flabel">Deep Dive</p>
+      <div class="row">
+        <button class="btn primary" id="diveBondageBtn" type="button">Bondage</button>
+        <button class="btn" id="divePeopleBtn" type="button">People</button>
+        <button class="btn" id="diveClothingBtn" type="button">Clothing</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn ghost" id="diveFindMoreBtn" type="button">Find More</button>
+      </div>
+      <p class="hint" id="diveLensHint">One tap investigates that dimension using everything already found — not a repeat of the same search.</p>
+      <p class="expansion-note hidden" id="diveExpansionNote"></p>
+    </div>
     <div class="row" style="margin-top:8px">
+
       <button class="btn ghost" id="howGotHereBtn" type="button">How I got here?</button>
       <button class="btn ghost" id="diveSurpriseBtn" type="button">Surprise me</button>
     </div>

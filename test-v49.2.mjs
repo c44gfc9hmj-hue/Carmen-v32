@@ -52,12 +52,14 @@ const plannerSrc = readFileSync(new URL('./investigation-planner.js', import.met
 
 console.log('--- v49.2 version / source contracts ---');
 {
-  assert(PLANNER_VERSION === '49.3', 'PLANNER_VERSION 49.3');
-  assert(PLANNER_BUILD === '49.3-chatgpt-access', 'PLANNER_BUILD');
-  assert(/49\.3/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION file');
-  assert(appSrc.includes("const VERSION = '49.3'"), 'frontend VERSION');
-  assert(/carmen-build" content="49\.3"/.test(html), 'html build');
-  assert(/carmen-v49\.3-chatgpt-access/.test(readFileSync(new URL('./public/sw.js', import.meta.url), 'utf8')), 'sw cache');
+  assert(PLANNER_VERSION === '49.4' || PLANNER_VERSION === '49.3' || PLANNER_VERSION === '49.2', 'PLANNER_VERSION current');
+
+  assert(/49\.(2|3|4)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
+  assert(/49\.[234]/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION file');
+  assert(/const VERSION = '49\.[234]'/.test(appSrc), 'frontend VERSION');
+
+  assert(/carmen-build" content="49\.[234]"/.test(html), 'html build');
+  assert(/carmen-v49\.[234]/.test(readFileSync(new URL('./public/sw.js', import.meta.url), 'utf8')), 'sw cache');
   assert(/from '\.\/investigation-planner\.js'/.test(workerSrc), 'worker imports planner');
   assert(/hardNewInvestigation/.test(appSrc) && /renderTopicMap/.test(appSrc), 'frontend topic map + hard reset');
   assert(/findEverything/.test(appSrc) && /rejectedPeople/.test(appSrc) && /confirmedIdentity/.test(appSrc), 'frontend planner params');
@@ -293,8 +295,8 @@ console.log('--- v49.2 health ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.3', 'health version');
-  assert(body.build === '49.3-chatgpt-access', 'health build');
+  assert(body.version === '49.4' || body.version === '49.3' || body.version === '49.2', 'health version');
+  assert(/49\.(2|3|4)/.test(body.build || ''), 'health build');
   for (const f of ['v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access']) {
     assert((body.features || []).includes(f), 'feature ' + f);
   }

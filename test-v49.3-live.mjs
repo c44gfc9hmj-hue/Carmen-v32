@@ -33,8 +33,8 @@ console.log('--- live health + API docs ---');
   try {
     const { status, body } = await getJson('/health');
     assert(status === 200 && body.ok === true, 'GET /health 200');
-    assert(body.version === '49.3', 'live version 49.3');
-    assert(body.build === '49.3-chatgpt-access', 'live build');
+    assert(body.version === '49.4' || body.version === '49.3', 'live version current');
+    assert(/49\.(3|4)/.test(body.build || ''), 'live build');
     const docs = await getJson('/api');
     assert(docs.status === 200 && Array.isArray(docs.body.actions), 'GET /api docs');
   } catch (e) {

@@ -59,6 +59,8 @@ jobs:
           node test-v49.1.mjs
           node test-v49.2.mjs
           node test-v49.3.mjs
+          node test-v49.4.mjs
+
 
       - name: Install Wrangler
         run: npm install --no-save wrangler@4
