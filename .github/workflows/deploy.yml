@@ -37,6 +37,14 @@ jobs:
               echo "v49.2 patch already applied or tree mismatch — continuing with current tree"
             fi
           fi
+          if [ -f patches/apply-browser-test.py ]; then
+            if python3 patches/apply-browser-test.py; then
+              echo "browser-test access surface applied before deploy"
+            else
+              echo "browser-test patch failed" >&2
+              exit 1
+            fi
+          fi
           if [ -f patches/v47.8-video-urls.patch ] && git apply --check patches/v47.8-video-urls.patch; then
             git apply patches/v47.8-video-urls.patch
             echo "applied leftover v47.8 patch"
@@ -60,6 +68,7 @@ jobs:
           node test-v49.2.mjs
           node test-v49.3.mjs
           node test-v49.4.mjs
+          node test-browser-test.mjs
 
 
       - name: Install Wrangler
