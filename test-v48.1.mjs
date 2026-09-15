@@ -109,7 +109,7 @@ console.log('--- v48.1 Research Focus UI ---');
   assert(!/data-learn="technique"/.test(learnBlock), 'LEARN does not keep Technique');
   assert(!/data-learn="skill"/.test(learnBlock), 'LEARN does not keep Skill');
   assert(!/data-learn="product"/.test(learnBlock), 'LEARN does not keep Product');
-  assert(appSrc.includes("const VERSION = '49.0'") || appSrc.includes("const VERSION = '48.1'"), 'frontend version is current');
+  assert(appSrc.includes("const VERSION = '49.2'") || appSrc.includes("const VERSION = '49.0'") || appSrc.includes("const VERSION = '48.1'"), 'frontend version is current');
 }
 
 console.log('--- v48.1 rankResults keeps reserved lanes in the window ---');

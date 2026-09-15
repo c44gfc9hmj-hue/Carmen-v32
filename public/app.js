@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.0';
+const VERSION = '49.2';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -67,6 +67,10 @@ let surpriseReason = '';
 let discoverGen = 0;
 let progressiveTimer = 0;
 let lastFoundThrough = null;
+let lastTopicMap = null;
+let confirmedIdentity = [];
+let rejectedPeople = [];
+let inFlightController = null;
 
 const ACCESS_LABELS = {
   DIRECTLY_RETRIEVED: 'DIRECTLY RETRIEVED',
@@ -672,6 +676,9 @@ function persistSession() {
       identityVerdict,
       lastSavedItemId,
       surpriseReason,
+      lastTopicMap,
+      confirmedIdentity,
+      rejectedPeople,
     }));
   } catch {}
 }
@@ -793,6 +800,9 @@ function restoreSession() {
     if (s.identityVerdict) identityVerdict = s.identityVerdict;
     if (s.lastSavedItemId) lastSavedItemId = s.lastSavedItemId;
     if (s.surpriseReason) surpriseReason = s.surpriseReason;
+    if (s.lastTopicMap) lastTopicMap = s.lastTopicMap;
+    if (Array.isArray(s.confirmedIdentity)) confirmedIdentity = s.confirmedIdentity;
+    if (Array.isArray(s.rejectedPeople)) rejectedPeople = s.rejectedPeople;
     if (s.selectedUrl) selectedCandidate = lastResults.find(r => r.url === s.selectedUrl) || null;
     renderInterestChips();
     renderLensStack(s.meta || { classification: lastClassification });
@@ -803,6 +813,7 @@ function restoreSession() {
       renderVisualCorpus();
       renderVideoCorpus();
       renderGraphTrail(lastDiscoveryMeta);
+      renderTopicMap(lastTopicMap);
       if (selectedCandidate) {
         const i = lastResults.findIndex(r => r.url === selectedCandidate.url);
         if (i >= 0) selectCandidate(selectedCandidate, i, { silent: true });
@@ -843,6 +854,10 @@ async function discover(opts = {}) {
   expandedMode = expanded;
   const gen = ++discoverGen;
   clearTimeout(progressiveTimer);
+  if (inFlightController) {
+    try { inFlightController.abort(); } catch {}
+  }
+  inFlightController = (typeof AbortController !== 'undefined') ? new AbortController() : null;
   const btn = $('discoverBtn');
   if (btn) btn.disabled = true;
   if ($('expandedBtn')) $('expandedBtn').disabled = true;
@@ -893,6 +908,18 @@ async function discover(opts = {}) {
     if (visualMode) params.set('visualMode', visualMode);
     if (opts.visualOffset) params.set('visualOffset', String(opts.visualOffset));
     if (videoMore) params.set('videoMore', '1');
+    const qLower = String(q || '').toLowerCase();
+    const findEverything = opts.findEverything === true || /\b(find everything|everything related|everything about|all sources|full investigation)\b/i.test(q);
+    const premiumAccounts = opts.premium === true || opts.premiumAccounts === true || /\b(premium accounts?|subscription accounts?|paid accounts?)\b/i.test(q);
+    const intentMode = opts.mode || opts.intentMode || (visualMode === 'different' || opts.findDifferent ? 'find-different' : (visualMode === 'similar' || opts.moreLikeThis ? 'more-like-this' : (visualMode === 'more' || opts.findMore ? 'find-more' : '')));
+    if (findEverything) params.set('findEverything', '1');
+    if (premiumAccounts) params.set('premium', '1');
+    if (intentMode) params.set('mode', intentMode);
+    if (opts.findMore) params.set('findMore', '1');
+    if (opts.moreLikeThis) params.set('moreLikeThis', '1');
+    if (opts.findDifferent || visualMode === 'different') params.set('findDifferent', '1');
+    if (confirmedIdentity.length) params.set('confirmedIdentity', confirmedIdentity.slice(0, 6).join(','));
+    if (rejectedPeople.length) params.set('rejectedPeople', rejectedPeople.slice(0, 8).join(','));
     const excl = [...new Set([...(suppressed.urls || []), ...(opts.excludeUrls || [])])].filter(Boolean);
     const hosts = [...new Set([...(suppressed.hosts || []), ...(opts.excludeHosts || [])])].filter(Boolean);
     if (excl.length) params.set('exclude', excl.slice(0, 12).join(','));
@@ -906,12 +933,25 @@ async function discover(opts = {}) {
     if (attemptedQueries.length) params.set('attempted', attemptedQueries.slice(0, 40).join('\n'));
     if (knownImgs.length && (visualMore || visualMode || videoMore)) params.set('knownMedia', knownImgs.join('\n'));
     if (knownVids.length && (videoMore || visualMode)) params.set('knownVideos', knownVids.join('\n'));
-    const r = await fetch(base + '/search?' + params.toString(), { headers: { accept: 'application/json' } });
+    if ((keepSubject || opts.append) && lastResults.length) {
+      try {
+        params.set('prior', JSON.stringify(lastResults.slice(0, 24).map(r => ({
+          url: r.url, title: r.title, snippet: r.snippet, domain: r.domain, source: r.source,
+          sourceClass: r.sourceClass, discoveryLane: r.discoveryLane, evidence: r.evidence,
+          host: r.host, publisher: r.publisher, creator: r.creator, originalSource: r.originalSource,
+          subjectEvidence: r.subjectEvidence, topicEvidence: r.topicEvidence, intersection: r.intersection,
+        }))));
+      } catch {}
+    }
+    const fetchOpts = { headers: { accept: 'application/json' } };
+    if (inFlightController) fetchOpts.signal = inFlightController.signal;
+    const r = await fetch(base + '/search?' + params.toString(), fetchOpts);
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { throw Error(text || `HTTP ${r.status}`); }
     if (!r.ok || data.error) throw Error(data.error || `HTTP ${r.status}`);
     if (gen !== discoverGen) return;
-    if (opts.append && Array.isArray(data.results)) lastResults = mergeResultsByUrl(lastResults, data.results);
+    const shouldMerge = !!(opts.append || keepSubject || opts.progressive || lastResults.length && (findEverything || premiumAccounts));
+    if (shouldMerge && Array.isArray(data.results)) lastResults = mergeResultsByUrl(lastResults, data.results);
     else if (!visualMore && !visualMode && !videoMore) lastResults = Array.isArray(data.results) ? data.results : [];
     else if ((!lastResults || !lastResults.length) && Array.isArray(data.results)) lastResults = data.results;
     lastClassification = data.classification || lastClassification;
@@ -919,6 +959,7 @@ async function discover(opts = {}) {
     if (keepSubject && topicName && lastClassification) lastClassification.context = topicName;
     if (keepSubject && selectedEntity && topicName) selectedEntity.context = topicName;
     lastDiscoveryMeta = data;
+    lastTopicMap = data.topicMap || lastTopicMap;
     lastPaths = Array.isArray(data.paths) ? data.paths : lastPaths;
     lastVisualCandidates = Array.isArray(data.visualCandidates) ? data.visualCandidates : lastVisualCandidates;
     lastVisuals = mergeVisuals(lastVisuals, data.visuals || data.visualCorpus || []);
@@ -940,6 +981,7 @@ async function discover(opts = {}) {
     renderLensStack(data);
     renderPathChips(lastPaths, 'divePaths');
     renderResults(lastResults, data.providers || {});
+    renderTopicMap(lastTopicMap);
     renderVisualCorpus();
     renderVideoCorpus();
     renderGraphTrail(data);
@@ -970,6 +1012,7 @@ async function discover(opts = {}) {
     }
   } catch (e) {
     if (gen !== discoverGen) return;
+    if (e && (e.name === 'AbortError' || /abort/i.test(String(e.message || e)))) return;
     $('results').innerHTML = '';
     $('resultsEmpty').textContent = 'Discovery failed: ' + e.message;
     $('resultsEmpty').classList.remove('hidden');
@@ -1370,9 +1413,11 @@ function selectCandidate(r, i, opts = {}) {
   persistSession();
   if (!opts.silent) {
     identityVerdict = 'confirmed';
-    pushTrail({ kind: 'identity', label: 'That’s the one · ' + (selectedEntity?.canonicalName || r?.title || 'selection'), entity: selectedEntity?.canonicalName || '', topic: diveTopic });
+    const name = selectedEntity?.canonicalName || r?.title || lastClassification?.subject || '';
+    if (name && !confirmedIdentity.includes(name)) confirmedIdentity = [...confirmedIdentity, name].slice(-6);
+    pushTrail({ kind: 'identity', label: 'That’s the one · ' + name, entity: name, topic: diveTopic });
     const isPerson = (selectedEntity?.type || lastClassification?.type) === 'person';
-    toast(isPerson ? 'That’s the one. Deep Dive investigates this person, not only that page.' : 'Selected. Deep Dive is ready.');
+    toast(isPerson ? 'That’s the one. Later retrieval will prefer this identity.' : 'Selected. Deep Dive is ready.');
   }
 }
 async function persistSelection(r) {
@@ -1500,13 +1545,16 @@ function rejectVisual(im) {
   if (im.pageUrl) suppressed.urls.push(im.pageUrl);
   lastVisuals = lastVisuals.filter(x => visualDedupeKey(x.url) !== visualDedupeKey(url));
   renderVisualCorpus();
-  discover({ visualMode: 'different', seedVisual: im });
+  pushTrail({ kind: 'identity', label: 'Not this image', entity: lastClassification?.subject || '' });
+  discover({ visualMode: 'different', seedVisual: im, findDifferent: true });
 }
 function rejectPerson(r) {
   if (!r) return;
   if (r.url) suppressed.urls.push(r.url);
   const host = r.domain || hostOf(r.url || r.pageUrl || '');
   if (host) suppressed.hosts.push(host);
+  const label = r.title || host || r.url || 'rejected candidate';
+  if (!rejectedPeople.includes(label)) rejectedPeople = [...rejectedPeople, label].slice(-12);
   lastResults = lastResults.filter(x => x.url !== r.url);
   lastVisualCandidates = lastVisualCandidates.filter(x => x.url !== r.url);
   if (selectedCandidate && selectedCandidate.url === r.url) {
@@ -1517,8 +1565,9 @@ function rejectPerson(r) {
   renderResults(lastResults, lastDiscoveryMeta?.providers || {});
   renderPersonRail();
   renderIdentityBanner();
-  pushTrail({ kind: 'identity', label: 'Not this one · ' + (r.title || r.domain || r.url || ''), entity: lastClassification?.subject || '' });
-  discover({ visualMode: 'different' });
+  persistSession();
+  pushTrail({ kind: 'identity', label: 'Not this person · ' + label, entity: lastClassification?.subject || '' });
+  discover({ visualMode: 'different', findDifferent: true, keepSubject: !!(lastClassification?.subject), entity: lastClassification?.subject || '', topic: diveTopic });
 }
 function closeLightbox() {
   const box = $('lightbox');
@@ -1552,32 +1601,93 @@ function renderSearchDiagnostics(data) {
   }
   el.innerHTML = bits.join(' · ');
 }
-function renderResults(results, providers) {
-  $('resultCount').textContent = results.length ? String(results.length) : '';
-  renderSearchDiagnostics(lastDiscoveryMeta || { providers });
-  if (!results.length) {
-    $('results').innerHTML = '';
-    if ($('personRail')) $('personRail').innerHTML = '';
-    $('resultsEmpty').textContent = 'No public-web candidates were returned. Diagnostics below show which sources responded.';
-    $('resultsEmpty').classList.remove('hidden');
-    updateDeepDiveState();
+function evidenceBadges(r) {
+  const ev = r && r.evidence || {};
+  const bits = [];
+  if (ev.subjectEvidence && ev.subjectEvidence !== 'none') bits.push(`<span class="ev-badge">subject ${esc(ev.subjectEvidence)}</span>`);
+  if (ev.topicEvidence && ev.topicEvidence !== 'none') bits.push(`<span class="ev-badge">topic ${esc(ev.topicEvidence)}</span>`);
+  if ((ev.intersection && ev.intersection !== 'none') || r.intersection) bits.push(`<span class="ev-badge">∩ ${esc(ev.intersection || 'strong')}</span>`);
+  if (r && r.accountOwnership && r.accountOwnership !== 'unknown') bits.push(`<span class="ev-badge">${esc(r.accountOwnership)}</span>`);
+  if (r && r.accountPlatform && r.accountPlatform !== 'UNKNOWN') bits.push(`<span class="ev-badge">${esc(r.accountPlatform)}</span>`);
+  return bits.join(' ');
+}
+function provenanceRow(r) {
+  if (!r) return '';
+  const host = r.host || r.domain || hostOf(r.url) || 'UNKNOWN';
+  const pub = r.publisher || 'UNKNOWN';
+  const creator = r.creator || 'UNKNOWN';
+  const orig = r.originalSource || 'UNKNOWN';
+  const repost = r.reposter && r.reposter !== 'UNKNOWN' ? ' · reposter ' + r.reposter : '';
+  const mirror = r.mirror && r.mirror !== 'UNKNOWN' ? ' · mirror ' + r.mirror : '';
+  return `<div class="prov-row">host ${esc(host)} · publisher ${esc(pub)} · creator ${esc(creator)} · original ${esc(orig)}${esc(repost)}${esc(mirror)}</div>`;
+}
+function sourceClassLabel(key) {
+  const map = {
+    'identity-profile': 'Identity / profile',
+    identity: 'Identity / profile',
+    DATABASE: 'Identity database',
+    PRIMARY: 'Primary source',
+    PUBLIC_PROFILE: 'Public profile',
+    ENCYCLOPEDIA: 'Encyclopedia',
+    'creator-owned': 'Creator-owned',
+    'major-platform': 'Major adult platforms',
+    'premium-subscription': 'Premium / subscription',
+    'creator-store': 'Creator stores',
+    'fetish-publisher': 'Specialist BDSM / fetish publishers',
+    'studio-producer': 'Studios / producers',
+    video: 'Video',
+    'images-galleries': 'Images / galleries',
+    'community-social': 'Community / social',
+    reddit: 'Reddit',
+    directories: 'Directories',
+    interviews: 'Interviews / articles',
+    collaborators: 'Collaborators / related people',
+    'related-sites': 'Related websites',
+    intersection: 'Subject × topic',
+    site: 'Site',
+    'known-site': 'Known site',
+    other: 'Other public sources',
+  };
+  return map[key] || String(key || 'Other').replace(/[-_]/g, ' ');
+}
+function renderTopicMap(map) {
+  const el = $('topicMap');
+  if (!el) return;
+  const tm = map || lastTopicMap;
+  if (!tm || !Array.isArray(tm.branches) || !tm.branches.length) {
+    el.innerHTML = '';
     return;
   }
-  $('resultsEmpty').classList.add('hidden');
-  const isPersonType = (lastClassification?.type || currentSubject) === 'person';
-  renderPersonRail();
-  $('results').innerHTML = results.map((r, i) => {
-    const imgs = [...new Set([r.image, ...(r.images || [])].filter(Boolean))].slice(0, 6);
-    const hero = imgs[0];
-    const rest = imgs.slice(1, 5);
-    const selected = (selectedCandidate && selectedCandidate.url === r.url) || (selectedEntity && (selectedEntity.discoveryEvidence?.url === r.url || selectedEntity.url === r.url));
-    const aliases = (r.aliases || []).filter(Boolean).slice(0, 4);
-    const kind = r.resultKind || (r.intersection ? 'INTERSECTION_MATCH' : '');
-    const kindLabel = resultKindLabel(kind);
-    const ctxBits = extraContextText(lastClassification);
-    const personCard = isPersonType || r.entityType === 'person';
-    const displayName = personCard ? (lastClassification?.subject || r.title) : r.title;
-    return `<div class="result${selected ? ' selected' : ''}${personCard ? ' person' : ''}" data-i="${i}"${personCard ? ` data-identify="${i}"` : ''}>
+  const subj = tm.subject || lastClassification?.subject || '';
+  const topic = tm.topic || extraContextText(lastClassification) || '';
+  const title = tm.findEverything
+    ? ('Topic map' + (subj ? ' · ' + subj : '') + (topic ? ' × ' + topic : ''))
+    : (tm.premiumAccounts ? 'Premium accounts map' : (tm.knownEntity ? 'Known site map' : 'Investigation map'));
+  const diag = lastDiscoveryMeta && lastDiscoveryMeta.corpusDiagnosis;
+  const diversity = lastDiscoveryMeta && lastDiscoveryMeta.sourceDiversity;
+  el.innerHTML = `<div class="topic-map-head"><b>${esc(title)}</b>
+    ${diag && diag.status && diag.status !== 'ok' ? `<p class="hint">Retrieval status: ${esc(diag.label || diag.status)}. This is not automatically a thin public corpus.</p>` : ''}
+    ${diversity && diversity.shouldOpenMoreAdultLanes ? '<p class="warning">Adult Lens ON but coverage was generic-heavy — additional adult source lanes were opened.</p>' : ''}
+    ${lastDiscoveryMeta && lastDiscoveryMeta.redditEvidence === 'unavailable' ? '<p class="hint">Reddit evidence unavailable — search pages are not counted as posts.</p>' : ''}
+  </div>` + tm.branches.map(b => {
+    const n = Number(b.results || 0);
+    return `<div class="topic-branch" data-branch="${esc(b.id)}">
+      <div class="tb-h"><b>${esc(b.label)}</b><span class="ev-badge">${esc(b.status || 'pending')} · ${n}</span></div>
+      <div class="subtle">${esc(sourceClassLabel(b.sourceClass))}${b.queries && b.queries[0] ? ' · ' + esc(String(b.queries[0]).slice(0, 72)) : ''}</div>
+    </div>`;
+  }).join('');
+}
+function resultCardHtml(r, i, isPersonType) {
+  const imgs = [...new Set([r.image, ...(r.images || [])].filter(Boolean))].slice(0, 6);
+  const hero = imgs[0];
+  const rest = imgs.slice(1, 5);
+  const selected = (selectedCandidate && selectedCandidate.url === r.url) || (selectedEntity && (selectedEntity.discoveryEvidence?.url === r.url || selectedEntity.url === r.url));
+  const kind = r.resultKind || (r.intersection ? 'INTERSECTION_MATCH' : '');
+  const kindLabel = resultKindLabel(kind);
+  const personCard = isPersonType || r.entityType === 'person';
+  const displayName = personCard ? (lastClassification?.subject || r.title) : r.title;
+  const ev = evidenceBadges(r);
+  return `<div class="result${selected ? ' selected' : ''}${personCard ? ' person' : ''}${r.intersection ? ' direct' : ''}" data-i="${i}"${personCard ? ` data-identify="${i}"` : ''}>
       ${hero ? `<img class="hero"${personCard ? ` data-identify="${i}"` : ''} data-full="${esc(imgSrc(hero))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(hero))}" alt="${esc(displayName)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
       <div class="rbody">
         <div class="rtitle">${esc(displayName)}</div>
@@ -1586,23 +1696,61 @@ function renderResults(results, providers) {
           ${r.retrievalLane ? `<span class="badge">${esc(r.retrievalLane)}</span>` : ''}
           ${r.accessState ? `<span class="badge">${esc(r.accessState)}</span>` : ''}
           ${kindLabel ? `<span class="badge rkind">${esc(kindLabel)}</span>` : ''}
+          ${r.sourceClass ? `<span class="badge">${esc(sourceClassLabel(r.sourceClass))}</span>` : ''}
         </div>
         <div class="subtle">${esc(r.domain || hostOf(r.url))}</div>
+        ${ev ? `<div class="rmeta">${ev}</div>` : ''}
         ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
         ${personCard ? `<p class="hint">A picture is not proof of identity.</p>` : ''}
         ${r.accessNote ? `<p class="warning">${esc(r.accessNote)}</p>` : ''}
         ${r.publicEvidence ? `<p class="hint">Public evidence (not protected content): ${esc(r.publicEvidence)}</p>` : ''}
         ${r.snippet ? `<div class="rsnippet">${esc(r.snippet)}</div>` : ''}
+        ${provenanceRow(r)}
         ${rest.length ? `<div class="thumbs">${rest.map(u => `<img data-full="${esc(imgSrc(u))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(u))}" alt="" referrerpolicy="no-referrer">`).join('')}</div>` : ''}
         <div class="racts">
           <button data-ract="select" data-i="${i}">${selected ? (personCard ? 'That’s the one' : 'Selected') : (personCard ? 'That’s the one' : 'Select')}</button>
           <button data-ract="dive" data-i="${i}">Deep Dive</button>
           <button data-ract="save" data-i="${i}">Save</button>
           <button data-ract="open" data-i="${i}">Open source</button>
+          ${personCard ? `<button data-ract="notperson" data-i="${i}">Not this person</button>` : ''}
         </div>
       </div>
     </div>`;
-  }).join('');
+}
+function renderResults(results, providers) {
+  $('resultCount').textContent = results.length ? String(results.length) : '';
+  renderSearchDiagnostics(lastDiscoveryMeta || { providers });
+  if (!results.length) {
+    $('results').innerHTML = '';
+    if ($('personRail')) $('personRail').innerHTML = '';
+    const diag = lastDiscoveryMeta && lastDiscoveryMeta.corpusDiagnosis;
+    $('resultsEmpty').textContent = diag && diag.status && diag.status !== 'ok'
+      ? ('No public-web candidates. Retrieval status: ' + (diag.label || diag.status) + '.')
+      : 'No public-web candidates were returned. Diagnostics below show which sources responded.';
+    $('resultsEmpty').classList.remove('hidden');
+    updateDeepDiveState();
+    return;
+  }
+  $('resultsEmpty').classList.add('hidden');
+  const isPersonType = (lastClassification?.type || currentSubject) === 'person';
+  renderPersonRail();
+  const organize = !!(lastTopicMap && (lastTopicMap.findEverything || lastTopicMap.premiumAccounts || (lastTopicMap.branches && lastTopicMap.branches.length >= 4)));
+  if (organize) {
+    const groups = new Map();
+    results.forEach((r, i) => {
+      const key = r.plannerSourceClass || r.sourceClass || r.discoveryLane || 'other';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ r, i });
+    });
+    let html = '';
+    for (const [key, rows] of groups) {
+      html += `<div class="topic-branch"><div class="tb-h"><b>${esc(sourceClassLabel(key))}</b><span class="ev-badge">${rows.length}</span></div></div>`;
+      html += rows.map(x => resultCardHtml(x.r, x.i, isPersonType)).join('');
+    }
+    $('results').innerHTML = html;
+  } else {
+    $('results').innerHTML = results.map((r, i) => resultCardHtml(r, i, isPersonType)).join('');
+  }
   renderSearchSuggestions(results);
   renderVisualCorpus();
   updateDeepDiveState();
@@ -1725,6 +1873,52 @@ function resetInvestigationContext() {
   if ($('teachPanel')) $('teachPanel').classList.add('hidden');
   if ($('analyzePanel')) $('analyzePanel').classList.add('hidden');
 }
+function hardNewInvestigation(opts = {}) {
+  discoverGen++;
+  clearTimeout(progressiveTimer);
+  if (inFlightController) {
+    try { inFlightController.abort(); } catch {}
+    inFlightController = null;
+  }
+  selectedCandidate = null;
+  selectedEntity = null;
+  lastResults = [];
+  lastVisualCandidates = [];
+  lastVisuals = [];
+  lastVideos = [];
+  selectedVisual = null;
+  suppressed = { urls: [], hosts: [], images: [] };
+  attemptedQueries = [];
+  lastPremium = [];
+  lastRetrievalTrace = null;
+  lastClassification = null;
+  lastDiscoveryMeta = null;
+  lastTopicMap = null;
+  lastCorpusScale = null;
+  lastConcepts = [];
+  lastResearchState = null;
+  lastDivePayload = null;
+  originalQuery = '';
+  researchSubject = '';
+  confirmedIdentity = [];
+  rejectedPeople = [];
+  identityVerdict = null;
+  currentProjectId = null;
+  sessionBoundProject = false;
+  resetInvestigationContext();
+  if ($('searchQuery')) $('searchQuery').value = '';
+  if ($('homeQuery')) $('homeQuery').value = '';
+  if ($('results')) $('results').innerHTML = '';
+  if ($('personRail')) $('personRail').innerHTML = '';
+  if ($('topicMap')) $('topicMap').innerHTML = '';
+  if ($('selectedBanner')) $('selectedBanner').innerHTML = '';
+  if ($('classBar')) $('classBar').innerHTML = '';
+  if ($('diveStream')) $('diveStream').innerHTML = '';
+  if ($('resultCount')) $('resultCount').textContent = '';
+  persistSession();
+  if (!opts.silent) toast('New investigation. Saved collections stay. Live search state is cleared.');
+  if (!opts.stay) setTab('home');
+}
 function currentFoundThrough() {
   const last = investigationTrail[investigationTrail.length - 1];
   return {
@@ -1762,8 +1956,9 @@ function findMoreActions(i, kind) {
     <button type="button" data-findmore="who" data-kind="${esc(kind)}" data-i="${i}">Who is this?</button>
     <button type="button" data-findmore="person" data-kind="${esc(kind)}" data-i="${i}">More from this person</button>
     <button type="button" data-findmore="like" data-kind="${esc(kind)}" data-i="${i}">More like this</button>
-    <button type="button" data-findmore="subject" data-kind="${esc(kind)}" data-i="${i}">More on this subject</button>
+    <button type="button" data-findmore="subject" data-kind="${esc(kind)}" data-i="${i}">Find more</button>
     <button type="button" data-findmore="source" data-kind="${esc(kind)}" data-i="${i}">More from this source</button>
+    <button type="button" data-findmore="different" data-kind="${esc(kind)}" data-i="${i}">Find different</button>
     <button type="button" data-findmore="surprise" data-kind="${esc(kind)}" data-i="${i}">Surprise me</button>
   </div>`;
 }
@@ -1917,27 +2112,40 @@ async function findMore(kind, item) {
     diveTopic = '';
     if ($('diveSearchQuery')) $('diveSearchQuery').value = '';
     pushTrail({ kind: 'find-more', label: 'More from ' + entity, entity });
-    return discover({ keepSubject: true, entity, expanded: true, append: true });
+    return discover({ keepSubject: true, entity, expanded: true, append: true, findMore: true, mode: 'find-more' });
   }
   if (kind === 'like') {
     const traits = likeThisTraits(item);
     if (!traits.length) return toast('Not enough public characteristics to find similar material.');
     const topic = traits.join(' ');
-    pushTrail({ kind: 'find-more', label: 'More like this · ' + topic, entity, topic });
-    return investigateTopic(topic);
+    pushTrail({ kind: 'more-like-this', label: 'More like this · ' + topic, entity, topic });
+    return discover({ keepSubject: !!entity, entity, topic, append: true, moreLikeThis: true, mode: 'more-like-this', seedVisual: item });
   }
   if (kind === 'subject') {
     const topic = diveTopic || extraContextText(lastClassification) || entity;
     if (!topic) return toast('No subject to expand yet.');
-    pushTrail({ kind: 'find-more', label: 'More on ' + topic, entity, topic });
-    return discover({ keepSubject: !!entity, entity, topic, expanded: true, append: true });
+    pushTrail({ kind: 'find-more', label: 'Find more · ' + topic, entity, topic });
+    return discover({ keepSubject: !!entity, entity, topic, expanded: true, append: true, findMore: true, mode: 'find-more' });
   }
   if (kind === 'source') {
     if (!host) return toast('No public host to follow.');
-    const topic = (entity ? '' : '') + 'site:' + host;
     pushTrail({ kind: 'find-more', label: 'More from ' + host + ' (host, not necessarily the creator)', entity, topic: host });
     toast('This is the hosting site. The creator or original publisher may be someone else.');
-    return discover({ keepSubject: !!entity, entity, topic: (entity + ' site:' + host).trim(), append: true });
+    return discover({ keepSubject: !!entity, entity, topic: (entity + ' site:' + host).trim(), append: true, findMore: true, mode: 'find-more' });
+  }
+  if (kind === 'different') {
+    const exclHosts = [...new Set([host, ...(suppressed.hosts || []), ...((lastResults || []).map(x => x.domain || hostOf(x.url)).filter(Boolean))])].filter(Boolean).slice(0, 8);
+    pushTrail({ kind: 'find-different', label: 'Find different sources' + (entity ? ' · ' + entity : ''), entity, topic: diveTopic });
+    return discover({
+      keepSubject: !!entity,
+      entity,
+      topic: diveTopic,
+      append: true,
+      findDifferent: true,
+      mode: 'find-different',
+      excludeHosts: exclHosts,
+      excludeUrls: (lastResults || []).map(x => x.url).filter(Boolean).slice(0, 12),
+    });
   }
   if (kind === 'surprise') return surpriseMe();
 }
@@ -1958,15 +2166,17 @@ async function surpriseMe() {
   if (diveTopic) terms.push(diveTopic);
   const cleaned = [...new Set(terms.map(s => String(s || '').trim()).filter(s => s.length > 2 && !/^site:/.test(s)))];
   if (!cleaned.length) {
-    surpriseReason = '';
-    if ($('surpriseWhy')) { $('surpriseWhy').textContent = ''; $('surpriseWhy').classList.add('hidden'); }
+    surpriseReason = 'No explicit saves, searches, or “more like this” yet — Surprise me stays empty rather than inventing a hidden preference model.';
+    if ($('surpriseWhy')) { $('surpriseWhy').textContent = surpriseReason; $('surpriseWhy').classList.remove('hidden'); }
+    if ($('surpriseWhyHome')) { $('surpriseWhyHome').textContent = surpriseReason; $('surpriseWhyHome').hidden = false; }
     return toast('Save or investigate a few things first. Surprise me learns from what you actually use — it is not random and not advertising.');
   }
   const current = (selectedEntity?.canonicalName || '').toLowerCase();
   const pick = cleaned.find(s => s.toLowerCase() !== current) || cleaned[Math.floor(Math.random() * cleaned.length)];
   const because = cleaned.slice(0, 3).join(', ');
-  surpriseReason = 'I thought you might like this because you have been investigating and saving: ' + because + '.';
+  surpriseReason = 'Surprise me is a bounded heuristic: it prefers something you already saved, selected, or asked to expand — not a hidden preference model. Picked “' + pick + '” because you have been investigating: ' + because + '.';
   if ($('surpriseWhy')) { $('surpriseWhy').textContent = surpriseReason; $('surpriseWhy').classList.remove('hidden'); }
+  if ($('surpriseWhyHome')) { $('surpriseWhyHome').textContent = surpriseReason; $('surpriseWhyHome').hidden = false; }
   pushTrail({ kind: 'surprise', label: 'Surprise me → ' + pick, query: pick, entity: selectedEntity?.canonicalName || '', topic: pick });
   if (selectedEntity?.canonicalName && pick.toLowerCase() !== current) {
     diveTopic = pick;
@@ -2001,20 +2211,69 @@ async function analyzeDiscoveryItem(item) {
   if (!panel || !item) return toast('Nothing to analyze.');
   panel.classList.remove('hidden');
   const isVideo = item.kind === 'video' || item.mediaKind === 'video' || item.thumbnail || /youtube|vimeo|youtu\.be|\.mp4|xvideos|pornhub|redgifs/i.test(String(item.url || item.pageUrl || ''));
-  const isImage = !!(item.image && !isVideo);
+  const isImage = !!(item.imageDataUrl || (item.image && !isVideo && /\.(jpg|jpeg|png|webp|gif|avif)(\?|$)/i.test(String(item.url || item.image || ''))));
   let html = '<h3>Analyze</h3>';
-  html += '<p class="hint">OBSERVED is what was retrieved. INFERRED is Carmen’s reading. UNKNOWN stays unknown.</p>';
+  html += '<p class="hint">SOURCE FACTS are on the page. SUPPORTED FACTS are backed by retrieved text. INFERENCES are labeled. GENERAL BACKGROUND is not from this source. UNKNOWN stays unknown.</p>';
   if (isVideo) {
-    html += '<div class="claim unknown"><b>UNKNOWN — video frames</b><br>Carmen cannot currently inspect the actual video frames. This analysis uses the title, thumbnail, page metadata, and retrieved public pages — not a frame-by-frame watch.</div>';
+    html += '<div class="claim unknown"><b>UNKNOWN — video frames</b><br>Carmen cannot currently inspect the actual video frames. Timestamps are UNKNOWN until real frame analysis is available. This analysis uses the title, thumbnail, page metadata, and retrieved public pages — not a frame-by-frame watch.</div>';
   }
-  html += `<div class="claim"><b>OBSERVED</b><br>${esc(item.title || item.url || '')}<br>${esc(item.domain || hostOf(item.url || item.pageUrl || ''))}${item.snippet ? '<br>' + esc(item.snippet) : ''}</div>`;
+  html += `<div class="claim"><b>SOURCE FACTS</b><br>${esc(item.title || item.url || '')}<br>${esc(item.domain || hostOf(item.url || item.pageUrl || ''))}${item.snippet ? '<br>' + esc(item.snippet) : ''}</div>`;
   html += `<div class="claim inferred"><b>INFERRED</b><br>${esc(item.reason || 'Relevance is inferred from public title/snippet overlap with the current subject. That is not identity proof.')}</div>`;
   html += `<div class="claim unknown"><b>UNKNOWN</b><br>Creator vs host vs original publisher are not assumed to be the same. ${isVideo ? 'What happens in the video is unknown without frame analysis.' : 'Unretrieved page contents are unknown.'}</div>`;
-  html += '<div class="row" style="margin-top:8px"><button class="btn" data-stream-close-analyze="1">Hide</button><button class="btn primary" data-findmore="like" data-kind="result" data-i="0">Find more</button><button class="btn" id="analyzeTeach">Teach me about this</button></div>';
+  html += '<div class="row" style="margin-top:8px"><button class="btn" data-stream-close-analyze="1">Hide</button><button class="btn primary" data-findmore="like" data-kind="result" data-i="0">More like this</button><button class="btn" id="analyzeTeach">Teach me about this</button></div>';
   panel.innerHTML = html;
   $('analyzeTeach').onclick = () => teachAbout(item);
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  if (item.url) {
+  const base = backendUrl();
+  if (base) {
+    try {
+      const body = {
+        kind: isVideo ? 'video' : (isImage ? 'webpage' : 'webpage'),
+        url: item.url || item.pageUrl || '',
+        pageUrl: item.pageUrl || item.url || '',
+        title: item.title || '',
+        snippet: item.snippet || item.textExcerpt || item.description || '',
+        evidence: {
+          url: item.url || item.pageUrl || '',
+          title: item.title || '',
+          snippet: item.snippet || '',
+          domain: item.domain || hostOf(item.url || item.pageUrl || ''),
+          kind: isVideo ? 'video' : (resultIsReddit(item) ? 'reddit' : 'webpage'),
+        },
+        subject: selectedEntity?.canonicalName || lastClassification?.subject || '',
+        topic: diveTopic || extraContextText(lastClassification) || '',
+      };
+      if (item.imageDataUrl) body.imageDataUrl = item.imageDataUrl;
+      const r = await fetch(base + '/analyze', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const text = await r.text();
+      let data; try { data = JSON.parse(text); } catch { data = { error: text || ('HTTP ' + r.status) }; }
+      if (!r.ok) {
+        panel.insertAdjacentHTML('beforeend', `<div class="claim unknown"><b>Analyze failed</b><br>${esc(data.error || ('HTTP ' + r.status))}</div>`);
+      } else {
+        const facts = (data.sourceFacts || data.observations || []).map(f => typeof f === 'string' ? f : (f.field ? f.field + ': ' + f.value : JSON.stringify(f))).slice(0, 8);
+        const supported = (data.supportedFacts || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 6);
+        const inf = (data.inferences || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 6);
+        const unk = (data.unknowns || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 6);
+        const bg = (data.generalBackground || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 4);
+        let extra = '';
+        if (data.kind) extra += `<p class="hint">Evidence kind: ${esc(data.kind)}</p>`;
+        if (facts.length) extra += `<div class="claim"><b>SOURCE FACTS</b><br>${esc(facts.join(' · '))}</div>`;
+        if (supported.length) extra += `<div class="claim"><b>SUPPORTED FACTS</b><br>${esc(supported.join(' · '))}</div>`;
+        if (inf.length) extra += `<div class="claim inferred"><b>INFERENCES</b><br>${esc(inf.join(' · '))}</div>`;
+        if (bg.length) extra += `<div class="claim"><b>GENERAL BACKGROUND</b><br>${esc(bg.join(' · '))}</div>`;
+        if (unk.length) extra += `<div class="claim unknown"><b>UNKNOWN</b><br>${esc(unk.join(' · '))}</div>`;
+        if (data.videoFrames && data.videoFrames.timestamps) extra += `<div class="claim unknown"><b>VIDEO FRAMES</b><br>${esc(data.videoFrames.note || 'Timestamps UNKNOWN')}</div>`;
+        if (data.analysisError) extra += `<div class="claim unknown"><b>AI note</b><br>${esc(data.analysisError)}</div>`;
+        if (extra) panel.insertAdjacentHTML('beforeend', extra);
+      }
+    } catch (e) {
+      panel.insertAdjacentHTML('beforeend', `<div class="claim unknown"><b>UNKNOWN — analyze</b><br>${esc(e.message)}</div>`);
+    }
+  } else if (item.url) {
     try {
       const retrieved = await retrieveSource(item.url);
       const extra = retrieved && retrieved.status === 'RETRIEVED'
@@ -2706,13 +2965,14 @@ function wire() {
   $('navInvestigations').onclick = () => setTab('investigations');
   $('navLearn').onclick = () => setTab('learn');
   $('homeSearchBtn').onclick = () => {
-    sessionBoundProject = false;
-    currentProjectId = null;
-    resetInvestigationContext();
-    $('searchQuery').value = $('homeQuery').value.trim();
+    const q = $('homeQuery').value.trim();
+    hardNewInvestigation({ silent: true, stay: true });
+    if ($('searchQuery')) $('searchQuery').value = q;
+    if ($('homeQuery')) $('homeQuery').value = q;
     setTab('search');
-    if ($('searchQuery').value) discover();
+    if (q) discover();
   };
+  if ($('newInvestigationBtn')) $('newInvestigationBtn').onclick = () => hardNewInvestigation();
   if ($('surpriseMeBtn')) $('surpriseMeBtn').onclick = () => surpriseMe();
   if ($('diveSearchBtn')) $('diveSearchBtn').onclick = () => investigateTopic($('diveSearchQuery')?.value || '');
   if ($('diveSearchQuery')) $('diveSearchQuery').addEventListener('keydown', e => {

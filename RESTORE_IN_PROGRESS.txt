@@ -1,1 +1,0 @@
-Restoring full Carmen worker.js from v37 artifact. Temporary marker.

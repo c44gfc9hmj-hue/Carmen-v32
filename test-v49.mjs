@@ -15,9 +15,9 @@ const appSrc = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8')
 
 console.log('--- v49 source / UX contracts ---');
 {
-  assert(/49\.0/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION 49.0');
-  assert(appSrc.includes("const VERSION = '49.0'"), 'frontend VERSION 49.0');
-  assert(/carmen-build" content="49\.0"/.test(html), 'html build 49.0');
+  assert(/49\.2/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION 49.2');
+  assert(appSrc.includes("const VERSION = '49.2'"), 'frontend VERSION 49.2');
+  assert(/carmen-build" content="49\.2"/.test(html), 'html build 49.2');
   assert(/What are you curious about\?/.test(html), 'home curiosity prompt');
   assert(/id="diveSearchQuery"/.test(html), 'persistent dive search');
   assert(/id="diveStream"/.test(html), 'dive stream');
@@ -30,7 +30,7 @@ console.log('--- v49 source / UX contracts ---');
   assert(/That’s the one/.test(appSrc) && /Not this one/.test(appSrc), 'interactive identity');
   assert(/cannot currently inspect the actual video frames/.test(appSrc), 'video analysis honesty');
   assert(/composeInvestigationQuery/.test(workerSrc) && /opts\.entity/.test(workerSrc), 'worker entity/topic');
-  assert(/v49-investigation-loop/.test(workerSrc), 'health build 49.0-investigation-loop');
+  assert(/v49-investigation-loop/.test(workerSrc), 'health still lists v49-investigation-loop');
 }
 
 console.log('--- v49 composeInvestigationQuery ---');
@@ -93,9 +93,10 @@ console.log('--- v49 health ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.0', 'health version 49.0');
-  assert(body.build === '49.0-investigation-loop', 'health build');
+  assert(body.version === '49.2', 'health version 49.2');
+  assert(body.build === '49.2-topic-map-retrieval', 'health build');
   assert((body.features || []).includes('v49-dive-context-search'), 'feature flag dive-context-search');
+  assert((body.features || []).includes('v49.2-topic-map-retrieval'), 'feature flag topic-map-retrieval');
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

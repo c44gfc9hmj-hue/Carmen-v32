@@ -9,7 +9,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon.svg">
 <title>Carmen</title>
-<meta name="carmen-build" content="49.0">
+<meta name="carmen-build" content="49.2">
 <style>
 :root{
   color-scheme:dark;
@@ -215,12 +215,25 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 .trail-list{list-style:none;padding:0;margin:0}
 .trail-list li{border-left:2px solid var(--accent);padding:6px 0 6px 12px;margin:6px 0}
 .surprise-why{border:1px dashed var(--line2);border-radius:12px;padding:10px 12px;margin:8px 0;color:var(--accent);font-size:13px}
+.topic-map{display:flex;flex-direction:column;gap:8px;margin:8px 0 14px}
+.topic-map-head{margin:0 0 4px}
+.topic-map-head b{font-size:14px;letter-spacing:-.02em}
+.topic-branch{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--card2)}
+.topic-branch .tb-h{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.topic-branch .tb-h b{font-size:13px}
+.ev-badge{font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--subtle)}
+.prov-row{font-size:11px;color:var(--muted);margin-top:6px}
+.appbar .rowbits{display:flex;gap:8px;align-items:center;justify-content:space-between}
+
 @media (prefers-reduced-motion:reduce){.skeleton{animation:none}}
 </style>
 </head>
 <body>
 <header class="appbar">
-  <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49</span></h1>
+  <div class="rowbits">
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.2</span></h1>
+    <button class="btn ghost" id="newInvestigationBtn" type="button">New investigation</button>
+  </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
 </header>
 <main>
@@ -243,6 +256,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     </div>
     <button class="quiet-link" id="homeImageBtn" type="button">Inspect an image instead</button>
     <button class="quiet-link" id="surpriseMeBtn" type="button">Surprise me</button>
+    <p class="hint" id="surpriseWhyHome" hidden></p>
     <input id="homeImage" type="file" accept="image/*" class="hidden">
     <p class="warning">Research only. Carmen never contacts people, posts, comments, follows, submits forms, or buys anything.</p>
   </div>
@@ -322,6 +336,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <p class="hint" id="identifyHint">For a person, tap the image that matches. A picture is not proof of identity.</p>
     <div id="selectedBanner"></div>
     <div id="graphTrail" class="graph-trail hidden"></div>
+    <div id="topicMap" class="topic-map"></div>
     <div id="personRail"></div>
     <div id="visualCorpus"></div>
     <div id="videoCorpus"></div>

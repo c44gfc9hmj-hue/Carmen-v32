@@ -9,6 +9,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon.svg">
 <title>Carmen</title>
+<meta name="carmen-build" content="49.2">
 <style>
 :root{
   color-scheme:dark;
@@ -120,7 +121,12 @@ details.adv summary::-webkit-details-marker{display:none}
 .thumbs{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;padding-bottom:2px}
 .thumbs img{width:88px;height:88px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#000;flex:0 0 auto}
 .gallery{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
+.gallery.dense{grid-template-columns:repeat(3,1fr)}
 .gallery img{width:100%;height:140px;object-fit:cover;border-radius:10px;background:#000;border:1px solid var(--line)}
+.visual-tile{position:relative;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0b0d11}
+.visual-tile img{width:100%;height:140px;object-fit:cover;display:block;background:#000}
+.visual-tile .vcap{padding:8px 10px;font-size:11px;color:var(--muted);line-height:1.35}
+.measure-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#1a1e25;color:var(--muted);border:1px solid var(--line)}
 .badge.observed{color:var(--observed);border-color:#2a3a44}
 .badge.inferred{color:var(--inferred);border-color:#3a3148}
@@ -151,9 +157,17 @@ details.adv summary::-webkit-details-marker{display:none}
 .toast{position:fixed;bottom:92px;left:16px;right:16px;background:#1a1e25;border:1px solid var(--line);border-radius:14px;padding:12px 14px;z-index:30;font-size:13px}
 .sheet{position:fixed;inset:0;background:#000a;z-index:25;display:flex;align-items:flex-end;justify-content:center}
 .sheet .panel{width:100%;max-width:720px;background:var(--card);border-top:1px solid var(--line);border-radius:20px 20px 0 0;padding:16px 16px calc(18px + env(safe-area-inset-bottom))}
-.lightbox{position:fixed;inset:0;background:#000d;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:10px}
-.lightbox img{max-width:100%;max-height:72vh;object-fit:contain;border-radius:12px;background:#000}
-.lightbox .navrow{display:flex;gap:8px;width:100%;max-width:720px}
+.lightbox{position:fixed;inset:0;background:#000d;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px 16px calc(18px + env(safe-area-inset-bottom));gap:10px;overflow:auto}
+.lightbox .zoomwrap{width:100%;max-width:720px;max-height:68vh;overflow:auto;touch-action:pinch-zoom;display:flex;align-items:center;justify-content:center}
+.lightbox img{max-width:100%;max-height:68vh;object-fit:contain;border-radius:12px;background:#000;touch-action:pinch-zoom}
+.lightbox .navrow{display:flex;gap:8px;width:100%;max-width:720px;flex-wrap:wrap}
+.lightbox .navrow button{flex:1 1 30%;min-width:96px}
+.lightbox-related{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;width:100%;max-width:720px;padding-bottom:2px}
+.lightbox-related img{width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#000;flex:0 0 auto;opacity:.85}
+.lightbox-related img.on{opacity:1;border-color:var(--accent)}
+.corpus-scale{font-size:12px;color:var(--muted);margin:0 0 8px}
+.video-tile{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0b0d11;margin-bottom:8px}
+.video-tile img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#000}
 .ws-tabs{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 0 10px}
 .ws-tabs .chip{flex:0 0 auto}
 .video-card{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0b0d11;margin-bottom:10px}
@@ -186,12 +200,40 @@ section.view.hidden{display:none!important}
 h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--subtle);font-weight:650}
 .dive-step{font-size:12px;color:var(--muted);margin:4px 0}
 .dive-step.on{color:var(--good)}
+.stream-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:0 0 10px}
+.stream-head b{font-size:16px}
+.stream-post{border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;background:var(--card2);margin-bottom:12px}
+.stream-post .sp-meta{font-size:11px;color:var(--muted);padding:10px 12px 0;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.stream-post .sp-title{font-weight:650;font-size:17px;letter-spacing:-.02em;padding:6px 12px 0;line-height:1.3}
+.stream-post .sp-body{padding:6px 12px 12px;font-size:13px;color:var(--muted)}
+.stream-post img.sp-img{width:100%;max-height:280px;object-fit:cover;background:#050607;display:block}
+.stream-post .sp-acts{display:flex;gap:6px;flex-wrap:wrap;padding:0 12px 12px}
+.stream-post .sp-acts button,.stream-post .sp-acts a{flex:1 1 30%;min-height:40px;font-size:12px;font-weight:600;border-radius:var(--radius-sm);border:1px solid var(--line);background:#1a1e25;color:var(--fg);text-align:center;display:flex;align-items:center;justify-content:center}
+.find-more{display:flex;gap:6px;flex-wrap:wrap;padding:0 12px 12px}
+.find-more button{min-height:36px;font-size:11px;padding:8px 10px;border-radius:999px;border:1px solid var(--line);background:#0b0d11;color:var(--muted);font-weight:600}
+.identity-banner{border:1px solid var(--line2);border-radius:14px;padding:12px;margin:8px 0 12px;background:#12161c}
+.trail-list{list-style:none;padding:0;margin:0}
+.trail-list li{border-left:2px solid var(--accent);padding:6px 0 6px 12px;margin:6px 0}
+.surprise-why{border:1px dashed var(--line2);border-radius:12px;padding:10px 12px;margin:8px 0;color:var(--accent);font-size:13px}
+.topic-map{display:flex;flex-direction:column;gap:8px;margin:8px 0 14px}
+.topic-map-head{margin:0 0 4px}
+.topic-map-head b{font-size:14px;letter-spacing:-.02em}
+.topic-branch{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--card2)}
+.topic-branch .tb-h{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.topic-branch .tb-h b{font-size:13px}
+.ev-badge{font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--subtle)}
+.prov-row{font-size:11px;color:var(--muted);margin-top:6px}
+.appbar .rowbits{display:flex;gap:8px;align-items:center;justify-content:space-between}
+
 @media (prefers-reduced-motion:reduce){.skeleton{animation:none}}
 </style>
 </head>
 <body>
 <header class="appbar">
-  <h1>Carmen</h1>
+  <div class="rowbits">
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.2</span></h1>
+    <button class="btn ghost" id="newInvestigationBtn" type="button">New investigation</button>
+  </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
 </header>
 <main>
@@ -199,125 +241,167 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <section id="homeView" class="view">
   <div class="hero-home">
     <p class="kicker">Public research</p>
-    <h2>What are you researching?</h2>
+    <h2>What are you curious about?</h2>
     <div class="searchbox stack">
-      <input id="homeQuery" placeholder="A person, product, vehicle, organization, topic, URL, or image" enterkeyhint="go" autocapitalize="words">
-      <button class="btn primary" id="homeSearchBtn">Continue</button>
+      <input id="homeQuery" placeholder="A name, question, URL, photo, topic — anything public" enterkeyhint="search" autocapitalize="words">
+      <button class="btn primary" id="homeSearchBtn">Search</button>
     </div>
-    <p class="hint" style="margin-top:12px">Then tell Carmen what you care about. Adult content is a research lens, not a type of subject.</p>
+    <div class="filter-block" style="margin-top:14px">
+      <p class="flabel">Adult research lens</p>
+      <div class="chips" id="homeAdultChips" style="margin-top:0">
+        <button type="button" class="chip active" data-adult="off">Off</button>
+        <button type="button" class="chip" data-adult="on">On</button>
+        <button type="button" class="chip" data-adult="both">Both</button>
+      </div>
+    </div>
     <button class="quiet-link" id="homeImageBtn" type="button">Inspect an image instead</button>
+    <button class="quiet-link" id="surpriseMeBtn" type="button">Surprise me</button>
+    <p class="hint" id="surpriseWhyHome" hidden></p>
     <input id="homeImage" type="file" accept="image/*" class="hidden">
     <p class="warning">Research only. Carmen never contacts people, posts, comments, follows, submits forms, or buys anything.</p>
   </div>
   <div id="homeResume"></div>
   <div class="home-recent" id="homeRecentWrap">
-    <h3>Recent investigations</h3>
+    <h3>Recent</h3>
     <div id="homeRecent"></div>
   </div>
 </section>
 
 <section id="searchView" class="view hidden">
   <div class="card">
-    <p class="kicker">Investigate</p>
-    <h3 style="font-size:22px;letter-spacing:-.03em;margin:0 0 12px">What are you researching?</h3>
-    <textarea id="searchQuery" placeholder="A person, product, vehicle, organization, topic, URL, or image. Add context if you already know it."></textarea>
-    <div id="lensStack"></div>
-    <div class="stage" id="interestBlock">
-      <h3>What are you interested in?</h3>
-      <p class="hint" style="margin:0 0 8px">Choose a research lens for this subject. Everything is valid. Specific context and questions stay yours.</p>
-      <div class="chips" id="interestChips"></div>
-      <div id="customContextWrap" class="hidden" style="margin-top:8px">
-        <label class="hint">Specific context</label>
-        <input id="customContext" placeholder="A production, collaboration, interview series, repair, towing…">
-      </div>
-      <div id="customQuestionWrap" class="hidden" style="margin-top:8px">
-        <label class="hint">Your question</label>
-        <textarea id="customQuestion" placeholder="What do you actually want to know?"></textarea>
-      </div>
-    </div>
+    <p class="kicker">Search</p>
+    <h3 style="font-size:22px;letter-spacing:-.03em;margin:0 0 12px">What are you looking for?</h3>
+    <textarea id="searchQuery" placeholder="A name, question, URL, photo, topic — anything public"></textarea>
+    <div id="lensStack" class="hidden"></div>
     <div class="filter-block">
-      <p class="flabel">Adult content — a research lens, not a subject type</p>
+      <p class="flabel">Adult research lens</p>
       <div class="chips" id="adultChips" style="margin-top:0">
         <button type="button" class="chip active" data-adult="off">Off</button>
         <button type="button" class="chip" data-adult="on">On</button>
         <button type="button" class="chip" data-adult="both">Both</button>
       </div>
-      <p class="hint">Stays with this investigation: search, ranking, images, videos, Deep Dive, and branches.</p>
     </div>
-    <div class="filter-block">
-      <p class="flabel">How deep</p>
-      <div class="chips" id="depthChips" style="margin-top:0">
-        <button type="button" class="chip" data-depth="broad">Broad</button>
-        <button type="button" class="chip active" data-depth="contextual">Contextual</button>
-        <button type="button" class="chip" data-depth="deep">Deep</button>
+    <div class="filter-block" id="focusBlock">
+      <p class="flabel">Research Focus</p>
+      <div class="chips" id="subjectChips" style="margin-top:0">
+        <button class="chip" data-subject="person">Person</button>
+        <button class="chip" data-subject="visuals">Visuals</button>
+        <button class="chip" data-subject="position">Position</button>
+        <button class="chip" data-subject="tutorial">Tutorial</button>
+        <button class="chip" data-subject="clothing">Clothing</button>
+        <button class="chip" data-subject="website">URL</button>
+        <button class="chip" data-subject="topic">Topic</button>
       </div>
-      <p class="hint">Broad identifies the entity. Contextual finds entity ∩ your context. Deep follows productions, people, and sources from what it finds — not more explicit generated content.</p>
     </div>
     <details class="adv">
-      <summary>Subject type (optional)</summary>
-      <div class="chips" id="subjectChips" style="margin-top:8px">
-        <button class="chip active" data-subject="">Auto</button>
-        <button class="chip" data-subject="person">Person</button>
-        <button class="chip" data-subject="product">Product</button>
-        <button class="chip" data-subject="vehicle">Vehicle</button>
-        <button class="chip" data-subject="technique">Technique</button>
-        <button class="chip" data-subject="skill">Skill / project</button>
-        <button class="chip" data-subject="organization">Organization</button>
-        <button class="chip" data-subject="place">Place</button>
-        <button class="chip" data-subject="topic">Topic</button>
-        <button class="chip" data-subject="website">URL</button>
+      <summary>More options</summary>
+      <div class="stage" id="interestBlock" style="margin-top:10px">
+        <h3>Adaptive lenses</h3>
+        <div class="chips" id="interestChips"></div>
+        <div id="customContextWrap" class="hidden" style="margin-top:8px">
+          <label class="hint">Specific context</label>
+          <input id="customContext" placeholder="A production, collaboration, interview series, repair, towing…">
+        </div>
+        <div id="customQuestionWrap" class="hidden" style="margin-top:8px">
+          <label class="hint">Your question</label>
+          <textarea id="customQuestion" placeholder="What do you actually want to know?"></textarea>
+        </div>
+      </div>
+      <div class="filter-block">
+        <p class="flabel">How deep</p>
+        <div class="chips" id="depthChips" style="margin-top:0">
+          <button type="button" class="chip" data-depth="broad">Broad</button>
+          <button type="button" class="chip active" data-depth="contextual">Contextual</button>
+          <button type="button" class="chip" data-depth="deep">Deep</button>
+        </div>
       </div>
     </details>
     <div class="row" style="margin-top:8px">
-      <button class="btn primary" id="discoverBtn">Discover</button>
-      <button class="btn" id="deepDiveBtn" disabled>Deep dive</button>
+      <button class="btn primary" id="discoverBtn">Search</button>
+      <button class="btn" id="deepDiveBtn" disabled>Deep Dive</button>
       <button class="btn" id="keepBtn">Keep</button>
     </div>
-    <p id="deepDiveHint" class="hint">Search first, then tap a candidate. Deep Dive stays unavailable until there is something real to expand.</p>
+    <p id="deepDiveHint" class="hint">Search, tap the person or thing you mean, then Deep Dive.</p>
     <div id="classBar"></div>
     <div id="suggestBar"></div>
     <div id="searchDiagnostics" class="diags"></div>
     <div id="expandedResearch" class="expanded-card hidden">
-      <h3 style="margin:0 0 6px">Expanded Research</h3>
-      <p class="muted" id="expandedLead">Use this when sources are paywalled, login-gated, blocked, or incomplete. Carmen looks for legitimate public alternatives — it does not bypass the restriction or retry the same wall.</p>
-      <button class="btn primary" id="expandedBtn">Expanded Research</button>
+      <h3 style="margin:0 0 6px">Look further</h3>
+      <p class="muted" id="expandedLead">Use this when sources are paywalled, login-gated, blocked, or incomplete. Carmen looks for legitimate public alternatives — it does not bypass the restriction.</p>
+      <button class="btn primary" id="expandedBtn">Look further</button>
     </div>
   </div>
   <div class="card">
-    <h3>Who is this? <span id="resultCount" class="badge"></span></h3>
-    <p class="hint" id="identifyHint">For a person, tap the face that matches. Visual resemblance is not identity proof.</p>
+    <h3 id="resultsHeading">Results <span id="resultCount" class="badge"></span></h3>
+    <p class="hint" id="identifyHint">For a person, tap the image that matches. A picture is not proof of identity.</p>
     <div id="selectedBanner"></div>
-    <div id="graphTrail" class="graph-trail"></div>
+    <div id="graphTrail" class="graph-trail hidden"></div>
+    <div id="topicMap" class="topic-map"></div>
     <div id="personRail"></div>
+    <div id="visualCorpus"></div>
+    <div id="videoCorpus"></div>
     <div id="results"></div>
-    <p id="resultsEmpty" class="muted">Direct contextual evidence, background, related sources, media, and indexes will appear here after Discover — not a dump of name hits.</p>
+    <p id="resultsEmpty" class="muted">Public sources will appear here after Search.</p>
   </div>
 </section>
 
 <section id="diveView" class="view hidden">
   <div class="card" id="diveIdentityCard">
-    <p class="kicker">Deep Dive</p>
-    <div id="diveIdentity"><p class="muted">Select a person on Search first. Deep Dive investigates that resolved entity — not the original search string alone.</p></div>
+    <p class="kicker">Investigate</p>
+    <div id="diveIdentity"><p class="muted">Search and pick someone or something first. Deep Dive investigates that selection.</p></div>
+    <div class="searchbox" style="margin-top:12px">
+      <input id="diveSearchQuery" placeholder="Search this investigation…" enterkeyhint="search">
+      <button class="btn primary" id="diveSearchBtn" type="button">Search</button>
+    </div>
+    <p class="hint" id="diveSearchHint">Type a topic (interviews, career, photos) — Carmen keeps the current subject.</p>
+    <div class="row" style="margin-top:8px">
+      <button class="btn ghost" id="howGotHereBtn" type="button">How I got here?</button>
+      <button class="btn ghost" id="diveSurpriseBtn" type="button">Surprise me</button>
+    </div>
+    <div class="ws-tabs" id="diveTabs" style="margin-top:12px">
+      <button class="chip active" type="button" data-divetab="overview">Overview</button>
+      <button class="chip" type="button" data-divetab="posts">Posts</button>
+      <button class="chip" type="button" data-divetab="search">Search</button>
+      <button class="chip" type="button" data-divetab="images">Images</button>
+      <button class="chip" type="button" data-divetab="sources">Sources</button>
+    </div>
   </div>
+  <div id="identityBanner"></div>
+  <div id="howHerePanel" class="card hidden">
+    <h3>How I got here</h3>
+    <div id="howHereList"><p class="muted">Start an investigation to see the trail.</p></div>
+  </div>
+  <div id="surpriseWhy" class="surprise-why hidden"></div>
+  <div id="diveStream"></div>
+  <div id="teachPanel" class="card hidden"></div>
+  <div id="analyzePanel" class="card hidden"></div>
   <div class="card" id="diveStartCard">
-    <h3>What should Carmen investigate?</h3>
-    <p class="muted">ALL is the default. A custom question is an investigative instruction — Carmen chooses lanes from it instead of dumping your sentence into a search box.</p>
+    <details>
+      <summary style="cursor:pointer;font-weight:600">More investigation options</summary>
+    <h3>What do you want to find out?</h3>
+    <p class="muted" id="diveAdultNote"></p>
     <div id="divePlanner">
       <p id="divePlannerLead" class="muted"></p>
       <div class="pathpick" id="diveSelectChips"></div>
-      <label class="hint">Investigative question</label>
-      <textarea id="diveCustom" placeholder="Find interviews where they discuss…  ·  Find everything connecting this person to…  ·  Show sources involving…"></textarea>
+      <div id="diveQuestionWrap" class="hidden" style="margin-top:8px">
+        <label class="hint">Custom question</label>
+        <textarea id="diveCustom" placeholder="What do you actually want to know?"></textarea>
+      </div>
       <label class="hint" style="display:flex;gap:8px;align-items:center;margin-top:8px">
-        <input id="diveExpanded" type="checkbox" style="width:auto;flex:0 0 auto"> Expanded Research (public alternatives for restricted/incomplete sources)
+        <input id="diveExpanded" type="checkbox" style="width:auto;flex:0 0 auto"> Look further if sources are blocked
       </label>
       <div class="row" style="margin-top:8px">
-        <button class="btn primary" id="startDiveBtn">Start Deep Dive</button>
-        <button class="btn hidden" id="continueDiveBtn">Continue research</button>
+        <button class="btn primary" id="startDiveBtn">Deep Dive</button>
+        <button class="btn hidden" id="continueDiveBtn">Continue</button>
+        <button class="btn hidden" id="furtherDiveBtn">Investigate further</button>
+        <button class="btn hidden" id="retryAnalysisBtn">Retry analysis</button>
+        <button class="btn ghost hidden" id="makeTutorialBtn">Make tutorial</button>
         <button class="btn ghost" id="cancelDiveBtn">Back to Search</button>
       </div>
     </div>
+    </details>
   </div>
-  <div id="divePaths" class="pathchips"></div>
+  <div id="divePaths" class="pathchips hidden"></div>
   <div id="deepDiveProgress"></div>
   <div id="deepDiveResult"></div>
 </section>
@@ -331,6 +415,24 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       <button class="btn primary" id="createCollection" style="flex:0 0 auto">Create</button>
     </div>
   </div>
+  <div class="card" id="measureCard">
+    <h3>My measurements</h3>
+    <p class="muted">Optional and stored only on this phone. Used when you ask about clothing fit. Labeled USER-PROVIDED — never treated as a source size chart.</p>
+    <div class="measure-grid">
+      <input id="mHeight" placeholder="Height">
+      <input id="mChest" placeholder="Chest / bust">
+      <input id="mWaist" placeholder="Waist">
+      <input id="mHips" placeholder="Hips">
+      <input id="mShoulder" placeholder="Shoulder width">
+      <input id="mInseam" placeholder="Inseam">
+      <input id="mSleeve" placeholder="Sleeve length">
+      <input id="mNeck" placeholder="Neck">
+      <input id="mTorso" placeholder="Torso / rise">
+      <input id="mShoe" placeholder="Shoe size">
+    </div>
+    <input id="mNotes" placeholder="Other garment-specific notes" style="margin-top:8px">
+    <button class="btn primary" id="saveMeasurements" style="margin-top:8px">Save measurements</button>
+  </div>
   <div id="collectionList"></div>
   <div id="collectionDetail"></div>
 </section>
@@ -338,7 +440,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <section id="investigationsView" class="view hidden">
   <div class="card">
     <h3>Investigations</h3>
-    <p class="muted">Persistent work. Search stays temporary until you Keep it or run Deep Dive.</p>
+    <p class="muted">Persistent work. Search and Deep Dive stay temporary until you Keep or Save.</p>
     <div class="chips" id="invFilter">
       <button class="chip active" data-inv="all">All</button>
       <button class="chip" data-inv="active">Active</button>
@@ -367,13 +469,15 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <h3>Learn</h3>
     <p class="muted">Turn public research into an organized brief. The layout follows the kind of thing you are learning — not a single hardcoded subject.</p>
     <div class="chips" id="learnChips">
-      <button class="chip active" data-learn="">Auto</button>
-      <button class="chip" data-learn="technique">Technique</button>
-      <button class="chip" data-learn="skill">Skill / project</button>
-      <button class="chip" data-learn="product">Product</button>
+      <button class="chip" data-learn="person">Person</button>
+      <button class="chip" data-learn="visuals">Visuals</button>
+      <button class="chip" data-learn="position">Position</button>
+      <button class="chip" data-learn="tutorial">Tutorial</button>
+      <button class="chip" data-learn="clothing">Clothing</button>
+      <button class="chip" data-learn="website">URL</button>
       <button class="chip" data-learn="topic">Topic</button>
     </div>
-    <textarea id="learnQuery" placeholder="Welding a trailer hitch, a woodworking joint, a technique, a concept…"></textarea>
+    <textarea id="learnQuery" placeholder="A person, visuals, position, tutorial, clothing, URL, or topic"></textarea>
     <button class="btn primary" id="learnBtn" style="margin-top:8px">Research & teach</button>
     <p class="warning">Sourced information is labeled OBSERVED. Carmen’s interpretation is INFERRED. Missing facts stay UNKNOWN.</p>
   </div>
@@ -515,17 +619,17 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   </button>
   <button id="navDive">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
-    Dive
+    Investigate
   </button>
   <button id="navCollections">
     <svg viewBox="0 0 24 24"><path d="M6 7h12v12H6z"/><path d="M8 7V5h8v2"/></svg>
     Saved
   </button>
-  <button id="navInvestigations">
+  <button id="navInvestigations" class="hidden">
     <svg viewBox="0 0 24 24"><path d="M6 4h9l3 3v13H6z"/><path d="M9 12h6M9 16h4"/></svg>
-    Investigate
+    Cases
   </button>
-  <button id="navLearn">
+  <button id="navLearn" class="hidden">
     <svg viewBox="0 0 24 24"><path d="M4 7.5 12 4l8 3.5v8.5L12 20l-8-4V7.5Z"/><path d="M12 4v16"/></svg>
     Learn
   </button>
@@ -533,12 +637,21 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 
 <div id="toast" class="toast hidden"></div>
 <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true">
-  <img id="lightboxImg" alt="Evidence image">
+  <p id="lightboxPos" class="subtle"></p>
+  <div class="zoomwrap"><img id="lightboxImg" alt="Evidence image"></div>
   <p id="lightboxCap" class="hint"></p>
+  <div id="lightboxRelated" class="lightbox-related"></div>
   <div class="navrow">
     <button class="btn" id="lightboxPrev">Prev</button>
     <button class="btn" id="lightboxNext">Next</button>
     <button class="btn" id="lightboxSource">Open source</button>
+    <button class="btn" id="lightboxInvestigate">Investigate</button>
+    <button class="btn" id="lightboxSimilar">Find similar</button>
+    <button class="btn" id="lightboxSearchVisual">Search this visual</button>
+    <button class="btn" id="lightboxTutorial">Make tutorial</button>
+    <button class="btn" id="lightboxSave">Save</button>
+    <button class="btn" id="lightboxNotImage">Not this image</button>
+    <button class="btn" id="lightboxNotPerson">Not this person</button>
     <button class="btn ghost" id="lightboxClose">Close</button>
   </div>
 </div>

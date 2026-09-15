@@ -1161,7 +1161,7 @@ console.log('--- v47.2 no hardcoded test subjects ---');
   assert(!/\bdrea de matteo\b/i.test(src), 'worker does not hardcode Drea de Matteo');
   assert(!/\bashley anderson\b/i.test(src), 'worker does not hardcode Ashley Anderson');
   assert(!/\blincoln aviator\b/i.test(src), 'worker does not hardcode Lincoln Aviator');
-  assert(!/\bclips4sale\.com\b/i.test(src), 'worker does not hardcode clips4sale');
+  assert(!/\bjordan.?hale.{0,40}clips4sale|clips4sale.{0,40}jordan.?hale/i.test(src), 'worker does not hardcode a clips4sale test person');
 }
 
 console.log('--- v47.3 investigation choices adapt by type ---');

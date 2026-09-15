@@ -21,13 +21,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply v48.1 patch if present
+      - name: Apply v48.1 / v49.2 patches if present
         run: |
           if [ -f patches/apply-v48.1.sh ]; then
             if sh patches/apply-v48.1.sh; then
               echo "v48.1 source patch applied before deploy"
             else
               echo "v48.1 patch already applied or tree mismatch — continuing with current tree"
+            fi
+          fi
+          if [ -f patches/apply-v49.2.sh ]; then
+            if sh patches/apply-v49.2.sh; then
+              echo "v49.2 source patch applied before deploy"
+            else
+              echo "v49.2 patch already applied or tree mismatch — continuing with current tree"
             fi
           fi
           if [ -f patches/v47.8-video-urls.patch ] && git apply --check patches/v47.8-video-urls.patch; then
@@ -49,6 +56,8 @@ jobs:
           node test-ai-provider.mjs
           node test-v48.1.mjs
           node test-v49.mjs
+          node test-v49.1.mjs
+          node test-v49.2.mjs
 
       - name: Install Wrangler
         run: npm install --no-save wrangler@4
