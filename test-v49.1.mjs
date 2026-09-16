@@ -29,7 +29,7 @@ console.log('--- v49.1 source contracts still present ---');
   assert(/isQueryEchoTitle/.test(workerSrc), 'query-echo rejection helper');
   assert(/competingIdentityCandidates/.test(workerSrc), 'competing identity candidates');
   assert(/confirmedIdentity/.test(appSrc) && /rejectedPeople/.test(appSrc), 'positive/negative identity feedback');
-  assert(/homeImageBtn/.test(html) || /Inspect an image instead/.test(html), 'Home image investigation');
+  assert(/homeImageBtn/.test(html) || /Inspect an image instead/.test(html) || /data-testid="photo-input"/.test(html), 'Home image investigation');
   assert(/subjectEvidence|intersection/.test(workerSrc), 'subject+topic intersection');
   assert(/isRedditSearchPage/.test(workerSrc), 'Reddit search-page rejection');
   assert(/mergeInvestigationEvidence/.test(workerSrc), 'merge-not-replace');

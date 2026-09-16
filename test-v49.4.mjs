@@ -40,19 +40,21 @@ const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 
 console.log('--- v49.4 version / Bondage button restored ---');
 {
-  assert(PLANNER_VERSION === '49.4', 'PLANNER_VERSION 49.4');
-  assert(PLANNER_BUILD === '49.4-deep-dive-lenses', 'PLANNER_BUILD');
-  assert(appSrc.includes("const VERSION = '49.4'"), 'frontend VERSION');
-  assert(/carmen-build" content="49\.4"/.test(html), 'html build');
+  assert(PLANNER_VERSION === '49.5' || PLANNER_VERSION === '49.4', 'PLANNER_VERSION current');
+  assert(/49\.(4|5)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.[45]'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.[45]"/.test(html), 'html build');
   assert(/id="diveBondageBtn"/.test(html) && />Bondage</.test(html), 'Bondage Deep Dive button is visible');
   assert(/id="divePeopleBtn"/.test(html) && />People</.test(html), 'People Deep Dive button is visible');
-  assert(/id="diveClothingBtn"/.test(html) && />Clothing</.test(html), 'Clothing Deep Dive button is visible');
-  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,clothing', 'exactly three primary lenses');
+  assert(/id="diveVisualsBtn"/.test(html) && />Visuals</.test(html), 'Visuals Deep Dive button is visible');
+  assert(!/id="diveClothingBtn"/.test(html), 'Clothing is not a top-level Deep Dive button');
+  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'exactly three primary lenses');
   assert(/runDiveLens\('bondage'\)/.test(appSrc), 'Bondage button launches the bondage lens');
   assert(!/hardcoded drea|drea morgan onlyfans password/i.test(workerSrc), 'no hardcoded Drea answers in worker');
   assert(API_ACTION_CATALOG.some(a => a.action === 'dive-bondage'), 'API dive-bondage action');
   assert(API_ACTION_CATALOG.some(a => a.action === 'dive-people'), 'API dive-people action');
-  assert(API_ACTION_CATALOG.some(a => a.action === 'dive-clothing'), 'API dive-clothing action');
+  assert(API_ACTION_CATALOG.some(a => a.action === 'dive-visuals'), 'API dive-visuals action');
+  assert(API_ACTION_CATALOG.some(a => a.action === 'dive-clothing'), 'API dive-clothing remains as a visuals alias');
 }
 
 console.log('--- v49.4 bondage is not a query rewrite ---');
@@ -100,13 +102,14 @@ console.log('--- v49.4 clothing UNKNOWN without visual evidence ---');
   }], []);
   assert(observed.some(c => c.term && /collar|cinch|boots/.test(c.term) && c.observationState === 'OBSERVED'), 'retrieved garment terms are OBSERVED');
   const intent = parseInvestigationIntent('Drea Morgan', { entity: 'Drea Morgan', mode: 'dive-clothing', diveLens: 'clothing', adult: 'on' });
+  assert(intent.mode === 'dive-visuals', 'clothing mode aliases to dive-visuals');
   const qs = buildLensQueries(intent, [{
     title: 'Metal cinch feature', url: 'https://www.houseofgord.com/x', snippet: 'cinch',
     provenance: 'RETRIEVED', retrievalStatus: 'RETRIEVED',
     textExcerpt: 'metal collar and cinch straps',
   }], ['drea morgan clothing']);
   assert(!qs.some(x => /^["']?drea morgan["']? clothing$/i.test(x.q)), 'does not re-run subject+clothing');
-  assert(qs.some(x => /collar|cinch|outfit|wearing/i.test(x.q)), 'clothing lens uses observed garments or visual clothing queries');
+  assert(qs.some(x => /collar|cinch|outfit|wearing|stills|gallery|photoset/i.test(x.q)), 'visuals lens uses observed garments or visual queries');
 }
 
 console.log('--- v49.4 additive merge refuses tail-chasing ---');

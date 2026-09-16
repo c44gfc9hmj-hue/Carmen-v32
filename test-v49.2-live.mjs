@@ -46,8 +46,8 @@ console.log('--- live health ---');
   try {
     const { status, body } = await getJson('/health');
     assert(status === 200 && body.ok === true, 'GET /health 200');
-    assert(body.version === '49.4' || body.version === '49.3', 'live version current');
-    assert(/49\.(3|4)/.test(body.build || ''), 'live build');
+    assert(body.version === '49.5' || body.version === '49.4' || body.version === '49.3', 'live version current');
+    assert(/49\.(3|4|5)/.test(body.build || ''), 'live build');
   } catch (e) {
     console.log('  FAIL health unreachable: ' + e.message);
     process.exit(1);

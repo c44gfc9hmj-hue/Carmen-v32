@@ -138,7 +138,7 @@ console.log('--- Drea Morgan × Bondage hard regression ---');
   assert(liveAudit.subjectRelevant >= 1, 'dive results include Drea-relevant evidence');
   assert(liveAudit.intersection >= 1, 'dive preserves Drea × Bondage intersection');
   assert((dbody.identityState && dbody.identityState.confirmed || []).includes('Drea Morgan'), 'confirmed identity survives Bondage dive');
-  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,clothing', 'three primary lenses unchanged');
+  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'three primary lenses are Bondage / People / Visuals');
 }
 
 console.log('--- Find More exhaustion ---');

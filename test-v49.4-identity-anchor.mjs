@@ -139,12 +139,13 @@ console.log('--- Sensi Pearl identity continuity ---');
   assert((state.identityFeedback.confirmed || []).includes('Sensi Pearl'), 'confirmed identity survives Find More');
 }
 
-console.log('--- Bondage / People / Clothing remain the primary lenses; Find More is additive ---');
+console.log('--- Bondage / People / Visuals remain the primary lenses; Find More is additive ---');
 {
-  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,clothing', 'exactly three primary Deep Dive lenses');
-  assert(/id="diveBondageBtn"/.test(html) && /id="divePeopleBtn"/.test(html) && /id="diveClothingBtn"/.test(html), 'UI still has Bondage / People / Clothing');
+  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'exactly three primary Deep Dive lenses');
+  assert(/id="diveBondageBtn"/.test(html) && /id="divePeopleBtn"/.test(html) && /id="diveVisualsBtn"/.test(html), 'UI still has Bondage / People / Visuals');
+  assert(!/id="diveClothingBtn"/.test(html), 'Clothing is not a top-level Deep Dive button');
   assert(/id="diveFindMoreBtn"/.test(html) || /find more/i.test(html), 'Find More remains');
-  assert(/runDiveLens\('bondage'\)/.test(appSrc) && /runDiveLens\('people'\)/.test(appSrc) && /runDiveLens\('clothing'\)/.test(appSrc), 'three lens launchers');
+  assert(/runDiveLens\('bondage'\)/.test(appSrc) && /runDiveLens\('people'\)/.test(appSrc) && /runDiveLens\('visuals'\)/.test(appSrc), 'three lens launchers');
   const more = findMoreQueries({ subject: 'Sensi Pearl', topic: 'bondage', adultLens: 'on' }, ['"Sensi Pearl" bondage'], [
     { title: 'IAFD', url: 'https://www.iafd.com/sensi', domain: 'iafd.com', sourceClass: 'identity-profile', provenance: 'RETRIEVED', retrievalStatus: 'RETRIEVED', textExcerpt: 'Sensi Pearl.' },
   ]);

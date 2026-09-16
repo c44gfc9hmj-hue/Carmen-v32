@@ -47,9 +47,12 @@ async function agentState() {
     bondage: document.querySelectorAll('[data-testid="dive-bondage"]').length,
     people: document.querySelectorAll('[data-testid="dive-people"]').length,
     clothing: document.querySelectorAll('[data-testid="dive-clothing"]').length,
+    visuals: document.querySelectorAll('[data-testid="dive-visuals"]').length,
+    photo: document.querySelectorAll('[data-testid="photo-input"]').length,
     visibleBondage: [...document.querySelectorAll('[data-testid="dive-bondage"]')].filter(el => el.offsetParent !== null && !el.closest('[inert]')).length,
     visiblePeople: [...document.querySelectorAll('[data-testid="dive-people"]')].filter(el => el.offsetParent !== null && !el.closest('[inert]')).length,
     visibleClothing: [...document.querySelectorAll('[data-testid="dive-clothing"]')].filter(el => el.offsetParent !== null && !el.closest('[inert]')).length,
+    visibleVisuals: [...document.querySelectorAll('[data-testid="dive-visuals"]')].filter(el => el.offsetParent !== null && !el.closest('[inert]')).length,
     cards: document.querySelectorAll('[data-testid="result-card"]').length,
     sourceUrls: [...document.querySelectorAll('[data-source-url]')].map(el => el.getAttribute('data-source-url')).filter(Boolean).slice(0, 5),
     duplicateIds: (() => {
@@ -130,10 +133,10 @@ try {
   const f = await agentState();
   log('F open Deep Dive', f.view === 'dive', `view=${f.view}`);
 
-  // G. Exactly one Bondage / People / Clothing
+  // G. Exactly one Bondage / People / Visuals
   const g = await agentState();
-  log('G unique Bondage/People/Clothing', g.bondage === 1 && g.people === 1 && g.clothing === 1 && g.visibleBondage === 1 && g.visiblePeople === 1 && g.visibleClothing === 1,
-    `dom=${g.bondage}/${g.people}/${g.clothing} visible=${g.visibleBondage}/${g.visiblePeople}/${g.visibleClothing}`);
+  log('G unique Bondage/People/Visuals', g.bondage === 1 && g.people === 1 && g.visuals === 1 && g.clothing === 0 && g.visibleBondage === 1 && g.visiblePeople === 1 && g.visibleVisuals === 1,
+    `dom=${g.bondage}/${g.people}/${g.visuals} clothing=${g.clothing} visible=${g.visibleBondage}/${g.visiblePeople}/${g.visibleVisuals}`);
 
   // H. Click Bondage
   await page.locator('[data-testid="dive-bondage"]').click();

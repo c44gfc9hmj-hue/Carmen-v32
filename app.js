@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.4';
+const VERSION = '49.5';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -39,7 +39,7 @@ let lightboxIndex = 0;
 let lightboxSourceUrl = '';
 let currentLearnType = '';
 let expandedMode = false;
-let currentAdult = 'off';
+let currentAdult = 'on';
 let currentDepth = 'contextual';
 let researchSubject = '';
 let currentLensId = 'everything';
@@ -75,6 +75,7 @@ let activeDiveLens = '';
 let lastExpansion = null;
 let lastRelatedPeople = [];
 let lastClothingEvidence = [];
+let pendingPhoto = null;
 
 /* Browser-agent observability. Does not change retrieval, ranking, or Deep Dive. */
 function carmenNewInvestigationId() {
@@ -569,7 +570,7 @@ function adultLabel(v) {
   return 'Adult OFF';
 }
 function setAdult(mode, opts = {}) {
-  currentAdult = (mode === 'on' || mode === 'both') ? mode : 'off';
+  currentAdult = (mode === 'both') ? 'both' : 'on';
   document.querySelectorAll('#adultChips .chip, #homeAdultChips .chip').forEach(x => {
     x.classList.toggle('active', x.dataset.adult === currentAdult);
   });
@@ -893,7 +894,7 @@ function restoreSession() {
     lastResearchState = s.researchState || lastResearchState;
     selectedEntity = s.selectedEntity || null;
     if (s.diveCustom && $('diveCustom')) $('diveCustom').value = s.diveCustom;
-    if (s.adult) setAdult(s.adult, { silent: true });
+    setAdult('on', { silent: true });
     if (s.depth) setDepth(s.depth, { silent: true });
     if (s.researchSubject) researchSubject = s.researchSubject;
     if (s.lensId) currentLensId = s.lensId;
@@ -949,7 +950,15 @@ async function discover(opts = {}) {
     ? composeInvestigationQuery(($('diveSearchQuery') && $('diveSearchQuery').value) || $('searchQuery').value, entityName, topicName)
     : $('searchQuery').value.trim();
   if (keepSubject && entityName) q = composeInvestigationQuery(q, entityName, topicName);
-  if (!q) return toast('Enter a subject, name, or URL first.');
+  if (!q && pendingPhoto) {
+    q = String(pendingPhoto.name || '').replace(/\.[a-z0-9]+$/i, '').replace(/[-_]+/g, ' ').trim() || 'visual investigation';
+    opts.photoInput = true;
+    if (!opts.seedVisual) {
+      opts.seedVisual = { title: pendingPhoto.name || 'uploaded photo', caption: q, pageUrl: '' };
+    }
+    if ($('searchQuery') && !$('searchQuery').value.trim()) $('searchQuery').value = q;
+  }
+  if (!q) return toast('Enter a subject, name, URL, or attach a photo first.');
   const base = backendUrl();
   if (!base) return toast('Set the Carmen Worker URL in Capture → Connection.');
   localStorage.setItem(BACKEND_KEY, base);
@@ -1053,8 +1062,12 @@ async function discover(opts = {}) {
     const knownImgs = lastVisuals.map(im => im.url || im.src).filter(Boolean).slice(0, 40);
     const knownVids = lastVideos.map(v => v.videoId || videoDedupeKey(v.url || v.pageUrl || '')).filter(Boolean).slice(0, 40);
     if (attemptedQueries.length) params.set('attempted', attemptedQueries.slice(0, 40).join('\n'));
-    if (knownImgs.length && (visualMore || visualMode || videoMore)) params.set('knownMedia', knownImgs.join('\n'));
-    if (knownVids.length && (videoMore || visualMode)) params.set('knownVideos', knownVids.join('\n'));
+    if (knownImgs.length && (visualMore || visualMode || videoMore || opts.findMore || opts.diveLens || opts.append || keepSubject)) params.set('knownMedia', knownImgs.join('\n'));
+    if (knownVids.length && (videoMore || visualMode || opts.findMore || opts.diveLens || opts.append || keepSubject)) params.set('knownVideos', knownVids.join('\n'));
+    if (pendingPhoto || opts.photo || opts.photoInput) {
+      params.set('photo', '1');
+      params.set('photoInput', '1');
+    }
     if ((keepSubject || opts.append) && lastResults.length) {
       try {
         params.set('prior', JSON.stringify(lastResults.slice(0, 16).map(r => ({
@@ -1610,9 +1623,7 @@ function openDivePlanner(candidate) {
   const name = selectedEntity?.canonicalName || lastClassification?.subject || c?.title || $('searchQuery')?.value || 'this subject';
   const ctx = extraContextText(lastClassification) || currentLens()?.context || '';
   if ($('diveAdultNote')) {
-    $('diveAdultNote').textContent = currentAdult === 'on'
-      ? 'Adult lens is on. Everything means the adult-relevant public record first — not celebrity trivia.'
-      : (currentAdult === 'both' ? 'Adult lens is BOTH — general and adult-context sources stay distinguishable.' : '');
+    $('diveAdultNote').textContent = 'Adult-first research is the default. Specialist sources are used when they are relevant — not a random adult feed.';
   }
   $('divePlannerLead').innerHTML = `<p style="margin:0 0 8px"><b>What do you want to find out about ${esc(name)}?</b></p>${ctx ? '<p class="hint" style="margin:0 0 8px">Keeping “' + esc(ctx) + '” in the research.</p>' : ''}`;
   if (!selectedInvestigationId) selectedInvestigationId = 'everything';
@@ -1645,7 +1656,7 @@ function renderExpansionNote(data) {
   }
   if (exp.learnedSomething === false || data && data.noNewSources) {
     el.classList.remove('hidden');
-    el.innerHTML = '<b>No new sources found from this angle.</b> Carmen did not reword the same search.';
+    el.innerHTML = '<b>No new sources found from the remaining search paths.</b> Carmen did not rerun the same search.';
     return;
   }
   const bits = [];
@@ -1665,22 +1676,23 @@ function renderExpansionNote(data) {
 async function runDiveLens(lens) {
   const entity = selectedEntity?.canonicalName || lastClassification?.subject || researchSubject || '';
   if (!entity) return toast('Search and pick a subject first.');
-  const id = String(lens || '').toLowerCase();
-  if (!['bondage', 'people', 'clothing'].includes(id)) return;
+  let id = String(lens || '').toLowerCase();
+  if (id === 'clothing') id = 'visuals';
+  if (!['bondage', 'people', 'visuals'].includes(id)) return;
   activeDiveLens = id;
   document.querySelectorAll('#divePrimaryLenses .btn').forEach(b => {
     if (b.id === 'diveFindMoreBtn') return;
     b.classList.toggle('active', (b.id || '').toLowerCase().includes(id));
   });
-  const topic = id === 'people' ? (diveTopic || extraContextText(lastClassification) || '') : id;
-  if (id !== 'people') diveTopic = id;
-  if ($('diveSearchQuery') && id !== 'people') $('diveSearchQuery').value = id;
+  const inherited = extraContextText(lastClassification) || (id === 'bondage' ? 'bondage' : (diveTopic || ''));
+  const topic = id === 'bondage' ? 'bondage' : inherited;
+  if (id === 'bondage') diveTopic = 'bondage';
   if ($('diveLensHint')) {
     $('diveLensHint').textContent = id === 'bondage'
       ? 'Investigating bondage through sources, productions, and people already found — not “' + entity + ' bondage” again.'
       : (id === 'people'
         ? 'Looking for people connected to this investigation. Relationships stay OBSERVED / SUPPORTED / INFERRED / UNKNOWN.'
-        : 'Looking for clothing and outfits tied to this investigation. Unverified garments stay UNKNOWN.');
+        : 'Looking for additional and alternate images, galleries, and provenance for this investigation — not generic images.');
   }
   pushTrail({ kind: 'dive-lens', label: 'Deep Dive · ' + id, entity, topic });
   setTab('dive');
@@ -1713,8 +1725,8 @@ function selectInvestigation(id) {
     selectedDivePathIds = (lastPaths || []).map(p => p.id);
   }
   renderDiveSelectChips();
-  if (['bondage', 'people', 'clothing'].includes(selectedInvestigationId)) {
-    runDiveLens(selectedInvestigationId);
+  if (['bondage', 'people', 'visuals', 'clothing'].includes(selectedInvestigationId)) {
+    runDiveLens(selectedInvestigationId === 'clothing' ? 'visuals' : selectedInvestigationId);
   }
 }
 
@@ -2110,6 +2122,7 @@ function resetInvestigationContext() {
   lastExpansion = null;
   lastRelatedPeople = [];
   lastClothingEvidence = [];
+  pendingPhoto = null;
   if ($('diveSearchQuery')) $('diveSearchQuery').value = '';
   if ($('diveExpansionNote')) $('diveExpansionNote').classList.add('hidden');
   if ($('diveLensHint')) $('diveLensHint').textContent = 'One tap investigates that dimension using everything already found — not a repeat of the same search.';
@@ -2332,21 +2345,58 @@ function jumpTrail(i) {
     discover({ keepSubject: true, entity: step.entity || selectedEntity?.canonicalName, topic: diveTopic });
   }
 }
+function routeDiveRequest(text) {
+  const raw = String(text || '').trim();
+  const t = raw.toLowerCase();
+  if (!raw) return { mode: '', lens: '', topic: '' };
+  if (/\b(dive[- ]?bondage|investigate bondage|bondage (?:path|lens|deep dive|work|material)|in bondage|bdsm (?:work|material|scenes?)|go deeper on the bondage)\b/i.test(t)) {
+    return { mode: 'dive-bondage', lens: 'bondage', topic: 'bondage' };
+  }
+  if (/\b(dive[- ]?people|related people|collaborators?|who else|connected (?:to|with)|other people|every other person|find related people)\b/i.test(t)) {
+    return { mode: 'dive-people', lens: 'people', topic: diveTopic || '' };
+  }
+  if (/\b(dive[- ]?visuals?|investigate visuals?|more images?|alternate images?|image provenance|original source|find (?:all |more )?images?|find images from|galleries|sources we haven'?t checked)\b/i.test(t)) {
+    return { mode: 'dive-visuals', lens: 'visuals', topic: diveTopic || '' };
+  }
+  if (/\b(find more|keep looking|go deeper|haven'?t checked)\b/i.test(t)) {
+    return { mode: 'find-more', lens: '', topic: diveTopic || raw };
+  }
+  if (/\bpremium accounts?\b/i.test(t)) {
+    return { mode: 'premium-accounts', lens: '', topic: 'premium accounts' };
+  }
+  const topicHit = raw.match(/\b(career|filmography|credits|interviews?|videos?|productions?)\b/i);
+  if (topicHit) return { mode: 'intersection', lens: '', topic: topicHit[1] };
+  return { mode: 'intersection', lens: '', topic: raw };
+}
 async function investigateTopic(topic) {
-  const t = String(topic || $('diveSearchQuery')?.value || '').trim();
-  if (!t) return toast('Type a topic to search this investigation.');
+  const t = String(topic || $('diveSearchQuery')?.value || $('diveCustom')?.value || '').trim();
+  if (!t) return toast('Type what you want Carmen to find in this investigation.');
   const entity = selectedEntity?.canonicalName || lastClassification?.subject || researchSubject || '';
   if (!entity) {
     $('searchQuery').value = t;
     setTab('search');
     return discover();
   }
-  diveTopic = t;
-  if (selectedEntity) selectedEntity.context = t;
+  const routed = routeDiveRequest(t);
+  if (routed.lens) return runDiveLens(routed.lens);
+  if (routed.mode === 'find-more') {
+    pushTrail({ kind: 'find-more', label: 'Find more', entity, topic: routed.topic || diveTopic });
+    return discover({
+      keepSubject: true,
+      entity,
+      topic: routed.topic || diveTopic || extraContextText(lastClassification) || '',
+      expanded: true,
+      append: true,
+      findMore: true,
+      mode: 'find-more',
+    });
+  }
+  diveTopic = routed.topic || t;
+  if (selectedEntity) selectedEntity.context = diveTopic;
   if ($('diveSearchQuery')) $('diveSearchQuery').value = t;
-  if ($('diveSearchHint')) $('diveSearchHint').textContent = 'Searching “' + entity + '” + “' + t + '”. Carmen keeps this subject.';
+  if ($('diveSearchHint')) $('diveSearchHint').textContent = 'Searching “' + entity + '” + “' + diveTopic + '”. Carmen keeps this subject.';
   setTab('dive');
-  await discover({ keepSubject: true, entity, topic: t });
+  await discover({ keepSubject: true, entity, topic: diveTopic, mode: routed.mode || 'intersection' });
 }
 function likeThisTraits(item) {
   const traits = [];
@@ -2611,6 +2661,15 @@ async function runDeepDive(opts = {}) {
   setTab('dive');
   renderDiveIdentity();
   const customQuestion = $('diveCustom')?.value.trim() || '';
+  if (customQuestion && !analysisOnly && !further && !continueFrom) {
+    const routed = routeDiveRequest(customQuestion);
+    if (routed.lens) {
+      if (btn) btn.disabled = false;
+      $('deepDiveBtn').disabled = false;
+      return runDiveLens(routed.lens);
+    }
+    if (routed.topic) diveTopic = routed.topic;
+  }
   const pathIds = diveAll ? ['all'] : selectedDivePathIds.slice();
   const useExpanded = expandedMode || !!$('diveExpanded')?.checked;
   const ctx = selectedEntity?.context || diveTopic || extraContextText(lastClassification) || '';
@@ -3253,11 +3312,13 @@ function wire() {
   $('navLearn').onclick = () => setTab('learn');
   const submitHomeSearch = () => {
     const q = $('homeQuery').value.trim();
+    const photo = pendingPhoto;
     hardNewInvestigation({ silent: true, stay: true });
+    pendingPhoto = photo;
     if ($('searchQuery')) $('searchQuery').value = q;
     if ($('homeQuery')) $('homeQuery').value = q;
     setTab('search');
-    if (q) discover();
+    if (q || pendingPhoto) discover({ photo: !!pendingPhoto, seedVisual: pendingPhoto ? { title: pendingPhoto.name || 'uploaded photo', caption: q, pageUrl: '' } : null });
   };
   if ($('homeSearchForm')) $('homeSearchForm').onsubmit = e => { e.preventDefault(); submitHomeSearch(); };
   $('homeSearchBtn').onclick = e => { if (e) e.preventDefault(); submitHomeSearch(); };
@@ -3266,7 +3327,8 @@ function wire() {
   if ($('diveSearchBtn')) $('diveSearchBtn').onclick = () => investigateTopic($('diveSearchQuery')?.value || '');
   if ($('diveBondageBtn')) $('diveBondageBtn').onclick = () => runDiveLens('bondage');
   if ($('divePeopleBtn')) $('divePeopleBtn').onclick = () => runDiveLens('people');
-  if ($('diveClothingBtn')) $('diveClothingBtn').onclick = () => runDiveLens('clothing');
+  if ($('diveVisualsBtn')) $('diveVisualsBtn').onclick = () => runDiveLens('visuals');
+  if ($('diveClothingBtn')) $('diveClothingBtn').onclick = () => runDiveLens('visuals');
   if ($('diveFindMoreBtn')) $('diveFindMoreBtn').onclick = () => {
     const entity = selectedEntity?.canonicalName || lastClassification?.subject || '';
     if (!entity && !lastResults.length) return toast('Investigate something first.');
@@ -3587,22 +3649,52 @@ function wire() {
     }
   });
   if ($('homeImageBtn')) $('homeImageBtn').onclick = () => $('homeImage')?.click();
-  if ($('homeImage')) $('homeImage').onchange = async () => {
-    const f = $('homeImage').files?.[0];
+  if ($('homePhotoBtn')) $('homePhotoBtn').onclick = () => $('homeImage')?.click();
+  if ($('searchPhotoBtn')) $('searchPhotoBtn').onclick = () => ($('searchImage') || $('homeImage'))?.click();
+  function renderPhotoPreview(id, dataUrl, name) {
+    const el = $(id);
+    if (!el) return;
+    if (!dataUrl) {
+      el.innerHTML = '';
+      el.classList.add('hidden');
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.classList.remove('hidden');
+    el.innerHTML = '<img alt="Attached photo" src="' + dataUrl + '"><div class="body"><b>' + esc(name || 'Photo attached') + '</b><div class="hint">Used as an investigation visual. Carmen will not identify a person from this image alone.</div></div><button class="btn ghost" type="button" data-clear-photo>Remove</button>';
+    el.querySelector('[data-clear-photo]')?.addEventListener('click', () => {
+      pendingPhoto = null;
+      if ($('homeImage')) $('homeImage').value = '';
+      if ($('searchImage')) $('searchImage').value = '';
+      renderPhotoPreview('homePhotoPreview', '');
+      renderPhotoPreview('searchPhotoPreview', '');
+    });
+  }
+  async function ingestPhotoFile(f) {
     if (!f) return;
     if (f.size > 12 * 1024 * 1024) return toast('Image is too large. Choose one under 12 MB.');
     const rd = new FileReader();
-    rd.onload = async () => {
+    rd.onload = () => {
       current = rd.result;
-      showCurrent();
-      enableCapture();
-      const name = String(f.name || '').replace(/\.[a-z0-9]+$/i, '').replace(/[-_]+/g, ' ');
-      $('searchQuery').value = name;
-      $('homeQuery').value = name;
-      setTab('search');
-      toast('Image loaded on this phone. Analyze it in Investigate, or search the name/context.');
+      pendingPhoto = { dataUrl: rd.result, name: String(f.name || 'photo'), type: f.type || 'image' };
+      try { showCurrent(); enableCapture(); } catch {}
+      const name = String(f.name || '').replace(/\.[a-z0-9]+$/i, '').replace(/[-_]+/g, ' ').trim();
+      renderPhotoPreview('homePhotoPreview', rd.result, name || 'Photo attached');
+      renderPhotoPreview('searchPhotoPreview', rd.result, name || 'Photo attached');
+      if (name && !$('searchQuery')?.value.trim()) {
+        if ($('searchQuery')) $('searchQuery').value = name;
+        if ($('homeQuery') && !$('homeQuery').value.trim()) $('homeQuery').value = name;
+      }
+      toast('Photo attached as investigation input. Carmen will not identify a person from the image alone.');
     };
     rd.readAsDataURL(f);
+  }
+  if ($('homeImage')) $('homeImage').onchange = async () => {
+    await ingestPhotoFile($('homeImage').files?.[0]);
+  };
+  if ($('searchImage')) $('searchImage').onchange = async () => {
+    await ingestPhotoFile($('searchImage').files?.[0]);
   };
   $('createCollection').onclick = async () => {
     const name = $('newCollectionName').value.trim();

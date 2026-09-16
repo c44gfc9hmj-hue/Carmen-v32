@@ -1,14 +1,15 @@
-Carmen v49.4 (49.4-deep-dive-lenses) — ChatGPT Actions contract
+Carmen v49.5 (49.5-adult-first-nl) — surgical product correction
 ==============================================================
-Parent: d2efd7bb962e9e0a7067576f86317cead15b6f7e (v49.4 machine API)
+Parent: 44e5bc89a28aec0324bf7d93d1b105bb68e50590 (v49.4 surgical)
 
-Make the live Machine API actually importable by a ChatGPT Custom GPT Action.
-Fold the CI connector-pass into worker.js. Expand OpenAPI 3.0.3 (Bearer first,
-full request/response schemas, x-openai-isConsequential: false, confirm-identity).
-Accept investigationState as object or JSON string. Echo investigationStateJson.
-Canonical agent sequence in API.md / CHATGPT.md. Production smoke script.
+Adult-first by default (Adult Off/On/Both chips removed). Photo is a real
+investigation input. Deep Dive keeps exactly three shortcuts — Bondage /
+People / Visuals — plus one natural-language research box. Clothing stays
+internal. Find More is additive and sends knownMedia. Intent classifies
+PERSON vs OBJECT/TECHNIQUE vs TOPIC vs VISUAL vs URL vs QUESTION before
+person pipelines. Visuals inherit the active investigation.
 
-No secrets. No PWA redesign. No provider API_KEY reuse. External actions stay 403.
-Worker memory is still not durable — agents must echo investigationState.
+No architecture rewrite. v49.4 identity, provenance, Machine API,
+browser-test, and external-action safety remain.
 
-Build identifier remains **49.4-deep-dive-lenses**.
+Build identifier: **49.5-adult-first-nl**.

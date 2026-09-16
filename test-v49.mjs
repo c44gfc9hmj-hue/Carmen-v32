@@ -15,17 +15,17 @@ const appSrc = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8')
 
 console.log('--- v49 source / UX contracts ---');
 {
-  assert(/49\.[34]/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION current');
+  assert(/49\.[345]/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION current');
   assert(/const VERSION = '49\.[0-9]'/.test(appSrc), 'frontend VERSION 49.x');
 
-  assert(/carmen-build" content="49\.[34]"/.test(html), 'html build current');
+  assert(/carmen-build" content="49\.[345]"/.test(html), 'html build current');
   assert(/What are you curious about\?/.test(html), 'home curiosity prompt');
   assert(/id="diveSearchQuery"/.test(html), 'persistent dive search');
   assert(/id="diveStream"/.test(html), 'dive stream');
   assert(/id="howGotHereBtn"/.test(html), 'How I got here');
   assert(/id="surpriseMeBtn"/.test(html), 'home Surprise me');
   assert(/data-divetab="overview"/.test(html) && /data-divetab="posts"/.test(html) && /data-divetab="images"/.test(html) && /data-divetab="sources"/.test(html), 'dive tabs');
-  assert(/More investigation options/.test(html) && /<\/details>/.test(html), 'planner is optional details');
+  assert(/(More investigation options|Ask Carmen anything about this investigation)/.test(html) && /<\/details>/.test(html), 'planner is optional details');
   assert(/keepSubject/.test(appSrc) && /investigateTopic/.test(appSrc), 'client keeps subject in dive search');
   assert(/foundThrough/.test(appSrc) && /parentId/.test(appSrc), 'saves keep foundThrough/parentId');
   assert(/That’s the one/.test(appSrc) && /Not this one/.test(appSrc), 'interactive identity');
@@ -94,8 +94,8 @@ console.log('--- v49 health ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.4' || body.version === '49.3', 'health version current');
-  assert(/49\.(3|4)/.test(body.build || ''), 'health build current');
+  assert(body.version === '49.5' || body.version === '49.4' || body.version === '49.3', 'health version current');
+  assert(/49\.(3|4|5)/.test(body.build || ''), 'health build current');
   assert((body.features || []).includes('v49-dive-context-search'), 'feature flag dive-context-search');
   assert((body.features || []).includes('v49.2-topic-map-retrieval'), 'feature flag topic-map-retrieval');
   assert((body.features || []).includes('v49.3-chatgpt-access'), 'feature flag chatgpt-access');

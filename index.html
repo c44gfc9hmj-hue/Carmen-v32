@@ -10,7 +10,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon.svg">
 <title>Carmen</title>
-<meta name="carmen-build" content="49.4">
+<meta name="carmen-build" content="49.5">
 <style>
 :root{
   color-scheme:dark;
@@ -66,6 +66,13 @@ main{max-width:720px;margin:0 auto;padding:14px 16px 28px}
 .searchbox button{flex:0 0 auto;min-width:108px;border-radius:var(--radius-lg)}
 .searchbox.stack{flex-direction:column}
 .searchbox.stack button{width:100%;min-height:48px}
+.search-lead{display:flex;gap:8px;align-items:stretch}
+.search-lead input{flex:1;min-width:0}
+.photo-btn{flex:0 0 auto;min-width:72px;min-height:52px;border-radius:var(--radius-lg)}
+.photo-preview{display:flex;gap:10px;align-items:center;margin:8px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--card2)}
+.photo-preview img{width:56px;height:56px;object-fit:cover;border-radius:10px;background:#000;flex:0 0 auto}
+.photo-preview .body{min-width:0;flex:1}
+.photo-preview button{flex:0 0 auto;min-width:64px}
 .stage{margin:16px 0 10px}
 .stage h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle);font-weight:650;margin:0 0 8px}
 .lens-stack{display:flex;flex-direction:column;gap:10px;margin:4px 0 12px}
@@ -244,7 +251,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <div id="carmenAgentStatus" class="carmen-agent-status" data-testid="carmen-status" aria-live="polite" data-status="idle" data-view="home" data-busy="false">idle · home</div>
 <header class="appbar">
   <div class="rowbits">
-    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.4</span></h1>
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.5</span></h1>
     <button class="btn ghost" id="newInvestigationBtn" type="button" data-testid="new-investigation">New investigation</button>
   </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
@@ -256,21 +263,17 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <p class="kicker">Public research</p>
     <h2>What are you curious about?</h2>
     <form class="searchbox stack" id="homeSearchForm" data-testid="search-form" action="#" method="get">
-      <input id="homeQuery" data-testid="search-input" name="q" placeholder="A name, question, URL, photo, topic — anything public" enterkeyhint="search" autocapitalize="words" autocomplete="off">
+      <div class="search-lead">
+        <input id="homeQuery" data-testid="search-input" name="q" placeholder="A name, question, URL, photo, topic — anything public" enterkeyhint="search" autocapitalize="words" autocomplete="off">
+        <button class="btn ghost photo-btn" id="homePhotoBtn" type="button" data-testid="photo-input" aria-label="Add a photo">Photo</button>
+      </div>
+      <div id="homePhotoPreview" class="photo-preview hidden" hidden></div>
       <button class="btn primary" id="homeSearchBtn" type="submit" data-testid="search-submit">Search</button>
     </form>
-    <div class="filter-block" style="margin-top:14px">
-      <p class="flabel">Adult research lens</p>
-      <div class="chips" id="homeAdultChips" style="margin-top:0">
-        <button type="button" class="chip active" data-adult="off">Off</button>
-        <button type="button" class="chip" data-adult="on">On</button>
-        <button type="button" class="chip" data-adult="both">Both</button>
-      </div>
-    </div>
-    <button class="quiet-link" id="homeImageBtn" type="button">Inspect an image instead</button>
+    <input id="homeImage" type="file" accept="image/*" class="hidden" data-testid="photo-file">
+    <button class="quiet-link hidden" id="homeImageBtn" type="button" hidden>Inspect an image instead</button>
     <button class="quiet-link" id="surpriseMeBtn" type="button">Surprise me</button>
     <p class="hint" id="surpriseWhyHome" hidden></p>
-    <input id="homeImage" type="file" accept="image/*" class="hidden">
     <p class="warning">Research only. Carmen never contacts people, posts, comments, follows, submits forms, or buys anything.</p>
   </div>
   <div id="homeResume"></div>
@@ -285,29 +288,26 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <p class="kicker">Search</p>
     <h3 style="font-size:22px;letter-spacing:-.03em;margin:0 0 12px">What are you looking for?</h3>
     <textarea id="searchQuery" data-testid="search-input-workspace" placeholder="A name, question, URL, photo, topic — anything public"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="btn ghost" id="searchPhotoBtn" type="button" data-testid="photo-input-workspace">Add photo</button>
+    </div>
+    <div id="searchPhotoPreview" class="photo-preview hidden" hidden></div>
+    <input id="searchImage" type="file" accept="image/*" class="hidden">
     <div id="lensStack" class="hidden"></div>
-    <div class="filter-block">
-      <p class="flabel">Adult research lens</p>
-      <div class="chips" id="adultChips" style="margin-top:0">
-        <button type="button" class="chip active" data-adult="off">Off</button>
-        <button type="button" class="chip" data-adult="on">On</button>
-        <button type="button" class="chip" data-adult="both">Both</button>
-      </div>
-    </div>
-    <div class="filter-block" id="focusBlock">
-      <p class="flabel">Research Focus</p>
-      <div class="chips" id="subjectChips" style="margin-top:0">
-        <button class="chip" data-subject="person">Person</button>
-        <button class="chip" data-subject="visuals">Visuals</button>
-        <button class="chip" data-subject="position">Position</button>
-        <button class="chip" data-subject="tutorial">Tutorial</button>
-        <button class="chip" data-subject="clothing">Clothing</button>
-        <button class="chip" data-subject="website">URL</button>
-        <button class="chip" data-subject="topic">Topic</button>
-      </div>
-    </div>
     <details class="adv">
       <summary>More options</summary>
+      <div class="filter-block" id="focusBlock" style="margin-top:10px">
+        <p class="flabel">Research Focus</p>
+        <div class="chips" id="subjectChips" style="margin-top:0">
+          <button class="chip" data-subject="person">Person</button>
+          <button class="chip" data-subject="visuals">Visuals</button>
+          <button class="chip" data-subject="position">Position</button>
+          <button class="chip" data-subject="tutorial">Tutorial</button>
+          <button class="chip" data-subject="clothing">Clothing</button>
+          <button class="chip" data-subject="website">URL</button>
+          <button class="chip" data-subject="topic">Topic</button>
+        </div>
+      </div>
       <div class="stage" id="interestBlock" style="margin-top:10px">
         <h3>Adaptive lenses</h3>
         <div class="chips" id="interestChips"></div>
@@ -363,16 +363,16 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <p class="kicker">Investigate</p>
     <div id="diveIdentity"><p class="muted">Search and pick someone or something first. Deep Dive investigates that selection.</p></div>
     <div class="searchbox" style="margin-top:12px">
-      <input id="diveSearchQuery" data-testid="search-input-dive" placeholder="Search this investigation…" enterkeyhint="search" autocomplete="off">
+      <input id="diveSearchQuery" data-testid="search-input-dive" placeholder="Tell Carmen what to find — career, related people, videos, original source…" enterkeyhint="search" autocomplete="off">
       <button class="btn primary" id="diveSearchBtn" type="button" data-testid="search-submit-dive">Search</button>
     </div>
-    <p class="hint" id="diveSearchHint">Type a topic (interviews, career, photos) — Carmen keeps the current subject.</p>
+    <p class="hint" id="diveSearchHint">Type what you want. Carmen picks the search paths. Bondage, People, and Visuals are shortcuts.</p>
     <div class="dive-primary" id="divePrimaryLenses">
       <p class="flabel">Deep Dive</p>
       <div class="row">
         <button class="btn primary" id="diveBondageBtn" type="button" data-testid="dive-bondage">Bondage</button>
         <button class="btn" id="divePeopleBtn" type="button" data-testid="dive-people">People</button>
-        <button class="btn" id="diveClothingBtn" type="button" data-testid="dive-clothing">Clothing</button>
+        <button class="btn" id="diveVisualsBtn" type="button" data-testid="dive-visuals">Visuals</button>
       </div>
       <div class="row" style="margin-top:8px">
         <button class="btn ghost" id="diveFindMoreBtn" type="button" data-testid="find-more">Find More</button>
@@ -404,15 +404,15 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <div id="analyzePanel" class="card hidden"></div>
   <div class="card" id="diveStartCard">
     <details>
-      <summary style="cursor:pointer;font-weight:600">More investigation options</summary>
+      <summary style="cursor:pointer;font-weight:600">Ask Carmen anything about this investigation</summary>
     <h3>What do you want to find out?</h3>
     <p class="muted" id="diveAdultNote"></p>
     <div id="divePlanner">
       <p id="divePlannerLead" class="muted"></p>
-      <div class="pathpick" id="diveSelectChips"></div>
-      <div id="diveQuestionWrap" class="hidden" style="margin-top:8px">
-        <label class="hint">Custom question</label>
-        <textarea id="diveCustom" placeholder="What do you actually want to know?"></textarea>
+      <div class="pathpick hidden" id="diveSelectChips" hidden></div>
+      <div id="diveQuestionWrap" style="margin-top:8px">
+        <label class="hint">Natural-language research request</label>
+        <textarea id="diveCustom" data-testid="dive-nl-input" placeholder="Show me everything on this person in bondage. Find related people. Find the original source of this image."></textarea>
       </div>
       <label class="hint" style="display:flex;gap:8px;align-items:center;margin-top:8px">
         <input id="diveExpanded" type="checkbox" style="width:auto;flex:0 0 auto"> Look further if sources are blocked
