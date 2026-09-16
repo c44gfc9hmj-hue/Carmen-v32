@@ -792,6 +792,20 @@ const RELATIONAL_PEOPLE_PATTERNS = [
 ];
 
 const CLOTHING_TERM_RE = /\b(dress|skirt|blouse|shirt|heels|boots|collar|cinch(?:\s+straps?)?|straps?|harness|corset|latex|leather|stockings?|outfit|lingerie|bodysuit|leotard|gloves?|jacket|coat|uniform|bikini|catsuit|hoodie|jeans|suit|gag|hood|cincher|ballet\s+boots?|metal\s+collar|rope)\b/ig;
+const CLOTHING_COLOR_ONLY_RE = /\b(black|white|red|blue|green|yellow|pink|purple|orange|brown|grey|gray|blonde|blond|brunette|redhead|silver|gold|navy|beige|ivory|nude|tan|scarlet|crimson|violet|teal|maroon)\b/i;
+const CLOTHING_GARMENT_HINT_RE = /\b(dress|skirt|blouse|shirt|heels|boots|collar|cinch|strap|harness|corset|latex|leather|stocking|outfit|lingerie|bodysuit|leotard|glove|jacket|coat|uniform|bikini|catsuit|hoodie|jeans|suit|gag|hood|cincher|garment|wardrobe)\b/i;
+
+export function isClothingColorFalsePositive(text) {
+  const s = String(text || '').trim();
+  if (!s) return true;
+  const n = norm(s);
+  if (/^(black|white|red|blue|green|yellow|pink|purple|orange|brown|grey|gray|blonde|blond|brunette|redhead|silver|gold|navy|beige|ivory|nude|tan|scarlet|crimson|violet|teal|maroon)$/i.test(n)) return true;
+  const hasColor = CLOTHING_COLOR_ONLY_RE.test(s);
+  const hasGarment = CLOTHING_GARMENT_HINT_RE.test(s);
+  if (hasColor && !hasGarment) return true;
+  return false;
+}
+
 
 const MIRROR_HOST_RE = /(^|\.)(web\.archive\.org|archive\.org|archive\.is|archive\.ph|archive\.today|megalodon\.jp)$/i;
 const SEARCH_WRAPPER_HOST_RE = /(google|bing|duckduckgo|yahoo|startpage|mojeek|pinterest)\./i;
@@ -1082,6 +1096,7 @@ export function extractClothingEvidence(results, visuals, opts = {}) {
   const push = (term, grade, source, visual) => {
     const t = String(term || '').toLowerCase().replace(/\s+/g, ' ').trim();
     if (!t || t.length < 3 || seen.has(t)) return;
+    if (isClothingColorFalsePositive(t)) return;
     seen.add(t);
     out.push({
       term: t,
@@ -2308,4 +2323,133 @@ export function fixtureItems(name) {
 export function distinctFindMoreIntents() {
   return ['find-more', 'more-like-this', 'find-different', 'find-similar', 'search-this-visual', 'more-from-this-source', 'more-from-this-person', 'more-on-this-topic'];
 }
+
+// ---------------------------------------------------------------------------
+// v49.4 surgical retrieval: phase order, identity-anchor follow-up, result audit
+// ---------------------------------------------------------------------------
+export const RETRIEVAL_PHASES = ['identity', 'intersection', 'adult', 'generic'];
+
+function retrievalPhaseOf(variant) {
+  const lane = String((variant && (variant.lane || variant.id)) || '').toLowerCase();
+  const sc = String((variant && variant.sourceClass) || '').toLowerCase();
+  const why = String((variant && variant.why) || '').toLowerCase();
+  const blob = lane + ' ' + sc + ' ' + why;
+  const adultIds = ADULT_SOURCE_CLASSES.map(c => c.id);
+  if (/^(identity|identity-profile|entity|adult-identity|aliases|more-from-this-person|creator-owned)$/.test(lane) || /identity|profile sources|entity-only/.test(why)) return 'identity';
+  if (/^(intersection|pair|intersect-2|productions|dive-bondage-chain|more-on-this-topic|topic)$/.test(lane) || /intersection|subject × topic|entity ×/.test(why) || /^pair-|^concept-/.test(lane)) return 'intersection';
+  if (adultIds.includes(lane) || adultIds.includes(sc) || /adult|fetish|premium|publisher|studio-producer|major-video|creator-store|bondage studio/.test(blob)) {
+    if (lane === 'identity-profile' || sc === 'identity-profile') return 'identity';
+    return 'adult';
+  }
+  return 'generic';
+}
+
+export function retrievalExecutionOrder(variants, opts = {}) {
+  const phases = (opts && Array.isArray(opts.phases) && opts.phases.length)
+    ? opts.phases.slice()
+    : ['identity', 'intersection', 'adult'];
+  const list = (variants || []).map((v, i) => ({ v, i, phase: retrievalPhaseOf(v) }));
+  const rank = (phase) => {
+    const idx = phases.indexOf(phase);
+    return idx === -1 ? phases.length + (phase === 'generic' ? 1 : 2) : idx;
+  };
+  list.sort((a, b) => rank(a.phase) - rank(b.phase) || a.i - b.i);
+  return list.map(row => row.v);
+}
+
+export function plannedWebExecutionSequence(variants, opts = {}) {
+  return retrievalExecutionOrder(variants, opts || { phases: ['identity', 'intersection', 'adult'] });
+}
+
+export function resolveIdentityAnchor(feedback, classification, opts = {}) {
+  const fb = feedback || {};
+  const confirmed = (fb.confirmed || []).map(s => String(s || '').trim()).filter(Boolean);
+  const subject = String((classification && classification.subject) || (opts && opts.subject) || '').trim();
+  const name = confirmed[0] || subject;
+  return {
+    confirmed: confirmed.length > 0,
+    name,
+    subject: name,
+    rejectedPeople: fb.rejectedPeople || [],
+    rejectedHosts: fb.rejectedHosts || [],
+    rejectedImages: fb.rejectedImages || [],
+    rejectedUrls: fb.rejectedUrls || [],
+    identityFeedback: fb,
+    appliesToSubsequentRetrieval: confirmed.length > 0 || (fb.rejectedPeople || []).length > 0 || (fb.rejectedHosts || []).length > 0,
+  };
+}
+
+export function subsequentRetrievalFromFeedback(intent, feedback, opts = {}) {
+  const anchor = resolveIdentityAnchor(feedback, intent, opts);
+  const topic = String((intent && intent.topic) || (opts && opts.topic) || '').trim();
+  const attempted = (opts && opts.attemptedQueries) || [];
+  const queries = [];
+  const add = (q, why, lane) => {
+    const t = String(q || '').trim();
+    if (!t) return;
+    if (attempted.some(a => String(a).toLowerCase() === t.toLowerCase())) return;
+    queries.push({ q: t, why, lane: lane || 'identity', kind: 'web' });
+  };
+  if (anchor.confirmed && anchor.name) {
+    add('"' + anchor.name + '" (profile OR bio OR database OR "official site")', 'subsequent retrieval from confirmed identity', 'identity');
+    if (topic) {
+      add('"' + anchor.name + '" ' + topic, 'confirmed identity × topic', 'intersection');
+      add('"' + anchor.name + '" ' + topic + ' (scene OR photoset OR feature OR credits)', 'confirmed identity × topic specialist', 'intersection');
+    } else {
+      add('"' + anchor.name + '"', 'subsequent retrieval uses confirmed identity as the subject', 'identity');
+    }
+    for (const p of (anchor.rejectedPeople || []).slice(0, 3)) {
+      add('"' + anchor.name + '" -"' + p + '"', 'exclude rejected identity from subsequent retrieval', 'identity');
+    }
+  }
+  return {
+    anchor,
+    queries,
+    identityFeedback: feedback || {},
+    subject: anchor.name,
+    keepSubject: true,
+  };
+}
+
+export function auditStructuredResults(results, opts = {}) {
+  const subject = String((opts && opts.subject) || '').trim();
+  const topic = String((opts && opts.topic) || '').trim();
+  const query = String((opts && opts.query) || [subject, topic].filter(Boolean).join(' ')).trim();
+  const subjToks = tokens(subject);
+  const topicToks = topic ? [...new Set(tokens(topic).concat(topicTerms(topic)))] : [];
+  const rows = (results || []).map((r) => {
+    const blob = ((r.title || '') + ' ' + (r.snippet || '') + ' ' + (r.url || '') + ' ' + (r.textExcerpt || ''));
+    const host = String(r.domain || r.host || hostOf(r.url) || '').replace(/^www\./, '');
+    const queryEcho = isQueryEchoTitle(r.title, query, { subject });
+    const redditSearch = isRedditSearchPage(r.url, r.title);
+    const collision = competingFullNameInText((r.title || '') + ' ' + (r.snippet || ''), subject);
+    const subjectHit = subjToks.length ? includesAll(blob, subjToks) : false;
+    const topicHit = topicToks.length ? includesAny(blob, topicToks) : false;
+    const mirror = isMirrorUrl(r.url);
+    return {
+      url: r.url,
+      title: r.title,
+      host,
+      queryEcho,
+      redditSearch,
+      competingIdentity: collision || '',
+      subjectRelevant: !!(subjectHit && !queryEcho && !redditSearch),
+      intersection: !!(subjectHit && topicHit && !queryEcho && !redditSearch),
+      unrelated: !subjectHit,
+      mirror,
+    };
+  });
+  return {
+    total: rows.length,
+    subjectRelevant: rows.filter(r => r.subjectRelevant).length,
+    intersection: rows.filter(r => r.intersection).length,
+    unrelated: rows.filter(r => r.unrelated).length,
+    competingIdentity: rows.filter(r => r.competingIdentity).length,
+    queryEcho: rows.filter(r => r.queryEcho).length,
+    redditSearchPages: rows.filter(r => r.redditSearch).length,
+    mirrors: rows.filter(r => r.mirror).length,
+    rows,
+  };
+}
+
 

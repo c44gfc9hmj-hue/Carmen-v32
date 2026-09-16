@@ -66,6 +66,13 @@ import {
   NO_NEW_SOURCES_MESSAGE,
   primaryDiveLenses,
   isNaiveLensQuery,
+  resolveIdentityAnchor,
+  subsequentRetrievalFromFeedback,
+  retrievalExecutionOrder,
+  plannedWebExecutionSequence,
+  isClothingColorFalsePositive,
+  auditStructuredResults,
+  RETRIEVAL_PHASES,
 } from './investigation-planner.js';
 
 
@@ -4951,6 +4958,14 @@ async function runDiscovery(query, opts = {}) {
       addVar((classification.subject || intent.knownEntity.domain) + ' site:' + intent.knownEntity.domain, 'known site × subject', 'known-site', 'web');
       if (classification.context) addVar('"' + classification.subject + '" ' + classification.context + ' site:' + intent.knownEntity.domain, 'known site × topic', 'known-site', 'web');
     }
+    const identityAnchor = resolveIdentityAnchor(intent.identityFeedback, classification, { subject: classification.subject });
+    if (identityAnchor.appliesToSubsequentRetrieval) {
+      const follow = subsequentRetrievalFromFeedback(intent, intent.identityFeedback, {
+        attemptedQueries,
+        topic: classification.context || intent.topic,
+      });
+      for (const x of follow.queries) addVar(x.q, x.why, x.lane || 'identity', x.kind);
+    }
   }
   const results = [], seen = new Set(), diagnostics = {};
   const fixtureName = String(opts.fixture || opts.fixtureName || '').trim();
@@ -5061,7 +5076,10 @@ async function runDiscovery(query, opts = {}) {
     }
     if (!follow.length) await reservedRedditLane(q, results, seen, diagnostics);
   } else if (!visualOnly) {
-    const webVariants = variants.filter(v => (v.kind || 'web') === 'web');
+    const webVariants = retrievalExecutionOrder(
+      variants.filter(v => (v.kind || 'web') === 'web'),
+      { phases: ['identity', 'intersection', 'adult'] }
+    );
     const cap = expanded ? 10 : (depth === 'deep' ? 10 : depth === 'contextual' ? 8 : 5);
     const extraActive = !!extraContext(classification);
     const adultOnPerson = (adult === 'on' || adult === 'both') && classification.type === 'person';
@@ -5069,9 +5087,9 @@ async function runDiscovery(query, opts = {}) {
       await reservedAdultIdentityLane(classification, results, seen, diagnostics);
     }
     const mustRun = extraActive
-      ? new Set(['primary', 'intersection', 'interviews', 'specialist', 'adult-identity'])
+      ? new Set(['primary', 'identity', 'intersection', 'interviews', 'specialist', 'adult-identity'])
       : adultOnPerson
-        ? new Set(['intersection', 'productions', 'interviews', 'primary', 'adult-identity'])
+        ? new Set(['identity', 'intersection', 'adult', 'adult-identity', 'productions', 'interviews', 'primary'])
         : new Set(['primary', 'intersection', 'identity']);
     const visualReserve = isVisualSubject(classification) ? 4 : 0;
     let redditLaneDone = false;

@@ -86,7 +86,7 @@ jobs:
           node test-v49.4.mjs
           node test-v49.4-machine-api.mjs
           node test-v49.4-identity-anchor.mjs
-          if [ -f patches/v49.4-surgical.diff ]; then node test-v49.4-surgical.mjs; fi
+          node test-v49.4-surgical.mjs
           node test-browser-test.mjs
 
       - name: Install Wrangler
