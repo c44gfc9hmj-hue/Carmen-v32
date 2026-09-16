@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.6';
+const VERSION = '49.7';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -31,6 +31,11 @@ let sessionBoundProject = false;
 let attemptedQueries = [];
 let lastPremium = [];
 let lastRetrievalTrace = null;
+let lastWhatChecked = null;
+let lastWhyStop = null;
+let lastVariations = [];
+let lastEntityIdentity = null;
+let lastRejected = [];
 let diveAll = true;
 let selectedDivePathIds = [];
 let diveWorkspaceTab = 'findings';
@@ -1160,6 +1165,11 @@ async function discover(opts = {}) {
     else if (Array.isArray(data.variants)) attemptedQueries = [...new Set([...(attemptedQueries || []), ...data.variants.map(v => v.q || v)])].slice(0, 48);
     if (Array.isArray(data.premiumContent)) lastPremium = data.premiumContent;
     lastRetrievalTrace = data.retrievalTrace || lastRetrievalTrace;
+    lastWhatChecked = data.whatCarmenChecked || lastWhatChecked;
+    lastWhyStop = data.whyDidYouStop || lastWhyStop;
+    lastVariations = Array.isArray(data.variations) ? data.variations : lastVariations;
+    lastEntityIdentity = data.entityIdentity || lastEntityIdentity;
+    if (Array.isArray(data.rejectedCandidates)) lastRejected = data.rejectedCandidates;
     lastExpansion = data.expansion || null;
     lastRelatedPeople = Array.isArray(data.relatedPeople) ? data.relatedPeople : lastRelatedPeople;
     lastClothingEvidence = Array.isArray(data.clothingEvidence) ? data.clothingEvidence : lastClothingEvidence;
@@ -1183,6 +1193,8 @@ async function discover(opts = {}) {
     renderIdentityBanner();
     renderDiveIdentity();
     renderDiveStream();
+    renderInvestigationTrace(data);
+    renderVariationChips(data);
     persistSession();
     updateDeepDiveState();
     pushTrail({
@@ -1493,7 +1505,7 @@ function renderVisualCorpus() {
       const sel = selectedVisual && visualDedupeKey(selectedVisual.url) === visualDedupeKey(im.url);
       return `<button type="button" class="visual-tile${sel ? ' selected' : ''}" data-visual="${i}" style="padding:0;border:${sel ? '1px solid var(--accent)' : '1px solid var(--line)'};background:transparent;text-align:left">
         <img src="${esc(imgSrc(im.url))}" alt="${esc(im.title || '')}" referrerpolicy="no-referrer" onerror="this.style.display='none'">
-        <div class="vcap">${esc((im.domain || '') + (im.title ? ' · ' + String(im.title).slice(0, 48) : ''))}</div>
+        <div class="vcap">${esc((im.domain || '') + (im.visualClass ? ' · ' + im.visualClass : '') + (im.title ? ' · ' + String(im.title).slice(0, 48) : ''))}</div>
       </button>`;
     }).join('')}</div>
     ${failures.length ? failures.slice(0, 8).map(f => {
@@ -1916,6 +1928,36 @@ function renderSearchDiagnostics(data) {
   }
   el.innerHTML = bits.join(' · ');
 }
+function renderInvestigationTrace(data) {
+  const checked = (data && data.whatCarmenChecked) || lastWhatChecked;
+  const stop = (data && data.whyDidYouStop) || lastWhyStop;
+  const identity = (data && data.entityIdentity) || lastEntityIdentity;
+  const rejected = (data && data.rejectedCandidates) || lastRejected || [];
+  const fill = (checkedEl, stopEl) => {
+    if (checkedEl) {
+      checkedEl.innerHTML = checked
+        ? `<p>${esc(checked.summary || '')}</p>${(checked.queries && checked.queries.length) ? '<ul class="trail-list">' + checked.queries.slice(0, 12).map(q => `<li>${esc(q.q || '')}<div class="subtle">${esc(q.why || q.lane || '')}</div></li>`).join('') + '</ul>' : ''}${identity ? `<p class="hint">Resolved: ${esc(identity.canonicalName || '')} · ${esc(identity.type || '')} · confidence ${esc(identity.confidence || '')}</p>` : ''}${rejected.length ? `<p class="hint">Considered and rejected: ${rejected.slice(0, 4).map(r => esc((r.title || r.url || '') + (r.reason ? ' — ' + r.reason : ''))).join('; ')}</p>` : ''}`
+        : '<p class="muted">No investigation trace yet.</p>';
+    }
+    if (stopEl) {
+      stopEl.innerHTML = stop
+        ? `<p><b>Why did you stop?</b> ${esc(stop.headline || '')}</p><p class="hint">${esc(stop.detail || '')}${stop.notFoundVsNotSearched ? ' · ' + esc(String(stop.notFoundVsNotSearched)) : ''}</p>`
+        : '';
+    }
+  };
+  fill($('whatCarmenChecked'), $('whyDidYouStop'));
+  fill($('diveWhatCarmenChecked'), $('diveWhyDidYouStop'));
+}
+function renderVariationChips(data) {
+  const vars = (data && data.variations) || lastVariations || [];
+  const html = vars.length
+    ? '<p class="flabel">Variations</p><div class="chips">' + vars.map(v => `<button class="chip" type="button" data-variation="${esc(v.label)}">${esc(v.label)}</button>`).join('') + '</div>'
+    : '';
+  if ($('variationChips')) $('variationChips').innerHTML = html;
+  if ($('diveVariationChips')) $('diveVariationChips').innerHTML = vars.length
+    ? vars.map(v => `<button class="chip" type="button" data-variation="${esc(v.label)}">${esc(v.label)}</button>`).join('')
+    : '';
+}
 function evidenceBadges(r) {
   const ev = r && r.evidence || {};
   const bits = [];
@@ -2012,6 +2054,8 @@ function resultCardHtml(r, i, isPersonType) {
         <div class="rmeta">
           <span class="badge">${esc(r.source || 'Public web')}</span>
           ${r.accessState ? `<span class="badge">${esc(r.accessState)}</span>` : ''}
+          ${r.matchQuality ? `<span class="badge">${esc(r.matchQuality)}</span>` : ''}
+          ${r.contentType && r.contentType !== 'source' ? `<span class="badge">${esc(r.contentType)}</span>` : ''}
         </div>
         <div class="subtle">${esc(r.domain || hostOf(r.url))}</div>
         ${ev ? `<div class="rmeta">${ev}</div>` : ''}
@@ -2210,6 +2254,12 @@ function resetInvestigationContext() {
   if ($('teachPanel')) $('teachPanel').classList.add('hidden');
   if ($('analyzePanel')) $('analyzePanel').classList.add('hidden');
   if ($('suggestBar')) $('suggestBar').innerHTML = '';
+  if ($('variationChips')) $('variationChips').innerHTML = '';
+  if ($('diveVariationChips')) $('diveVariationChips').innerHTML = '';
+  if ($('whatCarmenChecked')) $('whatCarmenChecked').innerHTML = '';
+  if ($('whyDidYouStop')) $('whyDidYouStop').innerHTML = '';
+  if ($('diveWhatCarmenChecked')) $('diveWhatCarmenChecked').innerHTML = '';
+  if ($('diveWhyDidYouStop')) $('diveWhyDidYouStop').innerHTML = '';
   if ($('visualCorpus')) $('visualCorpus').innerHTML = '';
   if ($('videoCorpus')) $('videoCorpus').innerHTML = '';
   if ($('graphTrail')) { $('graphTrail').innerHTML = ''; $('graphTrail').classList.add('hidden'); }
@@ -2237,6 +2287,11 @@ function hardNewInvestigation(opts = {}) {
   attemptedQueries = [];
   lastPremium = [];
   lastRetrievalTrace = null;
+  lastWhatChecked = null;
+  lastWhyStop = null;
+  lastVariations = [];
+  lastEntityIdentity = null;
+  lastRejected = [];
   lastClassification = null;
   lastDiscoveryMeta = null;
   lastTopicMap = null;
@@ -2919,6 +2974,8 @@ function renderDeepDivePayload(data, subject) {
   diveWorkspaceTab = 'findings';
   renderDiveIdentity();
   renderDiveWorkspace(data, subject);
+  renderInvestigationTrace(data);
+  renderVariationChips(data);
 }
 function relatedListHtml(items, data) {
   const all = data.related || [];
@@ -3424,6 +3481,21 @@ function wire() {
       mode: 'find-more',
     });
   };
+  if ($('divePremiumBtn')) $('divePremiumBtn').onclick = () => {
+    const entity = selectedEntity?.canonicalName || lastClassification?.subject || researchSubject || '';
+    if (!entity) return toast('Resolve a person first, then investigate Account / Premium.');
+    pushTrail({ kind: 'premium-accounts', label: 'Account / Premium', entity, topic: diveTopic });
+    discover({
+      keepSubject: true,
+      entity,
+      topic: diveTopic || extraContextText(lastClassification) || '',
+      premiumAccounts: true,
+      premium: true,
+      append: true,
+      expanded: true,
+      mode: 'premium-accounts',
+    });
+  };
 
   if ($('diveSearchQuery')) $('diveSearchQuery').addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); investigateTopic($('diveSearchQuery').value); }
@@ -3496,7 +3568,23 @@ function wire() {
     const resume = e.target.closest('[data-resume]');
     if (resume) { e.preventDefault(); resumeInvestigation(resume.dataset.resume); return; }
     const goDive = e.target.closest('[data-go-dive]');
-    if (goDive) { e.preventDefault(); goToDive(); }
+    if (goDive) { e.preventDefault(); goToDive(); return; }
+    const variation = e.target.closest('[data-variation]');
+    if (variation) {
+      e.preventDefault();
+      const label = variation.getAttribute('data-variation') || '';
+      if (!label) return;
+      const entity = selectedEntity?.canonicalName || lastClassification?.subject || '';
+      diveTopic = label;
+      pushTrail({ kind: 'variation', label: 'Variation · ' + label, entity, topic: label });
+      discover({
+        keepSubject: !!entity,
+        entity,
+        topic: label,
+        append: true,
+        expanded: true,
+      });
+    }
   });
   $('quickDiscover').onclick = () => setTab('search');
   $('quickCapture').onclick = () => { setTab('investigations'); $('pick').click(); };

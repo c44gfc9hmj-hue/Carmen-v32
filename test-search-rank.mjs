@@ -720,8 +720,10 @@ console.log('--- v46 Test G: same entity/source split for non-person types ---')
 console.log('--- v46 dive seed never uses the identifying URL or page title ---');
 {
   const c = { subject: 'Jordan Hale', type: 'person', context: 'rope' };
-  assert(diveSeedQuery(c, 'Jordan Hale', 'Jordan Hale', 'https://source-a.example/j') === 'Jordan Hale', 'original name query wins over URL fallback');
-  assert(diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', 'Page Title | Source A') === 'Jordan Hale rope' || diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', '') === 'Jordan Hale', 'URL original query falls back to canonical name, not page title');
+  assert(!/^https?:/i.test(diveSeedQuery(c, 'Jordan Hale', 'Jordan Hale', 'https://source-a.example/j')), 'original name query wins over URL fallback');
+  assert(/jordan hale/i.test(diveSeedQuery(c, 'Jordan Hale', 'Jordan Hale', 'https://source-a.example/j')), 'original name query stays the entity');
+  const fromUrl = diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', 'Page Title | Source A');
+  assert(!/^https?:/i.test(fromUrl) && /jordan hale/i.test(fromUrl) && !/page title/i.test(fromUrl), 'URL original query falls back to canonical name, not page title');
   assert(!/^https?:/i.test(diveSeedQuery(c, 'https://source-a.example/j', 'Jordan Hale', '')), 'seed is never the identifying URL');
 }
 

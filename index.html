@@ -10,7 +10,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon.svg">
 <title>Carmen</title>
-<meta name="carmen-build" content="49.6">
+<meta name="carmen-build" content="49.7">
 <style>
 :root{
   color-scheme:dark;
@@ -252,7 +252,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <div id="carmenAgentStatus" class="carmen-agent-status" data-testid="carmen-status" aria-live="polite" data-status="idle" data-view="home" data-busy="false">idle · home</div>
 <header class="appbar">
   <div class="rowbits">
-    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.6</span></h1>
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.7</span></h1>
     <button class="btn ghost" id="newInvestigationBtn" type="button" data-testid="new-investigation">New investigation</button>
   </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
@@ -338,7 +338,13 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <p id="deepDiveHint" class="hint">Search, tap the person or thing you mean, then Deep Dive.</p>
     <div id="classBar"></div>
     <div id="suggestBar"></div>
+    <div id="variationChips" class="chips" data-testid="variation-chips"></div>
     <div id="searchDiagnostics" class="diags"></div>
+    <details id="checkedStop" class="adv" data-testid="what-carmen-checked">
+      <summary>What Carmen checked</summary>
+      <div id="whatCarmenChecked"></div>
+      <div id="whyDidYouStop" data-testid="why-did-you-stop"></div>
+    </details>
     <div id="expandedResearch" class="expanded-card hidden">
       <h3 style="margin:0 0 6px">Look further</h3>
       <p class="muted" id="expandedLead">Use this when sources are paywalled, login-gated, blocked, or incomplete. Carmen looks for legitimate public alternatives — it does not bypass the restriction.</p>
@@ -378,7 +384,9 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
       </div>
       <div class="row" style="margin-top:8px">
         <button class="btn ghost" id="diveFindMoreBtn" type="button" data-testid="find-more">Find More</button>
+        <button class="btn ghost" id="divePremiumBtn" type="button" data-testid="premium-accounts">Account / Premium</button>
       </div>
+      <div id="diveVariationChips" class="chips" style="margin-top:8px"></div>
       <p class="hint" id="diveLensHint">Tap a shortcut, type anything, or Find More to expand from new evidence.</p>
       <p class="hint" id="diveSearchHint" hidden>Type what you want. Carmen picks the search paths.</p>
       <p class="expansion-note hidden" id="diveExpansionNote"></p>
@@ -398,6 +406,11 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <h3>How I got here</h3>
     <div id="howHereList" data-testid="how-i-got-here-list"><p class="muted">Start an investigation to see the trail.</p></div>
   </div>
+  <details id="diveCheckedStop" class="card" data-testid="dive-what-carmen-checked">
+    <summary>What Carmen checked</summary>
+    <div id="diveWhatCarmenChecked"></div>
+    <div id="diveWhyDidYouStop" data-testid="dive-why-did-you-stop"></div>
+  </details>
   <div id="surpriseWhy" class="surprise-why hidden"></div>
   <div id="diveStream"></div>
   <div id="teachPanel" class="card hidden"></div>

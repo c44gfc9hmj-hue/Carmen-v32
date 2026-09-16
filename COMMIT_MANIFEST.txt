@@ -1,16 +1,16 @@
-Carmen v49.6 (49.6-correctness-ux) — surgical correctness + iPhone UX
+Carmen v49.7 (49.7-retrieval-engine) — retrieval-engine correctness
 ====================================================================
-Parent: 8c1fd77f361099d5ca015c7d98014a0c875acd86 (v49.5 adult-first)
+Parent: 98422067bd0faf8f9984dc08b80e44f6464b4e23 (v49.6 correctness-ux)
 
-Drea Morgan is a first-class identity/extraction regression. Image extraction
-is distinct from source discovery (og:image, srcset, lazy-load, JSON-LD).
-Adult terminology is semantic (subject × topic), not synonym stuffing.
-PERSON vs OBJECT/TECHNIQUE remains correct. New Investigation never leaks
-live state. Deep Dive is Bondage / People / Visuals + one NL box + Find More.
-Find More expands from newly discovered first-party domains. Visuals stay
-subject-aware. HTTP 503 is a service failure, not “nothing exists.”
+Entity and topic stay coupled through every stage (Deep Dive no longer
+drops the requested topic). Premium discovery is a recursive branch
+(URL ≠ content). Visuals are source-aware, identity-scored, and classified
+(real-person / technique / illustration / anime / cartoon). Variations are
+semantic, not a universal chip dump. Investigation traces answer
+“What Carmen checked” and “Why did you stop.” Account/Premium is restored
+as a real /search?premium=1 branch. Provenance paths corroborate instead
+of duplicating cards.
 
-No architecture rewrite. v49.5 adult-first, photo input, Visuals lens, and
-v49.4 identity / provenance / Machine API / external-action safety remain.
+No architecture rewrite. Extends the existing planner + worker engine.
 
-Build identifier: **49.6-correctness-ux**.
+Build identifier: **49.7-retrieval-engine**.

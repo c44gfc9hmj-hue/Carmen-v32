@@ -42,11 +42,11 @@ const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 
 console.log('--- v49.5 version / adult-first / three shortcuts ---');
 {
-  assert(PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5', 'PLANNER_VERSION current');
-  assert(/49\.6-correctness-ux|49\.5-adult-first-nl/.test(PLANNER_BUILD), 'PLANNER_BUILD');
-  assert(/const VERSION = '49\.[56]'/.test(appSrc), 'frontend VERSION');
+  assert(PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5', 'PLANNER_VERSION current');
+  assert(/49\.7-retrieval-engine|49\.6-correctness-ux|49\.5-adult-first-nl/.test(PLANNER_BUILD), 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.[567]'/.test(appSrc), 'frontend VERSION');
   assert(appSrc.includes("let currentAdult = 'on'"), 'adult-first default in frontend');
-  assert(/carmen-build" content="49\.[56]"/.test(html), 'html build');
+  assert(/carmen-build" content="49\.[567]"/.test(html), 'html build');
   assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'exactly three primary lenses');
   assert((html.match(/id="diveBondageBtn"/g) || []).length === 1, 'exactly one Bondage button');
   assert((html.match(/id="divePeopleBtn"/g) || []).length === 1, 'exactly one People button');

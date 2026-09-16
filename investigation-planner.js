@@ -1,8 +1,13 @@
-// Carmen v49.6 — investigation / topic-map planner + ChatGPT-access helpers.
+// Carmen v49.7 — investigation / topic-map planner + ChatGPT-access helpers.
 // Query-centric retrieval is the fallback. The planner independently
 // establishes subject evidence, topic evidence, and intersection evidence,
 // then opens source-class lanes (especially adult) instead of stuffing
 // tokens into one search string.
+//
+// v49.7: Retrieval-engine correctness. Entity and topic stay coupled through
+// every stage. Premium discovery is a recursive branch (URL ≠ content).
+// Visuals are source-aware and identity-scored. Variations are semantic.
+// Investigation traces answer “what Carmen checked” and “why did you stop.”
 //
 // v49.6: Drea Morgan is a first-class identity/extraction regression. Adult
 // terminology is semantic (subject × topic), not synonym stuffing. Image
@@ -22,8 +27,8 @@
 // This module is self-contained: no import from worker.js (avoids cycles).
 // worker.js imports it. The machine-readable API uses these same functions.
 
-export const PLANNER_VERSION = '49.6';
-export const PLANNER_BUILD = '49.6-correctness-ux';
+export const PLANNER_VERSION = '49.7';
+export const PLANNER_BUILD = '49.7-retrieval-engine';
 
 function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
@@ -163,6 +168,59 @@ export const OBJECT_TECHNIQUE_TERMS = [
   'frog tie', 'frog-tie', 'frogtie', 'hog tie', 'hog-tie', 'hogtie',
   'shibari', 'kinbaku', 'suspension', 'rope bondage', 'bondage chair',
   'harness', 'spreader', 'cinch', 'ball gag', 'bit gag',
+];
+
+// Semantic variation families are planning knowledge. They are NEVER dumped as
+// a universal chip list — only emitted when the resolved topic/concept matches.
+export const TECHNIQUE_FAMILIES = [
+  {
+    id: 'restraint',
+    seeds: [
+      'bondage', 'restraint', 'restrained', 'tied', 'tied up', 'rope',
+      'shibari', 'kinbaku', 'rope bondage', 'tape restraint', 'self-bondage',
+      'self bondage', 'suspension', 'cuffs', 'restraints', 'hogtie', 'hog tie',
+      'frog tie', 'frog-tie', 'frogtie', 'cinch', 'metal bondage',
+    ],
+    variations: [
+      'shibari', 'rope bondage', 'tape restraint', 'bondage', 'self-bondage',
+      'suspension', 'cuffs/restraints', 'hogtie', 'frog tie',
+    ],
+  },
+];
+
+export const SOCIAL_IDENTITY_HOSTS = [
+  'facebook.com', 'instagram.com', 'youtube.com', 'youtu.be', 'tiktok.com',
+];
+
+export const ANIME_CARTOON_HOSTS = [
+  'rule34.xxx', 'rule34.paheal.net', 'gelbooru.com', 'danbooru.donmai.us',
+  'safebooru.org', 'e621.net', 'e-hentai.org', 'nhentai.net', 'pixiv.net',
+  'anime-pictures.net', 'zerochan.net', 'kemono.su',
+];
+
+export const PUBLIC_ACCOUNT_HOSTS = [
+  { host: 'x.com', label: 'X' },
+  { host: 'twitter.com', label: 'X' },
+  { host: 'instagram.com', label: 'Instagram' },
+  { host: 'facebook.com', label: 'Facebook' },
+  { host: 'youtube.com', label: 'YouTube' },
+  { host: 'tiktok.com', label: 'TikTok' },
+  { host: 'reddit.com', label: 'Reddit' },
+  { host: 'fetlife.com', label: 'FetLife' },
+];
+
+export const MATCH_QUALITY = ['exact', 'likely', 'conceptual', 'unrelated'];
+export const VISUAL_CLASSES = ['real-person', 'real-world-technique', 'illustration', 'anime', 'cartoon', 'unrelated', 'unknown'];
+export const ACCOUNT_STATUS = ['current', 'historical', 'inactive', 'uncertain', 'unverified'];
+export const PREMIUM_ACCESS_STATES = [
+  'account_discovered', 'account_corroborated', 'public_metadata_found',
+  'public_preview_found', 'content_retrievable', 'authorized_access_required',
+  'inaccessible', 'unverified_claim',
+];
+export const STOP_CLASSES = [
+  'not_found', 'not_searched_far_enough', 'found_but_filtered',
+  'found_but_unretrievable', 'access_restricted', 'identity_confidence_insufficient',
+  'branches_exhausted', 'diminishing_returns', 'duplicates', 'configured_limit',
 ];
 
 export const INVESTIGATION_PHASES = [
@@ -328,6 +386,8 @@ export function parseInvestigationIntent(query, opts = {}) {
   const intentClass = entityTypeHint === 'technique' || entityTypeHint === 'object' || entityTypeHint === 'clothing' || objectPhrase
     ? 'OBJECT'
     : (entityTypeHint === 'person' || entityTypeHint === 'social' ? 'PERSON' : (entityTypeHint === 'website' || entityTypeHint === 'url' ? 'URL' : 'TOPIC'));
+  const tutorialIntent = isTutorialIntent(raw) || entityTypeHint === 'tutorial' || entityTypeHint === 'skill';
+  const retrievalIntents = parseRetrievalIntents(raw, { subject, topic, intentClass, premiumAccounts, tutorialIntent, visual: visualIntent });
 
   return {
     rawQuery: raw,
@@ -354,6 +414,8 @@ export function parseInvestigationIntent(query, opts = {}) {
     intentClass,
     objectTechnique: !!objectPhrase,
     adult: adult === 'on' || adult === 'both' || adult === 'off' ? adult : 'on',
+    tutorialIntent: !!tutorialIntent,
+    retrievalIntents,
   };
 }
 
@@ -488,16 +550,16 @@ export function buildTopicMap(intent, classification) {
 
   if (topic) {
     const diveActive = !!(intent && (intent.diveLens || /^(dive-bondage|dive-people|dive-visuals|dive-clothing)$/.test(intent.mode || '')));
-    add('intersection', 'subject × topic intersection', 'intersection', diveActive
-      ? [qSub + ' ' + topic + ' (scene OR photoset OR interview OR feature)']
-      : [
-        qSub + ' ' + topic,
-        qSub + ' "' + topic + '"',
-        qSub + ' ' + topic + ' (scene OR photoset OR interview OR feature)',
-      ], 8);
+    add('intersection', 'subject × topic intersection', 'intersection', [
+      qSub + ' ' + topic,
+      qSub + ' "' + topic + '"',
+      qSub + ' ' + topic + ' (scene OR photoset OR interview OR feature)',
+      qSub + ' ' + topic + ' (gallery OR stills OR credits)',
+    ], 8);
+    // Topic-only is discovery, never a substitute for entity-specific topic evidence.
     add('topic-only', 'topic evidence (not counted as intersection)', 'topic', [
       topic + ' (glossary OR meaning OR studio OR publisher)',
-    ], 40);
+    ], 70);
   }
 
   if (intent && intent.premiumAccounts) {
@@ -510,6 +572,28 @@ export function buildTopicMap(intent, classification) {
     add('premium-verify', 'ownership verification', 'directories', [
       qSub + ' (onlyfans OR fansly OR loyalfans OR patreon OR manyvids) (official OR verified OR linktree)',
     ], 13);
+    add('premium-public', 'public metadata / previews / indexed references', 'premium-subscription', [
+      qSub + ' (onlyfans OR fansly OR loyalfans) (preview OR teaser OR "public profile" OR bio OR links)',
+      qSub + ' (linktree OR allmylinks OR "official links") (onlyfans OR fansly OR loyalfans)',
+      qSub + ' (indexxx OR freeones OR babepedia) (onlyfans OR fansly OR loyalfans)',
+    ], 14);
+    add('premium-historical', 'historical premium references', 'archival', [
+      qSub + ' (onlyfans OR fansly OR loyalfans OR clips4sale) (former OR previous OR archive OR history)',
+    ], 15);
+  } else if (person && adultOn) {
+    add('premium-discovery', 'proactive premium/public subscription discovery', 'premium-subscription', [
+      qSub + ' (onlyfans OR fansly OR loyalfans OR patreon OR manyvids OR fancentro)',
+      qSub + ' site:linktr.ee',
+      qSub + ' site:allmylinks.com',
+    ], 18);
+  }
+
+  if (person) {
+    add('public-accounts', 'public account / profile discovery', 'community-social', [
+      qSub + ' (instagram OR twitter OR "x.com" OR youtube OR facebook OR tiktok OR reddit) (official OR verified OR profile)',
+      qSub + ' site:x.com',
+      qSub + ' site:instagram.com',
+    ], 19);
   }
 
   if (intent && intent.findEverything && person) {
@@ -1403,7 +1487,14 @@ export function isNaiveLensQuery(q, intent) {
   if (!n || !sub) return false;
   const lens = String((intent && intent.diveLens) || '').toLowerCase();
   const topic = String((intent && intent.topic) || '').toLowerCase();
-  const words = [...new Set([lens, topic, 'bondage', 'people', 'clothing'].filter(Boolean))];
+  // Only the exact "subject + lens-word" clone is naive. Entity × topic with
+  // source-class terms (photoset/scene/gallery/site:) MUST survive Deep Dive.
+  const words = [...new Set([lens, 'people', 'clothing', 'visuals'].filter(Boolean))];
+  if (topic && topic !== lens && topic !== 'people' && topic !== 'visuals' && topic !== 'clothing') {
+    // "Riley Reid bondage" alone is a clone if already attempted; sourced
+    // intersection queries are not naive.
+    if (n === sub + ' ' + topic) return true;
+  }
   return words.some(w => n === sub + ' ' + w);
 }
 
@@ -1434,12 +1525,17 @@ export function buildLensQueries(intent, corpus, attempted, extras = {}) {
   const naiveClothing = (rawSubject + ' clothing').trim().toLowerCase();
 
   if (lens === 'bondage') {
+    const topicWord = topic && topic !== 'people' && topic !== 'visuals' && topic !== 'clothing' ? topic : 'bondage';
+    // Entity × topic MUST survive Deep Dive. Sourced intersection is not a
+    // naive clone of "Riley Reid bondage".
+    add(subject + ' ' + topicWord + ' (photoset OR scene OR gallery OR interview OR feature)', 'entity × topic sourced intersection — both tokens survive Deep Dive', 'bondage-intersection', 'web', { sourceClass: 'intersection' });
+    add(subject + ' "' + topicWord + '" (stills OR credits OR production)', 'entity × quoted-topic evidence', 'bondage-intersection', 'web', { sourceClass: 'intersection' });
     for (const st of seeds.studios.slice(0, 6)) {
-      if (st.domain) add(subject + ' site:' + st.domain, 'bondage expansion via discovered domain ' + st.domain, 'bondage-domain', 'web', { sourceClass: 'fetish-publisher', foundThrough: st.foundThrough, parent: st.parent, relatedTo: st.label });
-      if (st.kind === 'studio' && st.label) add(subject + ' "' + st.label + '" (production OR photoset OR scene)', 'bondage expansion via discovered studio', 'bondage-studio', 'web', { foundThrough: st.foundThrough, relatedTo: st.label });
+      if (st.domain) add(subject + ' ' + topicWord + ' site:' + st.domain, 'bondage expansion via discovered domain ' + st.domain + ' keeping entity × topic', 'bondage-domain', 'web', { sourceClass: 'fetish-publisher', foundThrough: st.foundThrough, parent: st.parent, relatedTo: st.label });
+      if (st.kind === 'studio' && st.label) add(subject + ' "' + st.label + '" ' + topicWord + ' (production OR photoset OR scene)', 'bondage expansion via discovered studio', 'bondage-studio', 'web', { foundThrough: st.foundThrough, relatedTo: st.label, sourceClass: 'intersection' });
     }
     for (const p of seeds.productions.slice(0, 4)) {
-      add(subject + ' "' + p.label + '"', 'bondage expansion via discovered production', 'bondage-production', 'web', { foundThrough: p.foundThrough, relatedTo: p.label });
+      add(subject + ' "' + p.label + '" ' + topicWord, 'bondage expansion via discovered production', 'bondage-production', 'web', { foundThrough: p.foundThrough, relatedTo: p.label, sourceClass: 'intersection' });
     }
     for (const person of seeds.people.slice(0, 4)) {
       add(subject + ' "' + person.name + '"', 'bondage expansion via discovered collaborator (' + person.observationState + ')', 'bondage-collaborator', 'web', { foundThrough: person.foundThrough, relatedTo: person.name });
@@ -1458,12 +1554,12 @@ export function buildLensQueries(intent, corpus, attempted, extras = {}) {
     for (const g of observedGarments.slice(0, 3)) {
       add(subject + ' "' + g.term + '" (photoset OR stills OR scene)', 'bondage visual via observed garment', 'bondage-garment', 'image', { foundThrough: g.foundThrough, relatedTo: g.term });
     }
-    add(subject + ' (photoset OR stills OR gallery) (bound OR restrained OR metal OR rope)', 'bondage image lane from investigation state, not a query rewrite', 'bondage-images', 'image', { sourceClass: 'images-galleries' });
-    add(subject + ' (scene OR clip OR feature) (studio OR production)', 'bondage video lane from investigation state', 'bondage-video', 'video', { sourceClass: 'video' });
-    add(subject + ' (interview OR article OR archive OR history) (studio OR production OR feature)', 'historical bondage references', 'bondage-historical', 'web', { sourceClass: 'interviews' });
+    add(subject + ' (photoset OR stills OR gallery) (bound OR restrained OR metal OR rope OR ' + topicWord + ')', 'bondage image lane from investigation state, not a query rewrite', 'bondage-images', 'image', { sourceClass: 'images-galleries' });
+    add(subject + ' (scene OR clip OR feature) (studio OR production) ' + topicWord, 'bondage video lane keeps the requested topic', 'bondage-video', 'video', { sourceClass: 'video' });
+    add(subject + ' (interview OR article OR archive OR history) (studio OR production OR feature) ' + topicWord, 'historical bondage references keep entity × topic', 'bondage-historical', 'web', { sourceClass: 'interviews' });
     // Only use the naive clone if nothing else is available AND it was never attempted.
     if (!out.length && !seen.has(naiveBondage) && rawSubject) {
-      add(rawSubject + ' bondage', 'first bondage intersection — no prior evidence to chain from yet', 'bondage-intersection', 'web');
+      add(rawSubject + ' bondage', 'first bondage intersection — no prior evidence to chain from yet', 'bondage-intersection', 'web', { sourceClass: 'intersection' });
     }
   } else if (lens === 'people') {
     for (const person of seeds.people) {
@@ -1692,6 +1788,19 @@ export function visualIdentityGrade(item, subject, opts = {}) {
       identityConfidence: 'unverified',
       textRelevance: 'possible',
       visualRelevance: 'unverified',
+    };
+  }
+
+  const disney = fictionalNameCollision(blob, name, host);
+  if (disney) {
+    return {
+      grade: 'unverified',
+      collision: disney.collision,
+      reason: disney.reason,
+      excludeFromPrimaryCorpus: true,
+      identityConfidence: 'unverified',
+      textRelevance: 'unrelated',
+      visualRelevance: 'unrelated',
     };
   }
 
@@ -2359,7 +2468,7 @@ export function createInvestigationState(opts = {}) {
     expansionState: { attemptedQueries: [], domains: [], visitedUrls: [], extractedEntities: [], imageUrls: [], mediaUrls: [], rejectedDuplicates: [], blockedSources: [], exhaustedLanes: [] },
     candidates: [],
     visuals: [],
-    rejected: { urls: [], hosts: [], images: [], people: [] },
+    rejected: { urls: [], hosts: [], images: [], people: [], accounts: [] },
     confirmed: [],
     trail: [{ kind: 'new', label: 'New investigation', at: new Date().toISOString() }],
     savedEvidence: [],
@@ -2369,6 +2478,16 @@ export function createInvestigationState(opts = {}) {
     relatedTo: opts.relatedTo || null,
     retrievalRuns: 0,
     identityFeedback: { confirmed: [], rejectedPeople: [], rejectedImages: [], rejectedHosts: [], rejectedUrls: [] },
+    entityIdentity: null,
+    accounts: [],
+    concepts: [],
+    variations: [],
+    evidenceGraph: [],
+    inaccessibleSources: [],
+    retrievalFailures: [],
+    stoppingCondition: null,
+    whatCarmenChecked: null,
+    whyDidYouStop: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -2539,6 +2658,34 @@ export const DETERMINISTIC_FIXTURES = {
     ],
     diagnostics: { DuckDuckGo: { ok: true, added: 2 } },
   },
+  'belle-delphine': {
+    items: [
+      { title: 'Belle Delphine', url: 'https://en.wikipedia.org/wiki/Belle_Delphine', snippet: 'British internet personality and adult content creator Belle Delphine', source: 'Wikipedia' },
+      { title: 'Belle | Disney Wiki', url: 'https://disney.fandom.com/wiki/Belle', snippet: 'Belle is a fictional character who appears in Disney Beauty and the Beast', source: 'Fandom' },
+      { title: 'Belle Delphine OnlyFans', url: 'https://onlyfans.com/belledelphine', snippet: 'Belle Delphine public profile listing', source: 'DuckDuckGo' },
+      { title: 'Belle Delphine (@belle.delphine) • Instagram', url: 'https://www.instagram.com/belle.delphine/', snippet: 'Official Instagram photos and videos', source: 'Bing' },
+      { title: 'Disney Princess Belle cartoon', url: 'https://www.rule34.xxx/index.php?page=post&s=list&tags=belle', snippet: 'cartoon princess belle anime', source: 'Rule34' },
+    ],
+    diagnostics: { DuckDuckGo: { ok: true, added: 3 }, Bing: { ok: true, added: 2 } },
+  },
+  'riley-reid': {
+    items: [
+      { title: 'Riley Reid - IAFD', url: 'https://www.iafd.com/person.rme/perfid=rileyreid', snippet: 'Riley Reid performer biography and filmography', source: 'IAFD' },
+      { title: 'Riley Reid bondage scene credits', url: 'https://www.iafd.com/title.rme/title=riley-bondage', snippet: 'Riley Reid in a bondage feature', source: 'IAFD' },
+      { title: 'Riley Reid on X', url: 'https://x.com/rileyreid', snippet: 'Riley Reid official', source: 'DuckDuckGo' },
+      { title: 'Bondage (BDSM)', url: 'https://en.wikipedia.org/wiki/Bondage_BDSM', snippet: 'Bondage is a practice of consensual restraint.', source: 'Wikipedia' },
+      { title: 'Generic anime bondage', url: 'https://rule34.xxx/index.php?page=post&s=list&tags=bondage', snippet: 'anime bondage hentai', source: 'Rule34' },
+    ],
+    diagnostics: { DuckDuckGo: { ok: true, added: 3 }, Bing: { ok: true, added: 2 } },
+  },
+  'frog-tie': {
+    items: [
+      { title: 'Frog tie - Wikipedia', url: 'https://en.wikipedia.org/wiki/Frog_tie', snippet: 'The frog tie is a bondage position', source: 'Wikipedia' },
+      { title: 'How to tie a frog tie', url: 'https://www.wikihow.com/Tie-a-Frog-Tie', snippet: 'Step by step tutorial for the frog tie bondage position with safety notes', source: 'WikiHow' },
+      { title: 'Frog tie demonstration guide', url: 'https://www.instructables.com/Frog-Tie', snippet: 'Educational guide to the frog tie technique', source: 'Instructables' },
+    ],
+    diagnostics: { DuckDuckGo: { ok: true, added: 2 }, Bing: { ok: true, added: 1 } },
+  },
 };
 
 export function fixtureItems(name) {
@@ -2677,5 +2824,472 @@ export function auditStructuredResults(results, opts = {}) {
     rows,
   };
 }
+
+// ---------------------------------------------------------------------------
+// v49.7 retrieval-engine helpers (extend existing planner — not a second engine)
+// ---------------------------------------------------------------------------
+
+export function isTutorialIntent(query) {
+  return /\b(tutorial|how to|howto|guide|manual|instructions?|educational|demonstration|lesson|learn (?:how|to))\b/i.test(String(query || ''));
+}
+
+export function parseRetrievalIntents(query, opts = {}) {
+  const raw = String(query || '');
+  const t = raw.toLowerCase();
+  const intentClass = String(opts.intentClass || '');
+  const out = [];
+  const add = (id, label) => { if (!out.some(x => x.id === id)) out.push({ id, label }); };
+  if (intentClass === 'PERSON' || opts.subject) add('identity', 'identity');
+  if (/\b(account|profile|instagram|twitter|onlyfans|handle|@)\b/i.test(t) || intentClass === 'PERSON') add('accounts', 'public accounts');
+  if (opts.topic || opts.intentClass === 'OBJECT' || opts.intentClass === 'TOPIC') add('topic', 'topic/technique');
+  if (opts.visual || /\b(image|photo|visual|gallery|picture|reference)\b/i.test(t)) add('visual', 'visual/reference');
+  if (opts.tutorialIntent || isTutorialIntent(raw)) add('tutorial', 'tutorial/guide');
+  if (/\b(variation|variant|also called|terminology)\b/i.test(t) || intentClass === 'OBJECT') add('variations', 'variations');
+  if (opts.premiumAccounts || /\b(premium|onlyfans|fansly|loyalfans|subscription)\b/i.test(t)) add('premium', 'premium/subscription sources');
+  if (intentClass === 'PERSON') add('public-account', 'public-account/profile discovery');
+  if (!out.length) add('topic', 'topic');
+  return out;
+}
+
+export function fictionalNameCollision(blob, subject, host) {
+  const name = String(subject || '').trim();
+  const toks = tokens(name);
+  const nblob = norm(blob);
+  const h = String(host || '').toLowerCase();
+  if (!toks.length) return null;
+  const first = toks[0];
+  const disneyish = /\b(disney|princess|beauty and the beast|belle from|enchanted rose|beast'?s castle|animated|cartoon princess)\b/i.test(String(blob || ''))
+    || /(disney|fandom\.com|wikia|princess)/i.test(h);
+  if (disneyish && first === 'belle' && (toks.length < 2 || !nblob.includes('delphine'))) {
+    return { collision: 'Disney Princess Belle', reason: 'identity collision — Disney Princess Belle is not Belle Delphine' };
+  }
+  if (/\b(fictional character|cartoon|anime character|video game character)\b/i.test(String(blob || '')) && toks.length >= 2 && !toks.every(t => nblob.includes(t))) {
+    return { collision: 'fictional character', reason: 'fictional/cartoon character is not the resolved person' };
+  }
+  return null;
+}
+
+export function semanticVariations(topic, evidence, opts = {}) {
+  const t = norm(topic);
+  if (!t) return [];
+  const out = [];
+  const seen = new Set();
+  const add = (label, why) => {
+    const n = norm(label);
+    if (!n || n === t || seen.has(n)) return;
+    if (ANIME_CARTOON_HOSTS.some(h => n.includes(h.split('.')[0]))) return;
+    if (/\b(anime|hentai|cartoon|waifu|loli)\b/i.test(label) && !/restraint|bondage|shibari|tie/.test(n)) return;
+    seen.add(n);
+    out.push({ label, why: why || 'semantic refinement of the investigated topic', source: 'planning-knowledge' });
+  };
+  for (const fam of TECHNIQUE_FAMILIES) {
+    const hit = (fam.seeds || []).some(s => t === norm(s) || t.includes(norm(s)) || norm(s).includes(t));
+    if (!hit) continue;
+    for (const v of fam.variations || []) add(v, 'semantically related to ' + (fam.id) + ' / “' + topic + '”');
+  }
+  const observed = [];
+  for (const item of evidence || []) {
+    const blob = String((item && (item.title || '')) + ' ' + ((item && item.snippet) || ''));
+    for (const fam of TECHNIQUE_FAMILIES) {
+      for (const s of fam.seeds || []) {
+        if (norm(blob).includes(norm(s)) && norm(s) !== t) observed.push(s);
+      }
+    }
+  }
+  for (const s of observed.slice(0, 4)) add(s, 'observed on retrieved evidence — still a refinement of the current topic');
+  if (opts.excludeCurrent) return out.filter(v => norm(v.label) !== t).slice(0, 10);
+  return out.slice(0, 10);
+}
+
+export function classifyVisualRelevance(item, classification) {
+  const url = String((item && (item.url || item.image || item.pageUrl)) || '');
+  const host = hostOf(url).replace(/^www\./, '');
+  const blob = String((item && (item.title || '')) + ' ' + ((item && (item.snippet || item.caption || item.reason || '')) || '') + ' ' + url);
+  const nblob = norm(blob);
+  const type = (classification && classification.type) || '';
+  if (ANIME_CARTOON_HOSTS.some(h => host === h || host.endsWith('.' + h))) {
+    const kind = /e621|furry/.test(host) ? 'illustration' : 'anime';
+    return { visualClass: kind, reason: 'source host is an anime/illustration index', demote: type === 'person' };
+  }
+  if (/\b(anime|hentai|manga|waifu|2d illustration|pixiv)\b/i.test(blob)) {
+    return { visualClass: 'anime', reason: 'anime/illustration language in title or snippet', demote: type === 'person' };
+  }
+  if (/\b(cartoon|animation|animated|disney princess|clipart)\b/i.test(blob)) {
+    return { visualClass: 'cartoon', reason: 'cartoon/animated language', demote: type === 'person' };
+  }
+  if (/\b(illustration|drawing|sketch|render|cgi|digital art)\b/i.test(blob) && !/\b(photo|photograph|photoset|scene)\b/i.test(blob)) {
+    return { visualClass: 'illustration', reason: 'illustration language without photographic evidence', demote: type === 'person' };
+  }
+  if (type === 'person') {
+    const subj = tokens((classification && classification.subject) || '');
+    const full = subj.length >= 2 && subj.every(t => nblob.includes(t));
+    if (fictionalNameCollision(blob, classification.subject, host)) {
+      return { visualClass: 'unrelated', reason: 'fictional/character collision with the resolved identity', demote: true };
+    }
+    if (full) return { visualClass: 'real-person', reason: 'full name associated with a non-illustration source', demote: false };
+    if (subj.length && subj[0] && nblob.includes(subj[0]) && !subj.slice(1).every(t => nblob.includes(t))) {
+      return { visualClass: 'unrelated', reason: 'first-name-only match is not identity evidence', demote: true };
+    }
+    return { visualClass: 'unknown', reason: 'person investigation — visual identity not established', demote: false };
+  }
+  if (type === 'technique' || type === 'skill' || type === 'object') {
+    return { visualClass: 'real-world-technique', reason: 'technique/object investigation prefers real-world references', demote: false };
+  }
+  return { visualClass: 'unknown', reason: 'visual class not established', demote: false };
+}
+
+export function classifyMatchQuality(item, classification) {
+  const subj = tokens((classification && classification.subject) || '');
+  const topic = extraTopicTokens(classification);
+  const blob = norm(String((item && (item.title || '')) + ' ' + ((item && item.snippet) || '') + ' ' + ((item && item.url) || '')));
+  const hasEntity = subj.length ? subj.every(t => blob.includes(t)) : false;
+  const hasTopic = topic.length ? topic.some(t => blob.includes(t)) : false;
+  const echo = isQueryEchoTitle((item && item.title) || '', (item && item.queryVariant) || '', { subject: (classification && classification.subject) || '' });
+  if (echo) return { matchQuality: 'unrelated', reason: 'query-echo title is not evidence' };
+  if (fictionalNameCollision(String((item && item.title) || '') + ' ' + String((item && item.snippet) || ''), (classification && classification.subject) || '', hostOf((item && item.url) || ''))) {
+    return { matchQuality: 'unrelated', reason: 'identity collision' };
+  }
+  if (classification && classification.type === 'person' && hasEntity && hasTopic && !isAggregatorish(item)) {
+    return { matchQuality: 'exact', reason: 'entity and requested topic both present on a non-index page' };
+  }
+  if (hasEntity && hasTopic) return { matchQuality: 'likely', reason: 'entity and topic co-occur — not yet verified intersection' };
+  if (hasEntity && topic.length) return { matchQuality: 'conceptual', reason: 'entity present without the requested topic' };
+  if (hasTopic && subj.length) return { matchQuality: 'conceptual', reason: 'topic present without the resolved entity' };
+  if (hasEntity || hasTopic) return { matchQuality: 'likely', reason: 'partial overlap with the investigation' };
+  return { matchQuality: 'unrelated', reason: 'does not associate the resolved entity with the requested topic' };
+}
+
+function extraTopicTokens(classification) {
+  const ctx = String((classification && (classification.context || classification.topic)) || '').replace(/adult content/gi, ' ');
+  return tokens(ctx).filter(t => t.length > 2);
+}
+
+function isAggregatorish(item) {
+  const host = hostOf((item && item.url) || '').replace(/^www\./, '');
+  return /pinterest|google\.|bing\.|yahoo\.|duckduckgo|startpage|mojeek/.test(host) || /\/search\?|\/tags?\//i.test(String((item && item.url) || ''));
+}
+
+export function classifyContentType(item, classification) {
+  const host = hostOf((item && item.url) || '').replace(/^www\./, '');
+  const blob = String((item && (item.title || '')) + ' ' + ((item && item.snippet) || ''));
+  const platform = PREMIUM_PLATFORM_SEEDS.find(p => host === p.host || host.endsWith('.' + p.host));
+  if (platform) return { contentType: 'account', reason: 'premium/subscription platform profile — not retrieved content' };
+  if (PUBLIC_ACCOUNT_HOSTS.some(p => host === p.host || host.endsWith('.' + p.host))) {
+    return { contentType: 'account', reason: 'social/profile URL is account discovery, not retrieved content' };
+  }
+  if (isTutorialIntent(blob) || /wikihow|instructables/.test(host)) return { contentType: 'tutorial', reason: 'instructional source' };
+  if (/\b(photo|photoset|gallery|image|stills)\b/i.test(blob)) return { contentType: 'visual', reason: 'visual/reference source' };
+  if ((classification && classification.type) === 'person' && /iafd|babepedia|wikipedia|imdb/.test(host)) return { contentType: 'identity', reason: 'identity/profile source' };
+  return { contentType: 'source', reason: 'general source' };
+}
+
+export function socialShouldDeprioritize(item, classification, opts = {}) {
+  const host = hostOf((item && item.url) || '').replace(/^www\./, '');
+  if (!SOCIAL_IDENTITY_HOSTS.some(h => host === h || host.endsWith('.' + h))) return false;
+  if (opts.userRequestedPlatform) return false;
+  const identityResolved = !!(opts.identityResolved || (classification && classification.type === 'person' && (opts.confirmed || []).length) || (opts.identityHostHits > 0));
+  if (!identityResolved) return false;
+  const topic = extraTopicTokens(classification);
+  if (!topic.length) return true;
+  const blob = norm(String((item && (item.title || '')) + ' ' + ((item && item.snippet) || '')));
+  return !topic.some(t => blob.includes(t));
+}
+
+export function sourceVolumePenalty(item, countsByHost) {
+  const host = hostOf((item && item.url) || '').replace(/^www\./, '');
+  const n = (countsByHost && countsByHost[host]) || 0;
+  const anime = ANIME_CARTOON_HOSTS.some(h => host === h || host.endsWith('.' + h));
+  if (anime && n >= 2) return { penalty: 24, reason: 'anime/illustration source volume is not relevance' };
+  if (n >= 3) return { penalty: 12, reason: 'same-host volume is not relevance' };
+  return { penalty: 0, reason: '' };
+}
+
+export function premiumAccessClassification(item, retrieved) {
+  const url = String((item && (item.finalUrl || item.url || item.pageUrl)) || '');
+  const host = hostOf(url).replace(/^www\./, '');
+  const platform = PREMIUM_PLATFORM_SEEDS.find(p => host === p.host || host.endsWith('.' + p.host));
+  const state = String((item && (item.accessState || '')) || (retrieved && retrieved.accessState) || '');
+  const own = classifyAccountOwnership(item, (item && (item.subject || item.entity || '')) || '');
+  let accessKind = 'account_discovered';
+  if (own.kind === 'directory listing') accessKind = 'unverified_claim';
+  else if (own.kind === 'fan/reposter') accessKind = 'unverified_claim';
+  else if (state === 'DIRECTLY_RETRIEVED' && /preview|teaser|public/i.test(String((item && item.snippet) || ''))) accessKind = 'public_preview_found';
+  else if (state === 'DIRECTLY_RETRIEVED' || state === 'PARTIALLY_RETRIEVED') accessKind = 'public_metadata_found';
+  else if (state === 'PAYWALLED' || state === 'AUTHENTICATION_REQUIRED' || state === 'AGE_RESTRICTED') accessKind = 'authorized_access_required';
+  else if (state === 'BLOCKED') accessKind = 'inaccessible';
+  else if (own.kind === 'official account' || own.kind === 'creator-owned account') accessKind = 'account_corroborated';
+  const contentRetrieved = accessKind === 'public_preview_found' || (state === 'DIRECTLY_RETRIEVED' && !platform);
+  return {
+    url,
+    domain: host,
+    platform: platform ? platform.label : (own.platform || ''),
+    handle: own.handle,
+    ownership: own.kind,
+    ownershipClass: own.ownershipClass,
+    accessState: state || 'REFERENCED',
+    accessKind,
+    contentRetrieved: !!contentRetrieved,
+    accountDiscovered: true,
+    publiclyViewable: accessKind === 'public_metadata_found' || accessKind === 'public_preview_found' || accessKind === 'content_retrievable',
+    note: contentRetrieved
+      ? 'Public metadata or preview was retrieved. Restricted member content was not accessed.'
+      : 'Account discovered. Finding the profile URL is not content retrieval. Carmen does not bypass authentication or paywalls.',
+  };
+}
+
+export function premiumEscalationQueries(subject, discoveredPremium, attempted) {
+  const qSub = quote(subject) || subject;
+  const seen = attemptedSet(attempted);
+  const out = [];
+  const add = (q, why, lane) => pushQuery(out, seen, q, why, lane || 'premium-escalation', 'web', { sourceClass: 'premium-subscription' });
+  if (!qSub) return out;
+  add(qSub + ' (onlyfans OR fansly OR loyalfans) (bio OR "public profile" OR preview OR teaser OR links)', 'public metadata around discovered premium accounts', 'premium-public');
+  add(qSub + ' (linktree OR allmylinks OR "official links")', 'independent indexes / creator directories', 'premium-index');
+  for (const acc of (discoveredPremium || []).slice(0, 4)) {
+    const host = String(acc.domain || hostOf(acc.url || '')).replace(/^www\./, '');
+    const handle = acc.handle && acc.handle !== 'UNKNOWN' ? acc.handle : '';
+    if (host) add(qSub + ' site:' + host, 'recursive public investigation of ' + host, 'premium-host');
+    if (handle && handle !== 'UNKNOWN') add('"' + handle + '" ' + qSub + ' (profile OR links OR preview)', 'handle corroboration across public indexes', 'premium-handle');
+  }
+  add(qSub + ' (clips4sale OR manyvids OR iwantclips) (store OR studio OR preview)', 'associated public clip-store references', 'premium-store');
+  add(qSub + ' (onlyfans OR fansly OR loyalfans) (archive OR history OR former OR 2019 OR 2020 OR 2021)', 'historical public references', 'premium-historical');
+  return out.slice(0, 12);
+}
+
+export function publicAccountQueries(subject, attempted) {
+  const qSub = quote(subject) || subject;
+  const seen = attemptedSet(attempted);
+  const out = [];
+  const add = (q, why, lane) => pushQuery(out, seen, q, why, lane || 'public-accounts', 'web', { sourceClass: 'community-social' });
+  if (!qSub) return out;
+  add(qSub + ' (official OR verified) (instagram OR twitter OR "x.com" OR youtube)', 'proactive public account discovery', 'accounts');
+  add(qSub + ' site:x.com', 'X/Twitter public profile', 'accounts-x');
+  add(qSub + ' site:instagram.com', 'Instagram public profile', 'accounts-ig');
+  add(qSub + ' site:reddit.com "' + String(subject || '').replace(/"/g, '') + '"', 'Reddit public references', 'accounts-reddit');
+  return out.slice(0, 8);
+}
+
+export function tutorialQueries(subject, topic, attempted) {
+  const seed = quote(subject) || subject || topic;
+  const seen = attemptedSet(attempted);
+  const out = [];
+  const add = (q, why) => pushQuery(out, seen, q, why, 'tutorial', 'web', { sourceClass: 'instructional' });
+  if (!seed) return out;
+  add(seed + ' (tutorial OR "how to" OR guide OR manual OR demonstration)', 'instructional resources for the requested technique');
+  add(seed + ' site:youtube.com (tutorial OR "how to" OR explained)', 'instructional video');
+  add(seed + ' (wikihow OR instructables OR "step by step" OR safety)', 'educational / responsible instructional material');
+  add(seed + ' (glossary OR "what is" OR meaning OR technique)', 'definitional educational material');
+  return out.slice(0, 8);
+}
+
+export function detectImpersonator(item, subject) {
+  const blob = String((item && (item.title || '')) + ' ' + ((item && item.snippet) || ''));
+  const host = hostOf((item && item.url) || '');
+  const reasons = [];
+  if (/\b(fan[ -]?page|fan account|tribute|impersonat|fake official|not official|unofficial|leaked?|leaks|repost(?:er|s)?|scam)\b/i.test(blob)) {
+    reasons.push('profile language indicates fan/impersonator/scam');
+  }
+  if (/\bofficial\b/i.test(blob) && classifyAccountOwnership(item, subject).kind === 'directory listing') {
+    reasons.push('directory claim of official status is not ownership');
+  }
+  const handleCollision = similarHandleDifferentPerson(item, subject);
+  if (handleCollision) reasons.push(handleCollision);
+  if (!reasons.length) return null;
+  return { rejected: true, reasons, host, url: (item && item.url) || '', title: (item && item.title) || '' };
+}
+
+export function similarHandleDifferentPerson(item, subject) {
+  const path = pathOf((item && item.url) || '');
+  const handle = (path.match(/^\/+([A-Za-z0-9._-]{2,40})\/?$/) || [])[1] || '';
+  if (!handle) return '';
+  const subj = tokens(subject);
+  if (subj.length < 2) return '';
+  const h = norm(handle);
+  const first = subj[0];
+  const last = subj[subj.length - 1];
+  if (h.includes(first) && !h.includes(last.slice(0, 4)) && competingFullNameInText(String((item && item.title) || '') + ' ' + handle, subject)) {
+    return 'same/similar handle does not prove the same person';
+  }
+  return '';
+}
+
+export function buildEntityIdentityRecord(classification, results, retrieved, leads, opts = {}) {
+  const aliases = [];
+  const handles = [];
+  const historicalHandles = [];
+  const domains = [];
+  const identifiers = [];
+  const supporting = [];
+  const conflicting = [];
+  const accounts = [];
+  const pushU = (arr, v) => { const s = String(v || '').trim(); if (s && !arr.includes(s)) arr.push(s); };
+  for (const page of retrieved || []) {
+    for (const a of (page.identifiers && page.identifiers.aliases) || []) pushU(aliases, a);
+    for (const h of (page.identifiers && page.identifiers.handles) || []) pushU(handles, h);
+    const host = hostOf(page.finalUrl || page.url).replace(/^www\./, '');
+    if (host) pushU(domains, host);
+  }
+  for (const r of results || []) {
+    for (const a of r.aliases || []) pushU(aliases, a);
+    if (r.domain) pushU(domains, r.domain);
+    if (r.accountHandle && r.accountHandle !== 'UNKNOWN') {
+      const status = /archive|former|old |inactive|historical/i.test(String(r.title || '') + ' ' + String(r.snippet || '')) ? 'historical' : 'current';
+      if (status === 'historical') pushU(historicalHandles, r.accountHandle);
+      else pushU(handles, r.accountHandle);
+      accounts.push({
+        platform: r.accountPlatform || r.domain,
+        handle: r.accountHandle,
+        url: r.url,
+        ownership: r.accountOwnership || r.ownershipClass,
+        confidence: r.confidence || 'low',
+        status: status === 'historical' ? 'historical' : (r.ownershipClass === 'UNVERIFIED' ? 'unverified' : 'current'),
+        evidence: r.reason || '',
+      });
+    }
+    if (r.intersectionEvidence === 'strong' || r.role === 'SUBJECT_EVIDENCE') supporting.push({ url: r.url, title: r.title, why: r.reason || r.role });
+    if (r.identityCollision || r.matchQuality === 'unrelated') conflicting.push({ url: r.url, title: r.title, why: r.reason || 'conflicting identity evidence' });
+  }
+  for (const l of leads || []) {
+    if (l.kind === 'alias') pushU(aliases, l.label);
+    if (l.kind === 'handle') pushU(handles, l.label);
+  }
+  const name = (classification && classification.subject) || '';
+  const type = (classification && classification.type) || '';
+  const conf = (opts.identityConfidence || (classification && classification.confidence) || 'medium');
+  return {
+    canonicalName: name,
+    type,
+    intentClass: (classification && classification.intentClass) || '',
+    aliases: aliases.slice(0, 12),
+    knownHandles: handles.slice(0, 12),
+    historicalHandles: historicalHandles.slice(0, 8),
+    domains: domains.slice(0, 12),
+    associatedIdentifiers: identifiers.slice(0, 8),
+    confidence: conf,
+    supportingEvidence: supporting.slice(0, 8),
+    conflictingEvidence: conflicting.slice(0, 8),
+    currentHistoricalStatus: historicalHandles.length && handles.length ? 'mixed' : (handles.length ? 'current' : 'uncertain'),
+    accounts: accounts.slice(0, 12),
+  };
+}
+
+export function buildWhatCarmenChecked(pack = {}) {
+  const variants = pack.variants || [];
+  const classes = pack.sourceClasses || [];
+  const aliases = pack.aliases || [];
+  const providers = pack.providers || {};
+  const branches = (pack.topicMap && pack.topicMap.branches) || [];
+  const tried = Object.keys(providers);
+  const ok = tried.filter(k => providers[k] && (providers[k].ok || providers[k].added > 0));
+  const fail = tried.filter(k => providers[k] && (providers[k].error || (providers[k].status >= 400 && !providers[k].ok)));
+  const summary = 'I searched ' + (classes.length || branches.length || tried.length) + ' source classes using '
+    + (aliases.length || 1) + ' identity variant' + ((aliases.length || 1) === 1 ? '' : 's') + ' and '
+    + variants.length + ' quer' + (variants.length === 1 ? 'y' : 'ies') + '. '
+    + (pack.uniqueResults != null ? pack.uniqueResults + ' unique results. ' : '')
+    + (pack.duplicates != null ? pack.duplicates + ' duplicates collapsed. ' : '')
+    + (pack.inaccessible != null ? pack.inaccessible + ' sources inaccessible. ' : '');
+  return {
+    sourceClasses: classes,
+    queries: variants.map(v => ({ q: v.q, why: v.why, lane: v.lane, sourceClass: v.sourceClass })).slice(0, 32),
+    aliases: aliases.slice(0, 12),
+    providersTried: tried,
+    providersOk: ok,
+    providersFailed: fail,
+    branches: branches.map(b => ({ id: b.id, label: b.label, status: b.status, results: b.results, queries: (b.queries || []).slice(0, 4) })),
+    intents: pack.intents || [],
+    summary: summary.trim(),
+  };
+}
+
+export function buildWhyDidYouStop(pack = {}) {
+  const unique = Number(pack.uniqueResults || 0);
+  const dupes = Number(pack.duplicates || 0);
+  const inaccessible = Number(pack.inaccessible || 0);
+  const filtered = Number(pack.filtered || 0);
+  const variants = (pack.variants || []).length;
+  const classes = (pack.sourceClasses || []).length;
+  const aliases = (pack.aliases || []).length || 1;
+  const exhausted = !!pack.exhausted;
+  const budget = !!pack.budgetHit;
+  const identityBlocked = !!pack.identityInsufficient;
+  const accessRestricted = inaccessible > 0 && unique === 0;
+  let stopClass = 'branches_exhausted';
+  let headline = '';
+  if (identityBlocked) {
+    stopClass = 'identity_confidence_insufficient';
+    headline = 'Identity confidence was insufficient to expand further without mixing people.';
+  } else if (accessRestricted) {
+    stopClass = 'access_restricted';
+    headline = 'Sources were found but required login, a paywall, or another access restriction. Finding a URL is not retrieval.';
+  } else if (filtered && unique === 0) {
+    stopClass = 'found_but_filtered';
+    headline = 'Results were found and then filtered (identity collision, duplicates, or relevance).';
+  } else if (pack.unretrievable && unique === 0) {
+    stopClass = 'found_but_unretrievable';
+    headline = 'Sources were discovered but could not be retrieved or displayed.';
+  } else if (budget) {
+    stopClass = 'not_searched_far_enough';
+    headline = 'The per-request research budget was reached. More public paths may exist.';
+  } else if (exhausted || pack.diminishingReturns) {
+    stopClass = pack.diminishingReturns ? 'diminishing_returns' : 'branches_exhausted';
+    headline = 'Remaining searches produced no new entities or sources, so the investigation stopped.';
+  } else if (unique === 0 && variants > 0) {
+    stopClass = 'not_found';
+    headline = 'No public results were returned after the searches that actually ran. That is not proof the thing does not exist.';
+  } else {
+    stopClass = 'configured_limit';
+    headline = 'A configured depth/limit was reached after collecting public evidence.';
+  }
+  const detail = 'I searched ' + (classes || 'several') + ' source classes using ' + aliases + ' identity variant'
+    + (aliases === 1 ? '' : 's') + '. ' + unique + ' unique results were found. ' + dupes + ' were duplicates. '
+    + inaccessible + ' sources were inaccessible.' + (filtered ? ' ' + filtered + ' were filtered.' : '');
+  return {
+    stopClass,
+    headline,
+    detail,
+    counts: { unique, duplicates: dupes, inaccessible, filtered, queries: variants, sourceClasses: classes, aliases },
+    notFoundVsNotSearched: stopClass === 'not_found' ? 'A' : (stopClass === 'not_searched_far_enough' ? 'B' : (stopClass === 'found_but_filtered' ? 'C' : (stopClass === 'found_but_unretrievable' ? 'D' : (stopClass === 'access_restricted' ? 'E' : (stopClass === 'identity_confidence_insufficient' ? 'F' : stopClass))))),
+  };
+}
+
+export function coupleEntityTopic(classification, entity, topic) {
+  const out = classification && typeof classification === 'object' ? classification : {};
+  const ent = String(entity || out.subject || '').replace(/"/g, '').trim();
+  const top = String(topic || '').replace(/"/g, '').trim();
+  if (ent) out.subject = ent;
+  if (top && !/^adult content$/i.test(top)) {
+    out.context = top;
+    out.topic = top;
+  }
+  out.entityTopicCoupled = !!(out.subject && extraTopicTokens(out).length);
+  return out;
+}
+
+export function keepEntityTopicQueries(subject, topic, attempted) {
+  const sub = quote(subject) || subject;
+  const top = String(topic || '').trim();
+  const seen = attemptedSet(attempted);
+  const out = [];
+  if (!sub || !top) return out;
+  // Do not re-emit the exact subject+topic clone. Deep Dive already carries
+  // the coupled query as the primary; sourced intersection must survive.
+  pushQuery(out, seen, sub + ' "' + top + '"', 'quoted-topic intersection', 'intersection', 'web', { sourceClass: 'intersection' });
+  pushQuery(out, seen, sub + ' ' + top + ' (photoset OR scene OR gallery OR interview)', 'sourced entity × topic evidence', 'intersection', 'web', { sourceClass: 'intersection' });
+  return out;
+}
+
+export function negativeResultReport(pack = {}) {
+  return {
+    searched: (pack.sourceClasses || []).slice(0, 16),
+    queries: (pack.variants || []).map(v => v.q).slice(0, 16),
+    aliases: (pack.aliases || []).slice(0, 8),
+    found: pack.found || [],
+    notFound: pack.notFound || [],
+    inaccessible: pack.inaccessible || [],
+    identityConfidenceBlockedExpansion: !!pack.identityInsufficient,
+    note: 'Absence from Carmen’s retrieved public sources is not proof of nonexistence.',
+  };
+}
+
 
 

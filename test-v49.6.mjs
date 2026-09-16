@@ -51,11 +51,11 @@ const plannerSrc = readFileSync(new URL('./investigation-planner.js', import.met
 
 console.log('--- v49.6 version / Deep Dive hierarchy ---');
 {
-  assert(PLANNER_VERSION === '49.6', 'PLANNER_VERSION 49.6');
-  assert(PLANNER_BUILD === '49.6-correctness-ux', 'PLANNER_BUILD');
-  assert(appSrc.includes("const VERSION = '49.6'"), 'frontend VERSION');
-  assert(/carmen-build" content="49\.6"/.test(html), 'html build');
-  assert(/v49\.6/.test(html), 'header shows v49.6');
+  assert(PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6', 'PLANNER_VERSION current');
+  assert(PLANNER_BUILD === '49.7-retrieval-engine' || PLANNER_BUILD === '49.6-correctness-ux', 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.[67]'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.[67]"/.test(html), 'html build');
+  assert(/v49\.[67]/.test(html), 'header shows version');
   assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'exactly three primary lenses');
   assert((html.match(/id="diveBondageBtn"/g) || []).length === 1, 'exactly one Bondage button');
   assert((html.match(/id="divePeopleBtn"/g) || []).length === 1, 'exactly one People button');

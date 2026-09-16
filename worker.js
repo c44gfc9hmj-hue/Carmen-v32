@@ -78,6 +78,29 @@ import {
   auditStructuredResults,
   RETRIEVAL_PHASES,
   routeNaturalLanguageResearch,
+  isTutorialIntent,
+  parseRetrievalIntents,
+  fictionalNameCollision,
+  semanticVariations,
+  classifyVisualRelevance,
+  classifyMatchQuality,
+  classifyContentType,
+  socialShouldDeprioritize,
+  sourceVolumePenalty,
+  premiumAccessClassification,
+  premiumEscalationQueries,
+  publicAccountQueries,
+  tutorialQueries,
+  detectImpersonator,
+  buildEntityIdentityRecord,
+  buildWhatCarmenChecked,
+  buildWhyDidYouStop,
+  coupleEntityTopic,
+  keepEntityTopicQueries,
+  negativeResultReport,
+  ANIME_CARTOON_HOSTS,
+  SOCIAL_IDENTITY_HOSTS,
+  PREMIUM_ACCESS_STATES,
 } from './investigation-planner.js';
 
 
@@ -299,7 +322,17 @@ function uniqueAdd(results, seen, item) {
   let href;
   try { href = new URL(url).href.replace(/#.*$/, ''); } catch { return false; }
   const key = canonicalVideoKey(href) || href;
-  if (seen.has(key) || seen.has(href)) return false;
+  if (seen.has(key) || seen.has(href)) {
+    const existing = results.find(r => r.url === href || r.canonicalUrl === canonicalizeUrl(href) || (r.videoId && key && r.videoId === key));
+    if (existing) {
+      const path = item.discoveryLane || item.queryVariant || item.source || '';
+      existing.discoveryPaths = existing.discoveryPaths || [existing.discoveryLane || existing.queryVariant || existing.source].filter(Boolean);
+      if (path && !existing.discoveryPaths.includes(path)) existing.discoveryPaths.push(path);
+      existing.corroboration = (existing.corroboration || 1) + 1;
+      if (!existing.retrievedAt) existing.retrievedAt = existing.observedAt;
+    }
+    return false;
+  }
   seen.add(key);
   if (key !== href) seen.add(href);
   const images = Array.isArray(item.images) ? item.images.filter(x => typeof x === 'string' && x.startsWith('http')).slice(0, 8) : [];
@@ -331,6 +364,9 @@ function uniqueAdd(results, seen, item) {
   if (item.plannerSourceClass) row.plannerSourceClass = item.plannerSourceClass;
   if (item.sourceClass) row.sourceClass = item.sourceClass;
   if (item.sourceLabel) row.sourceLabel = item.sourceLabel;
+  row.discoveryPaths = [item.discoveryLane || item.queryVariant || item.source].filter(Boolean);
+  row.corroboration = 1;
+  row.retrievedAt = row.observedAt;
   results.push(row);
   return true;
 }
@@ -2434,35 +2470,53 @@ function collectPremiumContent(results, retrieved) {
   const add = (item) => {
     const url = String((item && (item.finalUrl || item.url || item.pageUrl)) || '');
     if (!url || seen.has(url)) return;
+    const host = hostOf(url);
+    const platform = PREMIUM_PLATFORM_SEEDS.find(p => {
+      const h = p.host;
+      return host === h || host.endsWith('.' + h) || host.replace(/^www\./, '') === h;
+    });
     const state = String((item && (item.accessState || '')) || '');
     const restricted = /PAYWALLED|AUTHENTICATION_REQUIRED|AGE_RESTRICTED|BLOCKED|SUBSCRIPTION/i.test(state)
-      || MEMBER_HOST_RE.test(hostOf(url))
-      || AUTH_HOST_RE.test(hostOf(url));
+      || MEMBER_HOST_RE.test(host)
+      || AUTH_HOST_RE.test(host)
+      || !!platform
+      || /onlyfans|fansly|loyalfans|manyvids|clips4sale|patreon|fancentro/i.test(url + ' ' + String((item && item.title) || ''));
     if (!restricted) return;
     seen.add(url);
-    let accessKind = 'unavailable/blocked';
-    if (state === 'PAYWALLED' || MEMBER_HOST_RE.test(hostOf(url))) accessKind = 'subscription required';
+    const row = premiumAccessClassification(item, item);
+    const own = classifyAccountOwnership(item, (item && (item.subject || item.entity || '')) || '');
+    let accessKind = row.accessKind === 'authorized_access_required' ? 'subscription required'
+      : (row.accessKind === 'inaccessible' ? 'unavailable/blocked'
+        : (row.accessKind === 'public_preview_found' ? 'public preview found'
+          : (row.accessKind === 'public_metadata_found' ? 'public metadata found'
+            : (row.accessKind === 'account_corroborated' ? 'account independently corroborated'
+              : (row.accessKind === 'unverified_claim' ? 'unverified/possibly fraudulent claim'
+                : 'account discovered')))));
+    if (state === 'PAYWALLED' || MEMBER_HOST_RE.test(hostOf(url))) accessKind = accessKind === 'account discovered' ? 'subscription required' : accessKind;
     else if (state === 'AUTHENTICATION_REQUIRED') accessKind = 'login required';
     else if (state === 'AGE_RESTRICTED') accessKind = 'login required';
     else if (state === 'PARTIALLY_RETRIEVED') accessKind = 'public page but restricted content';
-    const own = classifyAccountOwnership(item, (item && (item.subject || item.entity || '')) || '');
     out.push({
       url,
       title: (item && (item.title || item.label)) || hostOf(url),
       domain: hostOf(url).replace(/^www\./, ''),
       accessState: state || 'REFERENCED',
       accessKind,
-      publiclyViewable: false,
+      premiumAccess: row.accessKind,
+      publiclyViewable: !!row.publiclyViewable,
+      contentRetrieved: !!row.contentRetrieved,
+      accountDiscovered: true,
       ownership: own.kind,
-      platform: own.platform,
+      platform: own.platform || row.platform,
       handle: own.handle,
-      note: (item && (item.accessNote || item.publicEvidence || item.error)) || 'Referenced as a public citation. Carmen did not access restricted material. A directory mention is not proof of ownership.',
+      note: row.note || (item && (item.accessNote || item.publicEvidence || item.error)) || 'Referenced as a public citation. Carmen did not access restricted material. Finding the profile URL is not content retrieval.',
       publicEvidence: (item && item.publicEvidence) || '',
+      discoveryPaths: item && item.discoveryPaths,
     });
   };
   for (const r of retrieved || []) add(r);
   for (const r of results || []) add(r);
-  return out.slice(0, 16);
+  return out.slice(0, 24);
 }
 
 function providerPivotReport(diagnostics) {
@@ -2528,6 +2582,12 @@ function buildVisualCorpus(results, retrieved, classification, extraHits) {
       queryVariant: im.queryVariant || '',
       visualLikenessIsNotIdentityProof: true,
       researchObject: true,
+      associatedSource: im.pageUrl || im.source || '',
+      visualClass: (classifyVisualRelevance(im, classification) || {}).visualClass || 'unknown',
+      visualClassReason: (classifyVisualRelevance(im, classification) || {}).reason || '',
+      matchQuality: (classifyMatchQuality(im, classification) || {}).matchQuality || 'unknown',
+      matchQualityReason: (classifyMatchQuality(im, classification) || {}).reason || '',
+      demote: !!(classifyVisualRelevance(im, classification) || {}).demote,
     });
   };
   const adultOn = ((classification && classification.adultContent) === 'on' || (classification && classification.adultContent) === 'both') && classification.type === 'person';
@@ -3848,14 +3908,13 @@ function diveSeedQuery(classification, originalQuery, canonical, fallbackQuery) 
   const fb = String(fallbackQuery || '').trim();
   const ctx = extraContext(classification);
   const isUrl = (s) => /^https?:\/\//i.test(s);
-  if (orig && !isUrl(orig)) {
-    if (name && !orig.toLowerCase().includes(name.toLowerCase())) return composeInvestigationQuery(orig, name, ctx);
-    return orig;
-  }
-  if (name && ctx) return (name + ' ' + ctx).replace(/\s+/g, ' ').trim();
-  if (name) return name;
-  if (fb && !isUrl(fb)) return composeInvestigationQuery(fb, name, ctx);
-  return name || orig || fb;
+  // Never seed Deep Dive with an identifying URL or a page-title fallback.
+  // Entity × topic must survive: a bare person name still carries the topic.
+  const base = (orig && !isUrl(orig))
+    ? orig
+    : ((fb && !isUrl(fb) && !/\s\|\s/.test(fb)) ? fb : name);
+  if (!base || isUrl(base)) return name || orig || fb;
+  return composeInvestigationQuery(base, name, ctx) || name || base;
 }
 
 function diveExpansionQueries(opts) {
@@ -4537,8 +4596,26 @@ function scoreResult(query, item, classification) {
       score -= 8; bits.push('subject evidence without topic intersection — kept, not discarded');
       contextPenalized = true;
     } else if (ctxTerms.length && hasContext && !hasEntity) {
-      score -= 8; bits.push('topic evidence without the subject — kept, not discarded');
+      const personTopic = classification.type === 'person' && extraContext(classification);
+      score -= personTopic ? 22 : 8;
+      bits.push(personTopic
+        ? 'generic topic result without the resolved person — not entity-specific evidence'
+        : 'topic evidence without the subject — kept, not discarded');
     }
+  }
+  const disneyHit = fictionalNameCollision(title + ' ' + snip + ' ' + url, (classification && classification.subject) || '', host);
+  if (disneyHit) {
+    score -= 40;
+    bits.push(disneyHit.reason);
+  }
+  const vis = classifyVisualRelevance({ url: item.url, title: item.title, snippet: item.snippet, pageUrl: item.pageUrl }, classification);
+  if (vis.demote) {
+    score -= 18;
+    bits.push('visual class ' + vis.visualClass + ' demoted for this investigation');
+  }
+  if (socialShouldDeprioritize(item, classification, { identityHostHits: (classification && classification._identityHostHits) || 0, confirmed: (classification.identityFeedback && classification.identityFeedback.confirmed) || [] })) {
+    score -= 16;
+    bits.push('social media deprioritized after identity/link discovery');
   }
   const adult = (classification && classification.adultContent) || 'off';
   const adultish = isAdultishSource(item);
@@ -4616,6 +4693,13 @@ function aliasesFor(item, query) {
 
 function rankResults(query, results, classification, opts = {}) {
   const resultCap = Math.max(8, Number(opts.cap || opts.maxResults) || MAX_RESULTS);
+  if (classification && typeof classification === 'object') {
+    classification._identityHostHits = (results || []).filter(item => {
+      const h = hostOf(item && item.url).replace(/^www\./, '');
+      return SOCIAL_IDENTITY_HOSTS.some(s => h === s || h.endsWith('.' + s));
+    }).length;
+    if (isTutorialIntent(query)) classification.tutorialIntent = true;
+  }
   const ranked = results.map(item => {
     const s = scoreResult(query, item, classification);
     const host = hostOf(item.url);
@@ -4624,6 +4708,10 @@ function rankResults(query, results, classification, opts = {}) {
     const ev = evidenceForResult(item, { subject: (classification && classification.subject) || '', topic: extraContext(classification) || '', rawQuery: query }, classification);
     const prov = annotateProvenance(item);
     const own = classifyAccountOwnership(item, (classification && classification.subject) || '');
+    const mq = classifyMatchQuality(item, classification);
+    const ct = classifyContentType(item, classification);
+    const vis = classifyVisualRelevance(item, classification);
+    const imp = detectImpersonator(item, (classification && classification.subject) || '');
     return {
       ...item,
       sourceType,
@@ -4659,6 +4747,12 @@ function rankResults(query, results, classification, opts = {}) {
       discoveryLane: item.discoveryLane || '',
       resultKind: s.resultKind || 'WEAK_MATCH',
       sourceClass,
+      matchQuality: mq.matchQuality,
+      matchQualityReason: mq.reason,
+      contentType: ct.contentType,
+      visualClass: vis.visualClass,
+      impersonator: !!imp,
+      rejectedReason: imp ? imp.reasons.join('; ') : '',
     };
   }).filter(r => {
     if (isRedditSearchPage(r.url, r.title)) return false;
@@ -4674,11 +4768,30 @@ function rankResults(query, results, classification, opts = {}) {
     seenHost.set(r.domain, n + 1);
   }
   const adultPerson = classification && (classification.adultContent === 'on' || classification.adultContent === 'both') && (classification.type === 'person' || classification.type === 'social');
+  const hostCounts = {};
+  for (const r of ranked) {
+    hostCounts[r.domain] = (hostCounts[r.domain] || 0) + 1;
+  }
   if (adultPerson) {
     for (const r of ranked) {
       if (r.sourceClass === 'DATABASE' || r.sourceClass === 'ADULT_PLATFORM' || r.sourceClass === 'PRIMARY') r.score += 12;
       else if (r.sourceClass === 'ENCYCLOPEDIA') r.score -= 10;
       else if (r.sourceClass === 'AGGREGATOR') r.score -= 4;
+    }
+  }
+  for (const r of ranked) {
+    const vol = sourceVolumePenalty(r, hostCounts);
+    if (vol.penalty) {
+      r.score -= vol.penalty;
+      (r.signals || (r.signals = [])).push(vol.reason);
+    }
+    if (r.matchQuality === 'unrelated' && extraContext(classification)) r.score -= 10;
+    if (r.matchQuality === 'exact') r.score += 8;
+    if (r.contentType === 'account' && extraContext(classification)) r.score -= 4;
+    if (r.impersonator) r.score -= 20;
+    if ((classification && classification.tutorialIntent) || isTutorialIntent(query)) {
+      if (r.contentType === 'tutorial') r.score += 18;
+      else if (r.contentType === 'account' || r.contentType === 'visual') r.score -= 6;
     }
   }
   ranked.sort((a, b) => b.score - a.score);
@@ -4700,9 +4813,10 @@ function rankResults(query, results, classification, opts = {}) {
   const bestInter = ranked.filter(r => r.intersection || r.role === 'INTERSECTION' || r.intersectionEvidence === 'strong');
   const bestSubject = ranked.filter(r => r.role === 'SUBJECT_EVIDENCE' || r.subjectEvidence === 'strong');
   const bestTopic = ranked.filter(r => r.role === 'TOPIC_EVIDENCE' || (r.topicEvidence === 'strong' && r.subjectEvidence === 'none'));
+  const personTopic = classification && classification.type === 'person' && extraContext(classification);
   take(bestInter, Math.min(16, Math.max(6, Math.floor(resultCap / 3))));
   take(bestSubject, 6);
-  take(bestTopic, 4);
+  take(bestTopic, personTopic ? 2 : 4);
   take(ident, 4);
   take(reddit, 3);
   take(ranked, resultCap - picked.length);
@@ -4954,6 +5068,7 @@ async function runDiscovery(query, opts = {}) {
     classification.context = keepTopic;
     classification.relation = detectRelation(keepTopic) || classification.relation || 'context';
   }
+  coupleEntityTopic(classification, keepEntity, keepTopic);
   const intent = parseInvestigationIntent(String(query || ''), {
     entity: keepEntity,
     topic: keepTopic,
@@ -5002,6 +5117,9 @@ async function runDiscovery(query, opts = {}) {
     classification.context = 'premium accounts';
     classification.relation = 'premium';
   }
+  coupleEntityTopic(classification, classification.subject, extraContext(classification) || intent.topic);
+  classification.tutorialIntent = !!intent.tutorialIntent;
+  classification.retrievalIntents = intent.retrievalIntents || [];
   classification.identityFeedback = intent.identityFeedback || {};
   const topicMap = buildTopicMap(intent, classification);
   const depth = normalizeDepth(opts.depth, classification);
@@ -5042,7 +5160,7 @@ async function runDiscovery(query, opts = {}) {
     if (!adultOnPerson && allowPrimary) addVar(q, 'primary query', 'primary', 'web');
     for (const lane of graph.lanes) {
       for (const qv of lane.queries) {
-        if (skipNaive && isNaiveLensQuery(qv, intent)) continue;
+        if (skipNaive && isNaiveLensQuery(qv, intent) && !/photoset|scene|gallery|interview|site:/i.test(qv)) continue;
         addVar(qv, lane.why, lane.id, lane.kind || 'web');
       }
     }
@@ -5072,7 +5190,7 @@ async function runDiscovery(query, opts = {}) {
   {
     const plannerQs = plannerLaneQueries(topicMap, { attemptedQueries, limit: intent.findEverything || intent.premiumAccounts ? 22 : 14 });
     for (const pq of plannerQs) {
-      if (skipNaive && isNaiveLensQuery(pq.q, intent)) continue;
+      if (skipNaive && isNaiveLensQuery(pq.q, intent) && !/photoset|scene|gallery|interview|site:/i.test(pq.q)) continue;
       addVar(pq.q, pq.why, pq.lane, pq.kind, { sourceClass: pq.sourceClass });
     }
     if (intent.mode === 'find-more') {
@@ -5103,6 +5221,28 @@ async function runDiscovery(query, opts = {}) {
         topic: classification.context || intent.topic,
       });
       for (const x of follow.queries) addVar(x.q, x.why, x.lane || 'identity', x.kind);
+    }
+    const coupledTopic = extraContext(classification) || intent.topic || keepTopic;
+    if (classification.subject && coupledTopic && classification.type === 'person') {
+      for (const x of keepEntityTopicQueries(classification.subject, coupledTopic, attemptedQueries.concat(variants.map(v => v.q)))) {
+        if (skipNaive && isNaiveLensQuery(x.q, intent)) continue;
+        addVar(x.q, x.why, x.lane, x.kind, { sourceClass: x.sourceClass || 'intersection' });
+      }
+    }
+    if (intent.tutorialIntent || isTutorialIntent(q) || classification.type === 'skill' || (classification.type === 'technique' && isTutorialIntent(q))) {
+      for (const x of tutorialQueries(classification.subject || q, coupledTopic, attemptedQueries)) {
+        addVar(x.q, x.why, x.lane, x.kind, { sourceClass: x.sourceClass });
+      }
+    }
+    if (classification.type === 'person') {
+      for (const x of publicAccountQueries(classification.subject, attemptedQueries)) {
+        addVar(x.q, x.why, x.lane, x.kind, { sourceClass: x.sourceClass });
+      }
+    }
+    if (intent.premiumAccounts) {
+      for (const x of premiumEscalationQueries(classification.subject, [], attemptedQueries)) {
+        addVar(x.q, x.why, x.lane, x.kind, { sourceClass: x.sourceClass });
+      }
     }
   }
   const results = [], seen = new Set(), diagnostics = {};
@@ -5507,6 +5647,18 @@ async function runDiscovery(query, opts = {}) {
     return true;
   });
   const visualIdentity = applyVisualIdentityFilter(visualCorpus, classification.subject, { identityFeedback: intent.identityFeedback });
+  const classKept = [];
+  for (const im of visualIdentity.kept || []) {
+    const vis = classifyVisualRelevance(im, classification);
+    im.visualClass = vis.visualClass;
+    im.visualClassReason = vis.reason;
+    if (vis.demote && classification.type === 'person') {
+      visualIdentity.dropped.push({ ...im, primaryCorpus: false, reason: vis.reason || ('visual class ' + vis.visualClass + ' is not identity evidence') });
+      continue;
+    }
+    classKept.push(im);
+  }
+  visualIdentity.kept = classKept;
   visualCorpus = visualIdentity.kept.concat(visualIdentity.dropped.map(im => ({ ...im, primaryCorpus: false })));
   const primaryVisuals = visualIdentity.kept;
   const wrongPersonVisuals = visualIdentity.dropped.filter(im => im.identityCollision || im.identityGrade === 'unverified' && im.identityCollision);
@@ -5601,7 +5753,7 @@ async function runDiscovery(query, opts = {}) {
       premiumAccounts: !!intent.premiumAccounts,
       knownEntity: intent.knownEntity ? { id: intent.knownEntity.id, domain: intent.knownEntity.domain, name: intent.knownEntity.aliases[0] } : null,
     },
-    intent: { mode: intent.mode, findEverything: !!intent.findEverything, premiumAccounts: !!intent.premiumAccounts },
+    intent: { mode: intent.mode, findEverything: !!intent.findEverything, premiumAccounts: !!intent.premiumAccounts, tutorialIntent: !!intent.tutorialIntent, retrievalIntents: intent.retrievalIntents || [] },
     topicMap,
     evidenceSummary: {
       subject: ranked.filter(r => r.subjectEvidence && r.subjectEvidence !== 'none').length,
@@ -5699,6 +5851,58 @@ async function runDiscovery(query, opts = {}) {
     knownSiteStatus,
     fixture: fixtureName || null,
     identityFeedbackApplied: !!(intent.identityFeedback && ((intent.identityFeedback.confirmed || []).length || (intent.identityFeedback.rejectedPeople || []).length)),
+    entityIdentity: buildEntityIdentityRecord(classification, ranked, ranked.filter(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'), graphLeads, {
+      identityConfidence: identityCluster.ambiguous ? 'low' : (identityCluster.userConfirmed ? 'high' : 'medium'),
+    }),
+    variations: semanticVariations(
+      keepTopic || extraContext(classification) || ((classification.type === 'technique' || classification.type === 'skill' || classification.type === 'object') ? classification.subject : ''),
+      ranked,
+      { excludeCurrent: true },
+    ),
+    accounts: (premiumContent || []).concat(ranked.filter(r => r.contentType === 'account').map(r => ({
+      url: r.url, title: r.title, domain: r.domain, platform: r.accountPlatform, handle: r.accountHandle,
+      ownership: r.accountOwnership, status: r.impersonator ? 'unverified' : 'current',
+      impersonator: !!r.impersonator, rejectedReason: r.rejectedReason || '',
+      contentType: 'account',
+    }))).slice(0, 24),
+    rejectedCandidates: [
+      ...(visualIdentity.dropped || []).slice(0, 8).map(im => ({ kind: 'visual', url: im.url, title: im.title, reason: im.reason || im.collision || im.visualClassReason || '' })),
+      ...ranked.filter(r => r.impersonator || r.matchQuality === 'unrelated').slice(0, 8).map(r => ({ kind: 'result', url: r.url, title: r.title, reason: r.rejectedReason || r.matchQualityReason || '' })),
+    ],
+    whatCarmenChecked: buildWhatCarmenChecked({
+      variants,
+      sourceClasses: sourceClassesReached,
+      aliases: [...new Set([classification.subject, ...((identity && identity.aliases) || [])])].filter(Boolean),
+      providers: diagnostics,
+      topicMap,
+      uniqueResults: ranked.length,
+      duplicates: (additive.duplicatesRemoved || 0) + (additive.nearDuplicatesRemoved || 0),
+      inaccessible: ranked.filter(r => /BLOCKED|UNAVAILABLE|AUTHENTICATION_REQUIRED|PAYWALLED/.test(r.accessState || '')).length,
+      intents: intent.retrievalIntents,
+    }),
+    whyDidYouStop: buildWhyDidYouStop({
+      uniqueResults: ranked.length,
+      duplicates: (additive.duplicatesRemoved || 0) + (additive.nearDuplicatesRemoved || 0),
+      inaccessible: ranked.filter(r => /BLOCKED|UNAVAILABLE|AUTHENTICATION_REQUIRED|PAYWALLED/.test(r.accessState || '')).length,
+      filtered: (visualIdentity.dropped || []).length + ranked.filter(r => r.impersonator).length,
+      variants,
+      sourceClasses: sourceClassesReached,
+      aliases: [...new Set([classification.subject, ...((identity && identity.aliases) || [])])].filter(Boolean),
+      exhausted: !!additive.exhausted,
+      budgetHit: remainingFetches() <= 2 || SEARCH_BUDGET.used >= SEARCH_BUDGET.max,
+      identityInsufficient: !!identityCluster.ambiguous && !(intent.identityFeedback && (intent.identityFeedback.confirmed || []).length),
+      diminishingReturns: !!additive.exhausted || (additive.genuinelyNew === 0 && (opts.priorResults || []).length > 0),
+      unretrievable: ranked.some(r => r.retrievalStatus === 'RETRIEVAL_FAILED') && !ranked.some(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'),
+    }),
+    negativeReport: negativeResultReport({
+      sourceClasses: sourceClassesReached,
+      variants,
+      aliases: [...new Set([classification.subject])].filter(Boolean),
+      found: ranked.slice(0, 8).map(r => ({ url: r.url, title: r.title })),
+      notFound: [],
+      inaccessible: ranked.filter(r => /BLOCKED|UNAVAILABLE|AUTHENTICATION_REQUIRED|PAYWALLED/.test(r.accessState || '')).map(r => ({ url: r.url, accessState: r.accessState })),
+      identityInsufficient: !!identityCluster.ambiguous,
+    }),
   };
 }
 
@@ -6350,6 +6554,13 @@ async function deepDiveHandler(req, env) {
         further,
         continueBudget: true,
         budget: Math.max(8, remainingFetches() - 8),
+        entity: classification.subject || canonical || '',
+        topic: extraContext(classification) || b.topic || b.context || '',
+        keepSubject: true,
+        diveLens: b.diveLens || b.lens || '',
+        mode: b.mode || (b.diveLens ? 'dive-' + b.diveLens : ''),
+        priorResults: b.priorResults || [],
+        identityFeedback: b.identityFeedback || {},
       });
     }
     const rankedForRetrieve = [...discovery.results].sort((a, b) => {
@@ -7871,7 +8082,7 @@ export default {
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
         api: { docs: '/api', version: 'v1', samePipelineAsIphoneUi: true },
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -8230,4 +8441,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing, composeInvestigationQuery, parseInvestigationIntent, resolveKnownEntity, buildTopicMap, plannerLaneQueries, evidenceForResult, isQueryEchoTitle, isRedditSearchPage, isActualRedditEvidence, annotateProvenance, classifyAccountOwnership, mergeInvestigationEvidence, sourceDiversityReport, competingIdentityCandidates, findMoreQueries, moreLikeThisQueries, findDifferentQueries, analyzePayloadKind, PLANNER_BUILD, PLANNER_VERSION, identityIsAmbiguous, applyIdentityFeedback, serializeEvidenceItem, createInvestigationState, applyInvestigationAction, evidenceBuckets, knownSiteAccessStatus, intentClassFor, routeNaturalLanguageResearch, extractImagesFromHtml, describeImageExtraction, looksLikeFirstPartySource, fillTopicMapFromEvidence, isObjectOrTechniquePhrase };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing, composeInvestigationQuery, parseInvestigationIntent, resolveKnownEntity, buildTopicMap, plannerLaneQueries, evidenceForResult, isQueryEchoTitle, isRedditSearchPage, isActualRedditEvidence, annotateProvenance, classifyAccountOwnership, mergeInvestigationEvidence, sourceDiversityReport, competingIdentityCandidates, findMoreQueries, moreLikeThisQueries, findDifferentQueries, analyzePayloadKind, PLANNER_BUILD, PLANNER_VERSION, identityIsAmbiguous, applyIdentityFeedback, serializeEvidenceItem, createInvestigationState, applyInvestigationAction, evidenceBuckets, knownSiteAccessStatus, intentClassFor, routeNaturalLanguageResearch, extractImagesFromHtml, describeImageExtraction, looksLikeFirstPartySource, fillTopicMapFromEvidence, isObjectOrTechniquePhrase, isTutorialIntent, parseRetrievalIntents, fictionalNameCollision, semanticVariations, classifyVisualRelevance, classifyMatchQuality, classifyContentType, socialShouldDeprioritize, sourceVolumePenalty, premiumAccessClassification, premiumEscalationQueries, publicAccountQueries, tutorialQueries, detectImpersonator, buildEntityIdentityRecord, buildWhatCarmenChecked, buildWhyDidYouStop, coupleEntityTopic, keepEntityTopicQueries, negativeResultReport };
