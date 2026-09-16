@@ -1,8 +1,13 @@
-// Carmen v49.7 — investigation / topic-map planner + ChatGPT-access helpers.
+// Carmen v49.8 — investigation / topic-map planner + ChatGPT-access helpers.
 // Query-centric retrieval is the fallback. The planner independently
 // establishes subject evidence, topic evidence, and intersection evidence,
 // then opens source-class lanes (especially adult) instead of stuffing
 // tokens into one search string.
+//
+// v49.8: Adaptive / open-ended investigation. Carmen keeps expanding until
+// meaningful public paths, variants, visual branches, accounts, and link
+// chains are exhausted — or a real resource/access guard requires stopping.
+// A raw request count is a safety rail, not the investigation logic.
 //
 // v49.7: Retrieval-engine correctness. Entity and topic stay coupled through
 // every stage. Premium discovery is a recursive branch (URL ≠ content).
@@ -27,8 +32,8 @@
 // This module is self-contained: no import from worker.js (avoids cycles).
 // worker.js imports it. The machine-readable API uses these same functions.
 
-export const PLANNER_VERSION = '49.7';
-export const PLANNER_BUILD = '49.7-retrieval-engine';
+export const PLANNER_VERSION = '49.8';
+export const PLANNER_BUILD = '49.8-adaptive-investigation';
 
 function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
@@ -221,7 +226,29 @@ export const STOP_CLASSES = [
   'not_found', 'not_searched_far_enough', 'found_but_filtered',
   'found_but_unretrievable', 'access_restricted', 'identity_confidence_insufficient',
   'branches_exhausted', 'diminishing_returns', 'duplicates', 'configured_limit',
+  'investigation_exhausted', 'no_additional_paths', 'no_novelty',
+  'provider_unavailable', 'resource_guard', 'access_boundary',
 ];
+
+export const ADAPTIVE_STOP_KINDS = {
+  A: 'investigation_exhausted',
+  B: 'no_additional_paths',
+  C: 'no_novelty',
+  D: 'provider_unavailable',
+  E: 'resource_guard',
+  F: 'access_boundary',
+};
+
+export const INVESTIGATION_PATH_FAMILIES = [
+  'identity', 'identity-variants', 'entity-topic', 'topic-variants',
+  'visual', 'visual-entity-seeded', 'instructional', 'accounts', 'premium',
+  'source-classes', 'link-chain', 'corroboration',
+];
+
+export const ADAPTIVE_TIME_GUARD_MS = 24000;
+export const ADAPTIVE_MAX_ITERATIONS = 10;
+export const ADAPTIVE_NOVELTY_STOP_STREAK = 2;
+export const ADAPTIVE_BATCH_SIZE = 2;
 
 export const INVESTIGATION_PHASES = [
   'IDLE', 'SEARCHING', 'CANDIDATES_FOUND', 'IDENTITY_NEEDS_CONFIRMATION',
@@ -2858,15 +2885,41 @@ export function fictionalNameCollision(blob, subject, host) {
   const h = String(host || '').toLowerCase();
   if (!toks.length) return null;
   const first = toks[0];
-  const disneyish = /\b(disney|princess|beauty and the beast|belle from|enchanted rose|beast'?s castle|animated|cartoon princess)\b/i.test(String(blob || ''))
+  const last = toks.length > 1 ? toks[toks.length - 1] : '';
+  const disneyish = /\b(disney|princess|beauty and the beast|belle from|enchanted rose|beast'?s castle|animated|cartoon princess|disney wiki|disney fandom)\b/i.test(String(blob || ''))
     || /(disney|fandom\.com|wikia|princess)/i.test(h);
-  if (disneyish && first === 'belle' && (toks.length < 2 || !nblob.includes('delphine'))) {
+  if (disneyish && first === 'belle' && (!last || last !== 'delphine' || !nblob.includes('delphine'))) {
+    return { collision: 'Disney Princess Belle', reason: 'identity collision — Disney Princess Belle is not Belle Delphine' };
+  }
+  if (first === 'belle' && last === 'delphine' && disneyish && !nblob.includes('delphine')) {
     return { collision: 'Disney Princess Belle', reason: 'identity collision — Disney Princess Belle is not Belle Delphine' };
   }
   if (/\b(fictional character|cartoon|anime character|video game character)\b/i.test(String(blob || '')) && toks.length >= 2 && !toks.every(t => nblob.includes(t))) {
     return { collision: 'fictional character', reason: 'fictional/cartoon character is not the resolved person' };
   }
   return null;
+}
+
+export function identityDisambiguation(subject) {
+  const toks = tokens(subject);
+  const first = toks[0] || '';
+  const last = toks.length > 1 ? toks[toks.length - 1] : '';
+  if (first === 'belle' && last === 'delphine') {
+    return {
+      canonical: 'Belle Delphine',
+      must: ['delphine'],
+      mustNot: ['disney princess', 'beauty and the beast', 'enchanted rose', 'beast castle'],
+      negatives: ['-disney', '-princess', '-"beauty and the beast"', '-"disney princess"'],
+      collisionLabel: 'Disney Princess Belle',
+    };
+  }
+  return {
+    canonical: String(subject || '').trim(),
+    must: toks.slice(1),
+    mustNot: [],
+    negatives: [],
+    collisionLabel: '',
+  };
 }
 
 export function semanticVariations(topic, evidence, opts = {}) {
@@ -3182,16 +3235,36 @@ export function buildWhatCarmenChecked(pack = {}) {
   const tried = Object.keys(providers);
   const ok = tried.filter(k => providers[k] && (providers[k].ok || providers[k].added > 0));
   const fail = tried.filter(k => providers[k] && (providers[k].error || (providers[k].status >= 400 && !providers[k].ok)));
+  const adaptive = pack.adaptive || null;
+  const topicVariants = pack.topicVariants || (adaptive && adaptive.topicVariants) || [];
+  const visualPaths = pack.visualPaths || (adaptive && adaptive.visualPaths) || [];
+  const accountPaths = pack.accountPaths || (adaptive && adaptive.accountPaths) || [];
+  const remaining = pack.pathsRemaining || (adaptive && adaptive.pathsRemaining) || [];
+  const iterations = (adaptive && adaptive.iterations) || pack.iterations || 0;
+  const novelty = (adaptive && adaptive.noveltyLog) || pack.noveltyLog || [];
   const summary = 'I searched ' + (classes.length || branches.length || tried.length) + ' source classes using '
     + (aliases.length || 1) + ' identity variant' + ((aliases.length || 1) === 1 ? '' : 's') + ' and '
     + variants.length + ' quer' + (variants.length === 1 ? 'y' : 'ies') + '. '
     + (pack.uniqueResults != null ? pack.uniqueResults + ' unique results. ' : '')
     + (pack.duplicates != null ? pack.duplicates + ' duplicates collapsed. ' : '')
-    + (pack.inaccessible != null ? pack.inaccessible + ' sources inaccessible. ' : '');
+    + (pack.inaccessible != null ? pack.inaccessible + ' sources inaccessible. ' : '')
+    + (iterations ? iterations + ' investigation iteration' + (iterations === 1 ? '' : 's') + '. ' : '')
+    + (remaining.length ? remaining.length + ' public path' + (remaining.length === 1 ? '' : 's') + ' still unexplored. ' : '');
   return {
     sourceClasses: classes,
-    queries: variants.map(v => ({ q: v.q, why: v.why, lane: v.lane, sourceClass: v.sourceClass })).slice(0, 32),
-    aliases: aliases.slice(0, 12),
+    sourceClassesAttempted: classes,
+    sourceClassesRemaining: (adaptive && adaptive.sourceClassesRemaining) || pack.sourceClassesRemaining || [],
+    queries: variants.map(v => ({ q: v.q, why: v.why, lane: v.lane, sourceClass: v.sourceClass })).slice(0, 48),
+    aliases: aliases.slice(0, 16),
+    identityVariants: aliases.slice(0, 16),
+    topicVariants: topicVariants.slice(0, 16),
+    visualPaths: visualPaths.slice(0, 16),
+    accountPaths: accountPaths.slice(0, 16),
+    linkChainDepth: (adaptive && adaptive.linkChainDepth) || pack.linkChainDepth || 0,
+    pathsAttempted: (adaptive && adaptive.pathsAttempted) || pack.pathsAttempted || variants.map(v => v.lane || v.why).filter(Boolean).slice(0, 24),
+    pathsRemaining: remaining.slice(0, 16),
+    iterations,
+    noveltyLog: novelty.slice(-8),
     providersTried: tried,
     providersOk: ok,
     providersFailed: fail,
@@ -3213,42 +3286,107 @@ export function buildWhyDidYouStop(pack = {}) {
   const budget = !!pack.budgetHit;
   const identityBlocked = !!pack.identityInsufficient;
   const accessRestricted = inaccessible > 0 && unique === 0;
+  const adaptive = pack.adaptive || null;
+  const remaining = Number(pack.pathsRemainingCount != null ? pack.pathsRemainingCount : ((adaptive && adaptive.pathsRemaining) ? adaptive.pathsRemaining.length : (pack.pathsRemaining || []).length));
+  const iterations = Number((adaptive && adaptive.iterations) || pack.iterations || 0);
+  const noveltyStreak = Number((adaptive && adaptive.zeroNoveltyStreak) || pack.zeroNoveltyStreak || 0);
+  const adaptiveKind = (adaptive && adaptive.stopKind) || pack.adaptiveStopKind || '';
   let stopClass = 'branches_exhausted';
   let headline = '';
-  if (identityBlocked) {
-    stopClass = 'identity_confidence_insufficient';
-    headline = 'Identity confidence was insufficient to expand further without mixing people.';
-  } else if (accessRestricted) {
-    stopClass = 'access_restricted';
-    headline = 'Sources were found but required login, a paywall, or another access restriction. Finding a URL is not retrieval.';
-  } else if (filtered && unique === 0) {
-    stopClass = 'found_but_filtered';
-    headline = 'Results were found and then filtered (identity collision, duplicates, or relevance).';
-  } else if (pack.unretrievable && unique === 0) {
-    stopClass = 'found_but_unretrievable';
-    headline = 'Sources were discovered but could not be retrieved or displayed.';
-  } else if (budget) {
-    stopClass = 'not_searched_far_enough';
-    headline = 'The per-request research budget was reached. More public paths may exist.';
-  } else if (exhausted || pack.diminishingReturns) {
-    stopClass = pack.diminishingReturns ? 'diminishing_returns' : 'branches_exhausted';
-    headline = 'Remaining searches produced no new entities or sources, so the investigation stopped.';
-  } else if (unique === 0 && variants > 0) {
-    stopClass = 'not_found';
-    headline = 'No public results were returned after the searches that actually ran. That is not proof the thing does not exist.';
-  } else {
-    stopClass = 'configured_limit';
-    headline = 'A configured depth/limit was reached after collecting public evidence.';
+  let stopKind = '';
+  if (adaptiveKind && ADAPTIVE_STOP_KINDS[adaptiveKind]) {
+    stopClass = ADAPTIVE_STOP_KINDS[adaptiveKind];
+    stopKind = adaptiveKind;
+    headline = (adaptive && adaptive.headline) || pack.adaptiveHeadline || '';
+  }
+  if (!headline) {
+    if (identityBlocked) {
+      stopClass = 'identity_confidence_insufficient';
+      headline = 'Identity confidence was insufficient to expand further without mixing people.';
+      stopKind = stopKind || 'B';
+    } else if (adaptiveKind === 'D' || pack.providerUnavailable) {
+      stopClass = 'provider_unavailable';
+      headline = 'Search providers were unavailable, so remaining public paths could not be retrieved.';
+      stopKind = 'D';
+    } else if (accessRestricted || adaptiveKind === 'F') {
+      stopClass = 'access_restricted';
+      headline = remaining
+        ? 'Carmen stopped because the remaining sources require authentication. Those sources were not accessed.'
+        : 'Sources were found but required login, a paywall, or another access restriction. Finding a URL is not retrieval.';
+      stopKind = 'F';
+    } else if (filtered && unique === 0) {
+      stopClass = 'found_but_filtered';
+      headline = 'Results were found and then filtered (identity collision, duplicates, or relevance).';
+    } else if (pack.unretrievable && unique === 0) {
+      stopClass = 'found_but_unretrievable';
+      headline = 'Sources were discovered but could not be retrieved or displayed.';
+    } else if (budget && remaining > 0) {
+      stopClass = 'resource_guard';
+      headline = 'Carmen reached the configured resource safeguard after ' + (iterations || 'this') + ' investigation iteration'
+        + ((iterations || 1) === 1 ? '' : 's') + '. ' + remaining + ' unexplored public source path'
+        + (remaining === 1 ? '' : 's') + ' remained, so the investigation was not complete.';
+      stopKind = 'E';
+    } else if (budget && remaining === 0 && !exhausted) {
+      stopClass = 'resource_guard';
+      headline = 'Resource limit reached before all meaningful public paths were exhausted.';
+      stopKind = 'E';
+    } else if (exhausted && remaining === 0 && noveltyStreak >= ADAPTIVE_NOVELTY_STOP_STREAK) {
+      stopClass = 'investigation_exhausted';
+      headline = 'Carmen stopped because all discovered public paths were exhausted and the last '
+        + noveltyStreak + ' investigation iterations produced no novel evidence.';
+      stopKind = 'A';
+    } else if (exhausted || pack.diminishingReturns) {
+      if (noveltyStreak >= ADAPTIVE_NOVELTY_STOP_STREAK && remaining > 0) {
+        stopClass = 'no_novelty';
+        headline = 'Recent investigation iterations produced only duplicates, and remaining branches were deprioritized.';
+        stopKind = 'C';
+      } else if (remaining === 0) {
+        stopClass = 'investigation_exhausted';
+        headline = 'Carmen stopped because all discovered public paths were exhausted and the last '
+          + Math.max(1, noveltyStreak || iterations || 1) + ' investigation iteration'
+          + ((noveltyStreak || iterations || 1) === 1 ? '' : 's') + ' produced no novel evidence.';
+        stopKind = 'A';
+      } else {
+        stopClass = pack.diminishingReturns ? 'diminishing_returns' : 'no_additional_paths';
+        headline = 'No additional meaningful public paths were discovered from the evidence in hand.';
+        stopKind = 'B';
+      }
+    } else if (unique === 0 && variants > 0) {
+      stopClass = 'not_found';
+      headline = 'No public results were returned after the searches that actually ran. That is not proof the thing does not exist.';
+    } else if (budget) {
+      stopClass = 'resource_guard';
+      headline = 'Resource limit reached before all meaningful public paths were exhausted.';
+      stopKind = 'E';
+    } else {
+      stopClass = remaining === 0 ? 'investigation_exhausted' : 'configured_limit';
+      headline = remaining === 0
+        ? 'Carmen stopped because all discovered public paths were exhausted.'
+        : 'A configured depth/limit was reached after collecting public evidence.';
+      stopKind = remaining === 0 ? 'A' : (stopKind || '');
+    }
   }
   const detail = 'I searched ' + (classes || 'several') + ' source classes using ' + aliases + ' identity variant'
     + (aliases === 1 ? '' : 's') + '. ' + unique + ' unique results were found. ' + dupes + ' were duplicates. '
-    + inaccessible + ' sources were inaccessible.' + (filtered ? ' ' + filtered + ' were filtered.' : '');
+    + inaccessible + ' sources were inaccessible.' + (filtered ? ' ' + filtered + ' were filtered.' : '')
+    + (iterations ? ' ' + iterations + ' investigation iterations ran.' : '')
+    + (remaining ? ' ' + remaining + ' unexplored public paths remained.' : '');
+  const legacyMap = stopClass === 'not_found' ? 'A'
+    : (stopClass === 'not_searched_far_enough' || stopClass === 'resource_guard' ? 'B'
+      : (stopClass === 'found_but_filtered' ? 'C'
+        : (stopClass === 'found_but_unretrievable' ? 'D'
+          : (stopClass === 'access_restricted' || stopClass === 'access_boundary' ? 'E'
+            : (stopClass === 'identity_confidence_insufficient' ? 'F' : stopClass)))));
   return {
     stopClass,
+    stopKind: stopKind || '',
     headline,
     detail,
-    counts: { unique, duplicates: dupes, inaccessible, filtered, queries: variants, sourceClasses: classes, aliases },
-    notFoundVsNotSearched: stopClass === 'not_found' ? 'A' : (stopClass === 'not_searched_far_enough' ? 'B' : (stopClass === 'found_but_filtered' ? 'C' : (stopClass === 'found_but_unretrievable' ? 'D' : (stopClass === 'access_restricted' ? 'E' : (stopClass === 'identity_confidence_insufficient' ? 'F' : stopClass))))),
+    counts: { unique, duplicates: dupes, inaccessible, filtered, queries: variants, sourceClasses: classes, aliases, iterations, pathsRemaining: remaining },
+    notFoundVsNotSearched: legacyMap,
+    adaptiveKind: stopKind || '',
+    resourceGuard: stopClass === 'resource_guard' || stopClass === 'not_searched_far_enough',
+    investigationComplete: stopClass === 'investigation_exhausted' || stopClass === 'branches_exhausted' || stopClass === 'no_additional_paths' || stopClass === 'no_novelty',
   };
 }
 
@@ -3290,6 +3428,554 @@ export function negativeResultReport(pack = {}) {
     note: 'Absence from Carmen’s retrieved public sources is not proof of nonexistence.',
   };
 }
+
+// ---------------------------------------------------------------------------
+// v49.8 adaptive investigation controller
+// Extends the existing planner. Does not replace retrieval, ranking, or
+// provenance. A request count is a safety rail — not the stop logic.
+// ---------------------------------------------------------------------------
+
+export function conceptOrthographyVariants(concept) {
+  const t = String(concept || '').trim();
+  if (!t) return [];
+  const out = [];
+  const seen = new Set();
+  const add = (s) => {
+    const n = norm(s);
+    if (!n || seen.has(n)) return;
+    seen.add(n);
+    out.push(String(s).trim());
+  };
+  add(t);
+  if (/\s/.test(t)) {
+    add(t.replace(/\s+/g, '-'));
+    add(t.replace(/\s+/g, ''));
+  }
+  if (/-/.test(t)) {
+    add(t.replace(/-/g, ' '));
+    add(t.replace(/-/g, ''));
+  }
+  for (const fam of TECHNIQUE_FAMILIES) {
+    for (const seed of fam.seeds || []) {
+      if (norm(seed) === norm(t) || norm(seed).replace(/\s+/g, '') === norm(t).replace(/\s+/g, '')) {
+        add(seed);
+      }
+    }
+  }
+  return out;
+}
+
+export function conceptDiscoveryQueries(concept, classification, attempted, opts = {}) {
+  const seed = String(concept || (classification && (classification.context || classification.subject)) || '').trim();
+  if (!seed) return [];
+  const seen = attemptedSet(attempted);
+  const out = [];
+  const add = (q, why, lane, kind, extra) => pushQuery(out, seen, q, why, lane, kind, extra);
+  const ortho = conceptOrthographyVariants(seed);
+  const type = (classification && classification.type) || '';
+  const isTechnique = type === 'technique' || type === 'object' || type === 'skill' || (classification && classification.intentClass === 'OBJECT');
+  if (!isTechnique && !(opts.force)) return out;
+  const quoted = (s) => quote(s) || s;
+  for (const v of ortho.slice(0, 4)) add(quoted(v), 'exact concept orthography', 'topic-variants', 'web', { sourceClass: 'concept-exact', family: 'topic-variants' });
+  if (isTechnique) {
+    add(quoted(seed) + ' (restraint OR position)', 'concept class — restraint/position', 'topic-variants', 'web', { sourceClass: 'concept-semantic', family: 'topic-variants' });
+    add(quoted(seed) + ' (reference OR photography)', 'concept visual terminology', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
+    add(quoted(seed) + ' (image OR photos OR "visual reference" OR diagram OR illustration)', 'classified concept must drive visual retrieval', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
+    add(quoted(seed) + ' (tutorial OR guide OR technique OR "how to")', 'classified concept instructional retrieval', 'instructional', 'web', { sourceClass: 'instructional', family: 'instructional' });
+    add(quoted(seed) + ' site:reddit.com', 'source-specific concept discovery', 'source-classes', 'web', { sourceClass: 'community-social', family: 'source-classes' });
+    add(quoted(seed) + ' (forum OR blog OR wiki OR glossary)', 'educational/reference concept pages', 'source-classes', 'web', { sourceClass: 'instructional', family: 'source-classes' });
+  }
+  for (const v of semanticVariations(seed, opts.evidence || [], { excludeCurrent: true }).slice(0, 4)) {
+    if (norm(v.label).includes(norm(seed).replace(/\s+/g, '')) || norm(seed).replace(/\s+/g, '').includes(norm(v.label).replace(/\s+/g, ''))) {
+      add(quoted(v.label), v.why || 'semantic topic variant', 'topic-variants', 'web', { sourceClass: 'concept-semantic', family: 'topic-variants' });
+    }
+  }
+  return out.slice(0, opts.limit || 16);
+}
+
+export function identityVariantQueries(classification, identity, topic, attempted) {
+  const subject = String((identity && identity.canonicalName) || (classification && classification.subject) || '').trim();
+  if (!subject) return [];
+  const seen = attemptedSet(attempted);
+  const out = [];
+  const add = (q, why, lane, kind, extra) => pushQuery(out, seen, q, why, lane, kind, extra);
+  const qSub = quote(subject) || subject;
+  const top = String(topic || (classification && (classification.context || classification.topic)) || '').replace(/adult content/ig, '').trim();
+  const dis = identityDisambiguation(subject);
+  add(qSub, 'canonical full name', 'identity-variants', 'web', { sourceClass: 'identity', family: 'identity-variants' });
+  if (top) add(qSub + ' ' + top + ' (photoset OR scene OR gallery OR interview)', 'name + topic sourced intersection', 'entity-topic', 'web', { sourceClass: 'intersection', family: 'entity-topic' });
+  add(qSub + ' (aka OR alias OR "stage name" OR "also known as")', 'discover aliases from public evidence', 'identity-variants', 'web', { sourceClass: 'identity', family: 'identity-variants' });
+  add(qSub + (dis.negatives.length ? ' ' + dis.negatives.join(' ') : '') + ' (photos OR gallery OR photoset OR images)', 'name + visual terminology (identity-enforced)', 'visual', 'image', { sourceClass: 'images-galleries', family: 'visual' });
+  add(qSub + ' (official OR profile OR account OR handle)', 'name + account/profile terminology', 'accounts', 'web', { sourceClass: 'community-social', family: 'accounts' });
+  add(qSub + ' (instagram OR twitter OR "x.com" OR reddit OR onlyfans OR fansly)', 'name + platform terminology', 'accounts', 'web', { sourceClass: 'community-social', family: 'accounts' });
+  const aliases = [...((identity && identity.aliases) || []), ...((identity && identity.knownHandles) || [])].filter(Boolean);
+  for (const a of aliases.slice(0, 6)) {
+    if (norm(a) === norm(subject)) continue;
+    const qa = quote(a) || a;
+    add(qa, 'discovered alias/handle', 'identity-variants', 'web', { sourceClass: 'identity', family: 'identity-variants' });
+    if (top) add(qa + ' ' + top, 'alias + topic', 'entity-topic', 'web', { sourceClass: 'intersection', family: 'entity-topic' });
+    add(qa + ' (photos OR gallery OR profile)', 'alias + visual/account terminology', 'visual', 'image', { sourceClass: 'images-galleries', family: 'visual' });
+  }
+  for (const h of ((identity && identity.historicalHandles) || []).slice(0, 3)) {
+    add((quote(h) || h) + ' ' + qSub + ' (former OR old OR archive OR historical)', 'historical account terminology', 'accounts', 'web', { sourceClass: 'community-social', family: 'accounts' });
+  }
+  return out.slice(0, 20);
+}
+
+export function visualInvestigationQueries(classification, evidence, attempted, opts = {}) {
+  const subject = String((opts.identity && opts.identity.canonicalName) || (classification && classification.subject) || '').trim();
+  if (!subject) return [];
+  const seen = attemptedSet(attempted);
+  const out = [];
+  const add = (q, why, lane, kind, extra) => pushQuery(out, seen, q, why, lane, kind, extra);
+  const qSub = quote(subject) || subject;
+  const type = (classification && classification.type) || '';
+  const topic = String((classification && (classification.context || classification.topic)) || '').replace(/adult content/ig, '').trim();
+  const dis = identityDisambiguation(subject);
+  const neg = dis.negatives.length ? ' ' + dis.negatives.join(' ') : '';
+  const person = type === 'person' || type === 'social' || (classification && classification.intentClass === 'PERSON');
+  const technique = type === 'technique' || type === 'object' || type === 'skill' || (classification && classification.intentClass === 'OBJECT');
+  if (person) {
+    add(qSub + neg + ' (image OR photos OR gallery OR "photo set" OR "visual reference")', 'person visual investigation branch', 'visual', 'image', { sourceClass: 'images-galleries', family: 'visual' });
+    if (topic) add(qSub + ' ' + topic + neg + ' (photos OR gallery OR stills OR photoset)', 'person × topic visual branch', 'visual', 'image', { sourceClass: 'images-galleries', family: 'visual' });
+    add(qSub + ' (babepedia OR iafd OR "official site") (photos OR gallery OR images)', 'known public profile + images', 'visual', 'image', { sourceClass: 'identity-profile', family: 'visual' });
+  }
+  if (technique) {
+    add(qSub + ' (image OR photos OR "visual reference")', 'technique visual investigation', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
+    add(qSub + ' (diagram OR illustration OR photography)', 'technique diagram/illustration branch', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
+    add(qSub + ' (tutorial OR guide) (image OR diagram OR stills)', 'technique instructional visual', 'visual', 'image', { sourceClass: 'instructional', family: 'visual' });
+  }
+  return out.slice(0, 12);
+}
+
+export function entityAssociatedVisualQueries(classification, evidence, attempted) {
+  const subject = String((classification && classification.subject) || '').trim();
+  if (!subject) return [];
+  const seen = attemptedSet(attempted);
+  const out = [];
+  const add = (q, why, lane, kind, extra) => pushQuery(out, seen, q, why, lane, kind, extra);
+  const qSub = quote(subject) || subject;
+  const topic = String((classification && (classification.context || classification.topic)) || '').replace(/adult content/ig, '').trim();
+  const rows = evidence || [];
+  for (const r of rows.slice(0, 12)) {
+    const host = hostOf((r && (r.url || r.pageUrl)) || '').replace(/^www\./, '');
+    const blob = String((r && (r.title || '')) + ' ' + ((r && r.snippet) || ''));
+    const mq = r && r.matchQuality;
+    const entityHit = tokens(subject).every(t => norm(blob + ' ' + ((r && r.url) || '')).includes(t));
+    if (!host || (!entityHit && mq !== 'exact' && mq !== 'likely')) continue;
+    if (/pinterest|google\.|bing\.|yahoo\.|duckduckgo|startpage/.test(host)) continue;
+    add(qSub + ' site:' + host, 'entity evidence on ' + host + ' seeds visual/source follow-up', 'visual-entity-seeded', 'web', { sourceClass: 'link-chain', family: 'visual-entity-seeded', parent: r.url });
+    if (/\b(gallery|photoset|album|image|photo|imgur|redgifs)\b/i.test(blob + ' ' + ((r && r.url) || ''))) {
+      add(qSub + (topic ? ' ' + topic : '') + ' site:' + host + ' (gallery OR photos OR images)', 'discovered page identifies the person and links visuals', 'visual-entity-seeded', 'image', { sourceClass: 'images-galleries', family: 'visual-entity-seeded', parent: r.url });
+    }
+    if (r && (r.image || (r.images && r.images.length))) {
+      add(qSub + ' site:' + host + ' (photos OR gallery)', 'source already contains images — follow associated image URLs', 'visual-entity-seeded', 'image', { sourceClass: 'images-galleries', family: 'visual-entity-seeded', parent: r.url });
+    }
+  }
+  return out.slice(0, 10);
+}
+
+export function accountInvestigationQueries(classification, identity, discovered, attempted) {
+  const subject = String((identity && identity.canonicalName) || (classification && classification.subject) || '').trim();
+  if (!subject) return [];
+  const seen = attemptedSet(attempted);
+  const out = [];
+  const add = (q, why, lane, kind, extra) => pushQuery(out, seen, q, why, lane, kind, extra);
+  const qSub = quote(subject) || subject;
+  add(qSub + ' (official OR verified) (instagram OR twitter OR "x.com" OR youtube OR reddit)', 'official/public profile discovery', 'accounts', 'web', { sourceClass: 'community-social', family: 'accounts' });
+  add(qSub + ' (linktree OR allmylinks OR "official links" OR "link in bio")', 'public link hubs', 'accounts', 'web', { sourceClass: 'related-sites', family: 'accounts' });
+  add(qSub + ' (onlyfans OR fansly OR loyalfans OR manyvids) (profile OR bio OR preview)', 'public subscription-profile metadata', 'premium', 'web', { sourceClass: 'premium-subscription', family: 'premium' });
+  add(qSub + ' (babepedia OR iafd OR indexxx OR freeones) (links OR twitter OR instagram)', 'public account directories / indexed profile pages', 'accounts', 'web', { sourceClass: 'identity-profile', family: 'accounts' });
+  add(qSub + ' (former OR old OR inactive OR archive) (twitter OR instagram OR onlyfans)', 'public historical account references', 'accounts', 'web', { sourceClass: 'archival', family: 'accounts' });
+  for (const acc of (discovered || []).slice(0, 6)) {
+    const host = String(acc.domain || hostOf(acc.url || '')).replace(/^www\./, '');
+    const handle = acc.handle && acc.handle !== 'UNKNOWN' ? acc.handle : '';
+    if (host) add(qSub + ' site:' + host, 'recursive public investigation of discovered platform ' + host, 'premium', 'web', { sourceClass: 'premium-subscription', family: 'premium' });
+    if (handle) add('"' + handle + '" ' + qSub + ' (profile OR links OR bio)', 'handle corroboration', 'accounts', 'web', { sourceClass: 'community-social', family: 'accounts' });
+  }
+  return out.slice(0, 16);
+}
+
+export function extractInvestigationSeeds(results, classification, extras = {}) {
+  const subject = String((classification && classification.subject) || '').trim();
+  const aliases = [];
+  const handles = [];
+  const accounts = [];
+  const galleries = [];
+  const linkTargets = [];
+  const domains = [];
+  const visualCandidates = [];
+  const pushU = (arr, v) => { const s = String(v || '').trim(); if (s && !arr.some(x => norm(String(x.label || x.url || x)) === norm(s))) arr.push(v); };
+  for (const r of results || []) {
+    const host = hostOf((r && (r.url || r.pageUrl)) || '').replace(/^www\./, '');
+    if (host) pushU(domains, { label: host, url: r.url, kind: 'domain' });
+    for (const a of (r && r.aliases) || []) pushU(aliases, { label: a, url: r.url, kind: 'alias', parent: r.url });
+    if (r && r.accountHandle && r.accountHandle !== 'UNKNOWN') {
+      pushU(handles, { label: r.accountHandle, url: r.url, kind: 'handle', platform: r.accountPlatform });
+      pushU(accounts, { url: r.url, handle: r.accountHandle, platform: r.accountPlatform || host, domain: host, title: r.title });
+    }
+    const ct = r && r.contentType;
+    if (ct === 'account' || (host && PUBLIC_ACCOUNT_HOSTS.some(p => host === p.host || host.endsWith('.' + p.host)))) {
+      pushU(accounts, { url: r.url, handle: (r && r.accountHandle) || '', platform: (r && r.accountPlatform) || host, domain: host, title: r.title });
+    }
+    if (/\b(gallery|photoset|album|portfolio)\b/i.test(String((r && r.title) || '') + ' ' + String((r && r.url) || ''))) {
+      pushU(galleries, { url: r.url, title: r.title, domain: host, kind: 'gallery' });
+    }
+    if (r && (r.image || (r.images && r.images.length))) {
+      pushU(visualCandidates, { url: r.image || r.images[0], pageUrl: r.url, title: r.title, domain: host });
+    }
+    if (host && !/google\.|bing\.|yahoo\.|duckduckgo/.test(host)) pushU(linkTargets, { url: r.url, domain: host, title: r.title, kind: 'link' });
+    const titleToks = tokens((r && r.title) || '');
+    const subjToks = tokens(subject);
+    if (subjToks.length >= 2 && titleToks.length >= 2) {
+      const aka = String((r && r.title) || '').match(/\((?:aka|also known as)\s+([^)]+)\)/i);
+      if (aka) pushU(aliases, { label: aka[1], url: r.url, kind: 'alias', parent: r.url });
+    }
+  }
+  for (const a of ((extras.identity && extras.identity.aliases) || [])) pushU(aliases, { label: a, kind: 'alias' });
+  for (const h of ((extras.identity && extras.identity.knownHandles) || [])) pushU(handles, { label: h, kind: 'handle' });
+  return {
+    aliases: aliases.slice(0, 12),
+    handles: handles.slice(0, 12),
+    accounts: accounts.slice(0, 12),
+    galleries: galleries.slice(0, 8),
+    linkTargets: linkTargets.slice(0, 12),
+    domains: domains.slice(0, 12),
+    visualCandidates: visualCandidates.slice(0, 12),
+  };
+}
+
+export function evaluateNovelty(batch, prior = {}) {
+  const priorUrls = new Set((prior.urls || []).map(u => canonicalizeUrl(u)).filter(Boolean));
+  const priorHosts = new Set((prior.hosts || []).map(h => String(h).replace(/^www\./, '').toLowerCase()));
+  const priorAliases = new Set((prior.aliases || []).map(norm));
+  const priorAccounts = new Set((prior.accounts || []).map(a => canonicalizeUrl(a.url || a) || norm(a.handle || a)));
+  const items = batch.items || batch.results || [];
+  let newUnique = 0;
+  let duplicates = 0;
+  const newDomains = [];
+  const newAliases = [];
+  const newAccounts = [];
+  const newVisuals = [];
+  const newLinks = [];
+  const rejected = [];
+  for (const r of items) {
+    const url = canonicalizeUrl((r && (r.url || r.pageUrl)) || '');
+    const host = hostOf((r && (r.url || r.pageUrl)) || '').replace(/^www\./, '');
+    if (!url) continue;
+    if (priorUrls.has(url) || r.duplicate) { duplicates++; continue; }
+    newUnique++;
+    if (host && !priorHosts.has(host)) newDomains.push(host);
+    for (const a of (r.aliases || [])) if (!priorAliases.has(norm(a))) newAliases.push(a);
+    if (r.accountHandle && !priorAccounts.has(norm(r.accountHandle))) newAccounts.push({ handle: r.accountHandle, url: r.url, platform: r.accountPlatform });
+    if (r.image || (r.images && r.images.length) || r.kind === 'visual') newVisuals.push(r.url || r.image);
+    if (r.matchQuality === 'unrelated' || r.impersonator || r.identityCollision) rejected.push(r.url);
+    else newLinks.push(r.url);
+  }
+  const meaningful = newUnique > 0 || newDomains.length > 0 || newAliases.length > 0 || newAccounts.length > 0 || newVisuals.length > 0;
+  return {
+    newUniqueResults: newUnique,
+    duplicateResults: duplicates,
+    newDomains,
+    newSourceClasses: [...new Set((items || []).map(r => r.sourceClass || r.plannerSourceClass).filter(Boolean))],
+    newAliases,
+    newAccounts,
+    newTopicVariants: [],
+    newVisualCandidates: newVisuals,
+    newLinkTargets: newLinks,
+    rejectedCandidates: rejected,
+    meaningful,
+  };
+}
+
+function emptyFamilyState(id) {
+  return { id, attempted: 0, successful: 0, empty: 0, inaccessible: 0, notApplicable: false, pending: 0 };
+}
+
+export function createAdaptiveController(opts = {}) {
+  const families = {};
+  for (const id of INVESTIGATION_PATH_FAMILIES) families[id] = emptyFamilyState(id);
+  return {
+    query: opts.query || '',
+    classification: opts.classification || {},
+    identity: opts.identity || null,
+    pending: [],
+    attempted: [],
+    attemptedSet: attemptedSet(opts.attempted || []),
+    families,
+    iterations: 0,
+    zeroNoveltyStreak: 0,
+    lastNovelty: null,
+    noveltyLog: [],
+    urls: new Set(),
+    hosts: new Set(),
+    aliases: [],
+    accounts: [],
+    topicVariants: [],
+    visualPaths: [],
+    accountPaths: [],
+    linkChainDepth: 0,
+    maxLinkDepth: opts.maxLinkDepth || 3,
+    startedAt: opts.startedAt || Date.now(),
+    stopKind: '',
+    headline: '',
+    pathsRemaining: [],
+    pathsAttempted: [],
+    sourceClassesRemaining: [],
+  };
+}
+
+export function enqueueInvestigationPaths(controller, queries) {
+  if (!controller || !Array.isArray(queries)) return 0;
+  let added = 0;
+  for (const qv of queries) {
+    const t = String((qv && qv.q) || '').trim();
+    if (!t) continue;
+    const k = t.toLowerCase();
+    if (controller.attemptedSet.has(k)) continue;
+    if (controller.pending.some(p => String(p.q).toLowerCase() === k)) continue;
+    const family = (qv && (qv.family || (qv.extra && qv.extra.family))) || qv.lane || 'source-classes';
+    const row = { ...qv, q: t, family, priority: qv.priority || familyPriority(family) };
+    controller.pending.push(row);
+    if (controller.families[family]) controller.families[family].pending++;
+    added++;
+  }
+  controller.pending.sort((a, b) => (a.priority || 50) - (b.priority || 50));
+  return added;
+}
+
+function familyPriority(family) {
+  const order = {
+    'entity-topic': 10,
+    identity: 12,
+    'identity-variants': 14,
+    visual: 16,
+    'visual-entity-seeded': 18,
+    instructional: 20,
+    accounts: 22,
+    premium: 24,
+    'topic-variants': 26,
+    'source-classes': 28,
+    'link-chain': 30,
+    corroboration: 32,
+  };
+  return order[family] || 40;
+}
+
+export function nextInvestigationBatch(controller, limit) {
+  const n = Math.max(1, Number(limit) || ADAPTIVE_BATCH_SIZE);
+  const out = [];
+  const emptyFamilies = new Set(Object.keys(controller.families || {}).filter(id => controller.families[id].attempted >= 2 && controller.families[id].successful === 0));
+  const rest = [];
+  for (const qv of controller.pending) {
+    if (out.length >= n) { rest.push(qv); continue; }
+    if (emptyFamilies.has(qv.family) && controller.pending.some(p => !emptyFamilies.has(p.family))) {
+      rest.push(qv);
+      continue;
+    }
+    out.push(qv);
+    controller.attemptedSet.add(String(qv.q).toLowerCase());
+    controller.attempted.push(qv);
+    if (controller.families[qv.family]) {
+      controller.families[qv.family].attempted++;
+      controller.families[qv.family].pending = Math.max(0, (controller.families[qv.family].pending || 1) - 1);
+    }
+  }
+  controller.pending = rest;
+  return out;
+}
+
+export function recordInvestigationBatch(controller, batch, novelty) {
+  controller.iterations = (controller.iterations || 0) + 1;
+  controller.lastNovelty = novelty || null;
+  if (novelty && novelty.meaningful) controller.zeroNoveltyStreak = 0;
+  else controller.zeroNoveltyStreak = (controller.zeroNoveltyStreak || 0) + 1;
+  if (novelty) {
+    controller.noveltyLog.push({
+      iteration: controller.iterations,
+      newUnique: novelty.newUniqueResults || 0,
+      duplicates: novelty.duplicateResults || 0,
+      newDomains: (novelty.newDomains || []).length,
+      newAliases: (novelty.newAliases || []).length,
+      newAccounts: (novelty.newAccounts || []).length,
+      newVisuals: (novelty.newVisualCandidates || []).length,
+      meaningful: !!novelty.meaningful,
+    });
+    for (const d of novelty.newDomains || []) controller.hosts.add(d);
+    for (const a of novelty.newAliases || []) if (!controller.aliases.includes(a)) controller.aliases.push(a);
+    for (const a of novelty.newAccounts || []) controller.accounts.push(a);
+    for (const v of novelty.newVisualCandidates || []) controller.visualPaths.push(v);
+  }
+  for (const qv of batch || []) {
+    const fam = controller.families[qv.family];
+    if (!fam) continue;
+    if (novelty && novelty.meaningful) fam.successful++;
+    else fam.empty++;
+    if (!controller.pathsAttempted.includes(qv.family)) controller.pathsAttempted.push(qv.family);
+    if (qv.family === 'visual' || qv.family === 'visual-entity-seeded') controller.visualPaths.push(qv.q);
+    if (qv.family === 'accounts' || qv.family === 'premium') controller.accountPaths.push(qv.q);
+    if (qv.family === 'topic-variants') controller.topicVariants.push(qv.q);
+    if (qv.family === 'link-chain' || qv.family === 'visual-entity-seeded') {
+      controller.linkChainDepth = Math.max(controller.linkChainDepth || 0, 1 + (qv.depth || 0));
+    }
+  }
+  refreshAdaptiveRemaining(controller);
+  return controller;
+}
+
+function refreshAdaptiveRemaining(controller) {
+  const remaining = [];
+  const classRemaining = [];
+  for (const id of INVESTIGATION_PATH_FAMILIES) {
+    const fam = controller.families[id];
+    const pendingOf = controller.pending.filter(p => p.family === id);
+    fam.pending = pendingOf.length;
+    if (pendingOf.length) {
+      remaining.push(id);
+      classRemaining.push(id);
+    }
+  }
+  controller.pathsRemaining = remaining;
+  controller.sourceClassesRemaining = classRemaining;
+}
+
+export function decideInvestigationContinuation(controller, guards = {}) {
+  refreshAdaptiveRemaining(controller);
+  const remainingFetches = Number(guards.remainingFetches != null ? guards.remainingFetches : Infinity);
+  const budgetLeft = guards.budgetLeft != null ? !!guards.budgetLeft : remainingFetches > 2;
+  const elapsed = Number(guards.elapsedMs != null ? guards.elapsedMs : (Date.now() - (controller.startedAt || Date.now())));
+  const timeGuard = Number(guards.timeGuardMs != null ? guards.timeGuardMs : ADAPTIVE_TIME_GUARD_MS);
+  const maxIter = Number(guards.maxIterations != null ? guards.maxIterations : ADAPTIVE_MAX_ITERATIONS);
+  const providerDown = !!guards.providerUnavailable;
+  const accessOnly = !!guards.accessBoundary && controller.pending.every(p => p.family === 'premium' || p.accessBound);
+  const remaining = controller.pathsRemaining || [];
+  const pending = controller.pending || [];
+
+  if (providerDown) {
+    controller.stopKind = 'D';
+    controller.headline = 'Search providers were unavailable, so remaining public paths could not be retrieved.';
+    return { continue: false, stopKind: 'D', stopClass: 'provider_unavailable', reason: controller.headline, remaining: remaining.length };
+  }
+  if (accessOnly && pending.length && !pending.some(p => p.family !== 'premium')) {
+    controller.stopKind = 'F';
+    controller.headline = 'Carmen stopped because the remaining sources require authentication. Those sources were not accessed.';
+    return { continue: false, stopKind: 'F', stopClass: 'access_boundary', reason: controller.headline, remaining: remaining.length };
+  }
+  if (remainingFetches <= 2 || guards.resourceExhausted || !budgetLeft) {
+    if (pending.length) {
+      controller.stopKind = 'E';
+      controller.headline = 'Carmen reached the configured resource safeguard after ' + (controller.iterations || 0)
+        + ' investigation iterations. ' + pending.length + ' unexplored public source paths remained, so the investigation was not complete.';
+      return { continue: false, stopKind: 'E', stopClass: 'resource_guard', reason: controller.headline, remaining: pending.length };
+    }
+  }
+  if (elapsed >= timeGuard && pending.length) {
+    controller.stopKind = 'E';
+    controller.headline = 'Carmen reached the configured resource safeguard after ' + (controller.iterations || 0)
+      + ' investigation iterations. ' + pending.length + ' unexplored public source paths remained, so the investigation was not complete.';
+    return { continue: false, stopKind: 'E', stopClass: 'resource_guard', reason: controller.headline, remaining: pending.length };
+  }
+  if ((controller.iterations || 0) >= maxIter && pending.length) {
+    controller.stopKind = 'E';
+    controller.headline = 'Carmen reached the configured resource safeguard after ' + controller.iterations
+      + ' investigation iterations. ' + pending.length + ' unexplored public source paths remained, so the investigation was not complete.';
+    return { continue: false, stopKind: 'E', stopClass: 'resource_guard', reason: controller.headline, remaining: pending.length };
+  }
+  if (!pending.length) {
+    if ((controller.zeroNoveltyStreak || 0) >= ADAPTIVE_NOVELTY_STOP_STREAK || (controller.iterations || 0) > 0) {
+      controller.stopKind = 'A';
+      controller.headline = 'Carmen stopped because all discovered public paths were exhausted'
+        + ((controller.zeroNoveltyStreak || 0) ? ' and the last ' + controller.zeroNoveltyStreak + ' investigation iterations produced no novel evidence.' : '.');
+      return { continue: false, stopKind: 'A', stopClass: 'investigation_exhausted', reason: controller.headline, remaining: 0 };
+    }
+    controller.stopKind = 'B';
+    controller.headline = 'No additional meaningful public paths were discovered from the evidence in hand.';
+    return { continue: false, stopKind: 'B', stopClass: 'no_additional_paths', reason: controller.headline, remaining: 0 };
+  }
+  if ((controller.zeroNoveltyStreak || 0) >= ADAPTIVE_NOVELTY_STOP_STREAK && pending.length === 0) {
+    controller.stopKind = 'C';
+    controller.headline = 'Carmen stopped because remaining searches produced only duplicates.';
+    return { continue: false, stopKind: 'C', stopClass: 'no_novelty', reason: controller.headline, remaining: 0 };
+  }
+  return { continue: true, stopKind: '', stopClass: '', reason: 'meaningful unexplored paths remain', remaining: pending.length };
+}
+
+export function enqueueAdaptiveFamilies(controller, pack = {}) {
+  const classification = pack.classification || controller.classification || {};
+  const identity = pack.identity || controller.identity || { canonicalName: classification.subject, aliases: [], knownHandles: [], historicalHandles: [] };
+  const topic = pack.topic || classification.context || classification.topic || '';
+  const attempted = [...controller.attemptedSet];
+  const evidence = pack.evidence || pack.results || [];
+  const type = classification.type || '';
+  const person = type === 'person' || type === 'social' || classification.intentClass === 'PERSON';
+  const technique = type === 'technique' || type === 'object' || type === 'skill' || classification.intentClass === 'OBJECT';
+  let added = 0;
+  if (person) added += enqueueInvestigationPaths(controller, identityVariantQueries(classification, identity, topic, attempted));
+  if (technique) added += enqueueInvestigationPaths(controller, conceptDiscoveryQueries(topic || classification.subject, classification, attempted, { evidence }));
+  if (person || technique || pack.wantVisual) {
+    added += enqueueInvestigationPaths(controller, visualInvestigationQueries(classification, evidence, attempted, { identity }));
+    added += enqueueInvestigationPaths(controller, entityAssociatedVisualQueries(classification, evidence, attempted));
+  }
+  if (person || pack.premiumAccounts) {
+    added += enqueueInvestigationPaths(controller, accountInvestigationQueries(classification, identity, pack.discoveredAccounts || identity.accounts || [], attempted));
+  }
+  if (pack.tutorialIntent || (classification && classification.tutorialIntent)) {
+    added += enqueueInvestigationPaths(controller, tutorialQueries(classification.subject || topic, topic, attempted).map(q => ({ ...q, family: 'instructional' })));
+  }
+  return added;
+}
+
+export function seedsToQueries(seeds, classification, attempted) {
+  const subject = String((classification && classification.subject) || '').trim();
+  const qSub = quote(subject) || subject;
+  const topic = String((classification && (classification.context || classification.topic)) || '').replace(/adult content/ig, '').trim();
+  const seen = attemptedSet(attempted);
+  const out = [];
+  const add = (q, why, lane, kind, extra) => pushQuery(out, seen, q, why, lane, kind, extra);
+  if (!qSub) return out;
+  for (const a of (seeds.aliases || []).slice(0, 4)) {
+    add((quote(a.label) || a.label), 'newly discovered alias becomes an investigation branch', 'identity-variants', 'web', { family: 'identity-variants', parent: a.parent || a.url });
+    if (topic) add((quote(a.label) || a.label) + ' ' + topic, 'alias × topic from discovered evidence', 'entity-topic', 'web', { family: 'entity-topic' });
+  }
+  for (const g of (seeds.galleries || []).slice(0, 3)) {
+    const host = String(g.domain || hostOf(g.url || '')).replace(/^www\./, '');
+    if (host) add(qSub + ' site:' + host, 'linked public gallery from entity evidence', 'visual-entity-seeded', 'image', { family: 'visual-entity-seeded', parent: g.url });
+  }
+  for (const acc of (seeds.accounts || []).slice(0, 4)) {
+    const host = String(acc.domain || hostOf(acc.url || '')).replace(/^www\./, '');
+    if (host) add(qSub + ' site:' + host, 'discovered account seeds further public metadata', 'accounts', 'web', { family: 'accounts', parent: acc.url });
+    if (acc.handle) add('"' + acc.handle + '" ' + qSub, 'discovered handle corroboration', 'accounts', 'web', { family: 'accounts' });
+  }
+  for (const d of (seeds.domains || []).slice(0, 4)) {
+    const host = String(d.label || d.domain || '').replace(/^www\./, '');
+    if (host && host.includes('.') && !/google|bing|yahoo|duckduckgo|pinterest/.test(host)) {
+      add(qSub + (topic ? ' ' + topic : '') + ' site:' + host, 'associated-source path from discovered domain', 'link-chain', 'web', { family: 'link-chain', parent: d.url });
+    }
+  }
+  return out.slice(0, 14);
+}
+
+export function adaptiveTrace(controller) {
+  refreshAdaptiveRemaining(controller);
+  return {
+    identitiesResolved: controller.identity ? [controller.identity.canonicalName] : [(controller.classification && controller.classification.subject) || ''],
+    aliasesTested: [...new Set([...(controller.aliases || []), ...controller.attempted.filter(q => q.family === 'identity-variants').map(q => q.q)])].slice(0, 16),
+    topicVariants: controller.topicVariants.slice(0, 16),
+    visualPaths: controller.visualPaths.slice(0, 16),
+    accountPaths: controller.accountPaths.slice(0, 16),
+    sourceClassesAttempted: Object.keys(controller.families).filter(id => controller.families[id].attempted > 0),
+    sourceClassesRemaining: controller.sourceClassesRemaining,
+    linkChainDepth: controller.linkChainDepth || 0,
+    iterations: controller.iterations || 0,
+    noveltyLog: controller.noveltyLog.slice(-8),
+    pathsAttempted: controller.pathsAttempted,
+    pathsRemaining: controller.pathsRemaining,
+    stopKind: controller.stopKind || '',
+    headline: controller.headline || '',
+    families: controller.families,
+  };
+}
+
 
 
 

@@ -1,16 +1,19 @@
-Carmen v49.7 (49.7-retrieval-engine) — retrieval-engine correctness
-====================================================================
-Parent: 98422067bd0faf8f9984dc08b80e44f6464b4e23 (v49.6 correctness-ux)
+Carmen v49.8 (49.8-adaptive-investigation) — adaptive open-ended retrieval
+==========================================================================
+Parent: 7735a2e3a3dbea12d271072c840c2167b41fe65f (v49.7 retrieval-engine)
 
-Entity and topic stay coupled through every stage (Deep Dive no longer
-drops the requested topic). Premium discovery is a recursive branch
-(URL ≠ content). Visuals are source-aware, identity-scored, and classified
-(real-person / technique / illustration / anime / cartoon). Variations are
-semantic, not a universal chip dump. Investigation traces answer
-“What Carmen checked” and “Why did you stop.” Account/Premium is restored
-as a real /search?premium=1 branch. Provenance paths corroborate instead
-of duplicating cards.
+Carmen is an investigation engine. It keeps expanding until meaningful
+identity variants, topic variants, visual branches, account paths, and
+link chains are exhausted — or a real resource/access guard requires
+stopping. A raw request count is a safety rail, not the stop logic.
+
+Visual retrieval is a first-class branch seeded from entity evidence.
+Concept classification drives discovery queries (frog-tie visual/tutorial).
+Account/Premium investigates public profiles with provenance. Belle
+Delphine identity collision is enforced before visual ranking.
+“Why did you stop?” distinguishes exhausted / no-novelty / provider /
+resource-guard / access-boundary.
 
 No architecture rewrite. Extends the existing planner + worker engine.
 
-Build identifier: **49.7-retrieval-engine**.
+Build identifier: **49.8-adaptive-investigation**.

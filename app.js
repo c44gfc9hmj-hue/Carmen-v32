@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.7';
+const VERSION = '49.8';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -1941,7 +1941,7 @@ function renderInvestigationTrace(data) {
     }
     if (stopEl) {
       stopEl.innerHTML = stop
-        ? `<p><b>Why did you stop?</b> ${esc(stop.headline || '')}</p><p class="hint">${esc(stop.detail || '')}${stop.notFoundVsNotSearched ? ' · ' + esc(String(stop.notFoundVsNotSearched)) : ''}</p>`
+        ? `<p><b>Why did you stop?</b> ${esc(stop.headline || '')}</p><p class="hint">${esc(stop.detail || '')}${stop.stopKind ? ' · ' + esc(String(stop.stopKind)) : (stop.notFoundVsNotSearched ? ' · ' + esc(String(stop.notFoundVsNotSearched)) : '')}${stop.resourceGuard ? ' · resource safeguard (not investigation-complete)' : ''}${stop.investigationComplete ? ' · investigation complete' : ''}</p>`
         : '';
     }
   };
@@ -3055,7 +3055,7 @@ function renderDiveWorkspace(data, subject) {
     let analysisHtml = '';
     if (writeup) analysisHtml = renderAdaptiveWriteup(writeup, data.paths || lastPaths, subject);
     else if (data.paused || data.analysisSkipped || (data.researchState && data.researchState.stage === 'paused')) {
-      analysisHtml = `<div class="claim inferred"><b>Research paused — more evidence available to continue</b><br>Carmen reached the per-request research budget. Findings so far are kept. Continue to retrieve the next batch. This is not a failed analysis.</div>`;
+      analysisHtml = `<div class="claim inferred"><b>Research paused — more evidence available to continue</b><br>Carmen reached a resource safeguard before all public paths were exhausted. Findings so far are kept. Continue to retrieve the next batch. This is not a failed analysis.</div>`;
     } else if (data.analysisError) analysisHtml = `<div class="claim unknown"><b>Research collected. Analysis unavailable — retry analysis.</b><br>${esc(data.analysisError)}<br><span class="hint">Retrieved sources, images, videos, and leads are kept. Analysis can continue without repeating web research.</span><div class="row" style="margin-top:8px"><button class="btn" data-retry-analysis="1">Retry analysis</button></div></div>`;
     const instruction = plan.instruction || {};
     const ins = instruction.intent ? `<p class="hint">${esc(instruction.intent)}${instruction.topic ? ' · ' + esc(instruction.topic) : ''}</p>` : '';

@@ -59,11 +59,11 @@ const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 
 console.log('--- v49.7 version / hierarchy preserved ---');
 {
-  assert(PLANNER_VERSION === '49.7', 'PLANNER_VERSION 49.7');
-  assert(PLANNER_BUILD === '49.7-retrieval-engine', 'PLANNER_BUILD');
-  assert(appSrc.includes("const VERSION = '49.7'"), 'frontend VERSION');
-  assert(/carmen-build" content="49\.7"/.test(html), 'html build');
-  assert(/v49\.7/.test(html), 'header shows v49.7');
+  assert(PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7', 'PLANNER_VERSION current');
+  assert(PLANNER_BUILD === '49.8-adaptive-investigation' || PLANNER_BUILD === '49.7-retrieval-engine', 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.[78]'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.[78]"/.test(html), 'html build');
+  assert(/v49\.[78]/.test(html), 'header shows current version');
   assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'Deep Dive hierarchy unchanged');
   assert(/data-testid="premium-accounts"/.test(html) && /id="divePremiumBtn"/.test(html), 'Account/Premium button present');
   assert(/premiumAccounts:\s*true/.test(appSrc) && /mode:\s*'premium-accounts'/.test(appSrc), 'Account/Premium is a real retrieval branch');
@@ -348,7 +348,7 @@ console.log('--- health features ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.7' && body.build === '49.7-retrieval-engine', 'health reports 49.7');
+  assert((body.version === '49.8' || body.version === '49.7') && /49\.(8-adaptive-investigation|7-retrieval-engine)/.test(body.build || ''), 'health reports current');
   assert((body.features || []).includes('v49.7-retrieval-engine'), 'feature flag retrieval-engine');
   assert((body.features || []).includes('v49.7-what-carmen-checked'), 'feature flag what-carmen-checked');
   assert((body.features || []).includes('v49.6-state-isolation'), 'v49.6 flags retained');

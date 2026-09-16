@@ -25,8 +25,8 @@ console.log('--- live origin', ORIGIN, '---');
 {
   const h = await getJson('/health', 15000);
   assert(h.status === 200, 'health 200');
-  assert(h.body.version === '49.7' || h.body.version === '49.6', 'deployed version current');
-  assert(/49\.7-retrieval-engine|49\.6-correctness-ux/.test(h.body.build || ''), 'deployed build current');
+  assert(h.body.version === '49.8' || h.body.version === '49.7' || h.body.version === '49.6', 'deployed version current');
+  assert(/49\.8-adaptive-investigation|49\.7-retrieval-engine|49\.6-correctness-ux/.test(h.body.build || ''), 'deployed build current');
   notes.version = h.body.version;
   notes.build = h.body.build;
 }
