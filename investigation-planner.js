@@ -2986,9 +2986,11 @@ export function classifyVisualRelevance(item, classification) {
     return { visualClass: 'unknown', reason: 'person investigation — visual identity not established', demote: false };
   }
   if (type === 'technique' || type === 'skill' || type === 'object') {
-    const animalOnly = /\b(amphibian|tree frog|bullfrog|wildlife|national geographic|natgeofe|pixabay|pxhere|a-z-animals|animalcorner|wallpapers\.com)\b/i.test(blob)
-      && !/\b(bondage|shibari|restraint|kinbaku|hogtie|diagram|tutorial|the duchy|rope bondage)\b/i.test(blob);
-    if (animalOnly || (/\b(tree frog|bullfrog|amphibian|wildlife)\b/i.test(blob) && isRestraintTechnique((classification && classification.subject) || '') && !/\b(bondage|shibari|restraint|kinbaku|diagram|tutorial|position)\b/i.test(blob))) {
+    const hostBlob = String((item && (item.url || item.image || item.pageUrl)) || '');
+    const wildlifeHost = /\b(pixabay|pxhere|a-z-animals|animalcorner|wallpapers\.com|natgeofe|nationalgeographic|unsplash|pexels)\b/i.test(hostBlob);
+    const wildlifeLang = /\b(amphibian|tree frog|bullfrog|wildlife|red-eyed tree frog|common frog)\b/i.test(blob);
+    const techniqueLang = /\b(bondage|shibari|restraint|kinbaku|hogtie|diagram|tutorial|the duchy|rope bondage)\b/i.test(hostBlob + ' ' + String((item && (item.snippet || item.caption)) || ''));
+    if ((wildlifeHost || wildlifeLang) && !techniqueLang && isRestraintTechnique((classification && classification.subject) || '')) {
       return { visualClass: 'unrelated', reason: 'wildlife/animal image is not the classified technique', demote: true };
     }
     return { visualClass: 'real-world-technique', reason: 'technique/object investigation prefers real-world references', demote: false };

@@ -122,6 +122,11 @@ console.log('--- TEST D frog tie concept-to-visual retrieval ---');
   assert(isRestraintTechnique('frog tie') && isRestraintTechnique('frogtie'), 'frog tie classified as restraint technique');
   const wildlife = classifyVisualRelevance({ url: 'https://cdn.pixabay.com/photo/frog.jpg', title: 'green tree frog', snippet: 'amphibian wildlife' }, frog);
   assert(wildlife.demote && wildlife.visualClass === 'unrelated', 'amphibian/wildlife images are demoted for frog-tie');
+  const echoWildlife = classifyVisualRelevance({
+    url: 'https://get.pxhere.com/photo/frogs-frog-amphibian.jpg',
+    title: '"frog tie" (bondage OR shibari OR restraint OR rope)',
+  }, frog);
+  assert(echoWildlife.demote, 'query-echo title does not keep wildlife hosts in the frog-tie visual set');
 }
 
 console.log('--- TEST E frog tie tutorial routing preserved ---');
