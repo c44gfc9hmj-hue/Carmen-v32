@@ -5292,7 +5292,7 @@ async function runDiscovery(query, opts = {}) {
     query: q,
     classification,
     identity: { canonicalName: classification.subject, aliases: [], knownHandles: [], historicalHandles: [], accounts: [] },
-    attempted: attemptedQueries.concat(variants.map(v => v.q)),
+    attempted: attemptedQueries,
     startedAt,
   });
   const wantVisualBranch = isVisualSubject(classification) || visualMore || further || !!visualMode || classification.type === 'technique' || classification.type === 'object' || classification.type === 'person';
