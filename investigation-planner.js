@@ -2986,6 +2986,11 @@ export function classifyVisualRelevance(item, classification) {
     return { visualClass: 'unknown', reason: 'person investigation — visual identity not established', demote: false };
   }
   if (type === 'technique' || type === 'skill' || type === 'object') {
+    const animalOnly = /\b(amphibian|tree frog|bullfrog|wildlife|national geographic|natgeofe|pixabay|pxhere|a-z-animals|animalcorner|wallpapers\.com)\b/i.test(blob)
+      && !/\b(bondage|shibari|restraint|kinbaku|hogtie|diagram|tutorial|the duchy|rope bondage)\b/i.test(blob);
+    if (animalOnly || (/\b(tree frog|bullfrog|amphibian|wildlife)\b/i.test(blob) && isRestraintTechnique((classification && classification.subject) || '') && !/\b(bondage|shibari|restraint|kinbaku|diagram|tutorial|position)\b/i.test(blob))) {
+      return { visualClass: 'unrelated', reason: 'wildlife/animal image is not the classified technique', demote: true };
+    }
     return { visualClass: 'real-world-technique', reason: 'technique/object investigation prefers real-world references', demote: false };
   }
   return { visualClass: 'unknown', reason: 'visual class not established', demote: false };
@@ -3435,6 +3440,33 @@ export function negativeResultReport(pack = {}) {
 // provenance. A request count is a safety rail — not the stop logic.
 // ---------------------------------------------------------------------------
 
+export function isRestraintTechnique(text) {
+  const n = norm(text);
+  if (!n) return false;
+  const compact = n.replace(/\s+/g, '');
+  for (const fam of TECHNIQUE_FAMILIES) {
+    for (const seed of fam.seeds || []) {
+      const s = norm(seed);
+      if (!s) continue;
+      const sc = s.replace(/\s+/g, '');
+      if (n === s || compact === sc) return true;
+      if (s.length >= 6 && (n.includes(s) || compact.includes(sc))) return true;
+    }
+  }
+  return false;
+}
+
+export function conceptVisualSearchQuery(subject, extra) {
+  const seed = String(subject || '').trim();
+  if (!seed) return '';
+  const q = quote(seed) || seed;
+  const extraBit = extra && !/adult content/i.test(extra) ? ' ' + String(extra).trim() : '';
+  if (isRestraintTechnique(seed) || isRestraintTechnique(extraBit)) {
+    return (q + extraBit + ' (bondage OR shibari OR restraint OR rope) (photos OR diagram OR tutorial OR reference)').replace(/\s+/g, ' ').trim();
+  }
+  return (q + extraBit + ' (photos OR images OR reference OR stills OR diagram OR tutorial)').replace(/\s+/g, ' ').trim();
+}
+
 export function conceptOrthographyVariants(concept) {
   const t = String(concept || '').trim();
   if (!t) return [];
@@ -3479,8 +3511,7 @@ export function conceptDiscoveryQueries(concept, classification, attempted, opts
   for (const v of ortho.slice(0, 4)) add(quoted(v), 'exact concept orthography', 'topic-variants', 'web', { sourceClass: 'concept-exact', family: 'topic-variants' });
   if (isTechnique) {
     add(quoted(seed) + ' (restraint OR position)', 'concept class — restraint/position', 'topic-variants', 'web', { sourceClass: 'concept-semantic', family: 'topic-variants' });
-    add(quoted(seed) + ' (reference OR photography)', 'concept visual terminology', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
-    add(quoted(seed) + ' (image OR photos OR "visual reference" OR diagram OR illustration)', 'classified concept must drive visual retrieval', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
+    add(conceptVisualSearchQuery(seed, ''), 'classified concept must drive visual retrieval', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
     add(quoted(seed) + ' (tutorial OR guide OR technique OR "how to")', 'classified concept instructional retrieval', 'instructional', 'web', { sourceClass: 'instructional', family: 'instructional' });
     add(quoted(seed) + ' site:reddit.com', 'source-specific concept discovery', 'source-classes', 'web', { sourceClass: 'community-social', family: 'source-classes' });
     add(quoted(seed) + ' (forum OR blog OR wiki OR glossary)', 'educational/reference concept pages', 'source-classes', 'web', { sourceClass: 'instructional', family: 'source-classes' });
@@ -3541,9 +3572,9 @@ export function visualInvestigationQueries(classification, evidence, attempted, 
     add(qSub + ' (babepedia OR iafd OR "official site") (photos OR gallery OR images)', 'known public profile + images', 'visual', 'image', { sourceClass: 'identity-profile', family: 'visual' });
   }
   if (technique) {
-    add(qSub + ' (image OR photos OR "visual reference")', 'technique visual investigation', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
-    add(qSub + ' (diagram OR illustration OR photography)', 'technique diagram/illustration branch', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
-    add(qSub + ' (tutorial OR guide) (image OR diagram OR stills)', 'technique instructional visual', 'visual', 'image', { sourceClass: 'instructional', family: 'visual' });
+    add(conceptVisualSearchQuery(subject, ''), 'technique visual investigation', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
+    add(qSub + ' (diagram OR illustration OR photography)' + (isRestraintTechnique(subject) ? ' (bondage OR shibari OR restraint)' : ''), 'technique diagram/illustration branch', 'visual', 'image', { sourceClass: 'concept-visual', family: 'visual' });
+    add(qSub + ' (tutorial OR guide) (image OR diagram OR stills)' + (isRestraintTechnique(subject) ? ' (rope OR bondage)' : ''), 'technique instructional visual', 'visual', 'image', { sourceClass: 'instructional', family: 'visual' });
   }
   return out.slice(0, 12);
 }

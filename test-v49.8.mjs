@@ -12,6 +12,8 @@ import {
   identityDisambiguation,
   conceptOrthographyVariants,
   conceptDiscoveryQueries,
+  conceptVisualSearchQuery,
+  isRestraintTechnique,
   identityVariantQueries,
   visualInvestigationQueries,
   entityAssociatedVisualQueries,
@@ -113,7 +115,13 @@ console.log('--- TEST D frog tie concept-to-visual retrieval ---');
   assert(/reddit/.test(blob), 'source-specific frog-tie path exists');
   assert(dq.every(x => /frog/i.test(x.q)), 'concept queries stay on frog tie — not a universal chip dump');
   const vis = visualInvestigationQueries(frog, [], []);
-  assert(vis.some(x => /diagram|illustration|visual reference|image/i.test(x.q)), 'technique visual branch is real retrieval, not a class label');
+  assert(vis.some(x => /diagram|illustration|visual reference|image|photos/i.test(x.q)), 'technique visual branch is real retrieval, not a class label');
+  assert(vis.some(x => /bondage|shibari|restraint|rope/.test(x.q)), 'frog-tie visual queries disambiguate from amphibians');
+  const imgQ = conceptVisualSearchQuery('frog tie', '');
+  assert(/bondage|shibari|restraint/.test(imgQ), 'concept visual search query is restraint-disambiguated');
+  assert(isRestraintTechnique('frog tie') && isRestraintTechnique('frogtie'), 'frog tie classified as restraint technique');
+  const wildlife = classifyVisualRelevance({ url: 'https://cdn.pixabay.com/photo/frog.jpg', title: 'green tree frog', snippet: 'amphibian wildlife' }, frog);
+  assert(wildlife.demote && wildlife.visualClass === 'unrelated', 'amphibian/wildlife images are demoted for frog-tie');
 }
 
 console.log('--- TEST E frog tie tutorial routing preserved ---');
@@ -326,6 +334,8 @@ console.log('--- worker wires adaptive continuation (not a parallel engine) ---'
 {
   assert(/createAdaptiveController/.test(workerSrc) && /decideInvestigationContinuation/.test(workerSrc), 'worker uses planner controller');
   assert(/runAdaptiveQuery/.test(workerSrc), 'adaptive queries reuse existing ddg/bing/image providers');
+  assert(/SEARCH_BUDGET\.max = FETCH_HARD_CAP/.test(workerSrc), 'adaptive continuation uses FETCH_HARD_CAP as the rail, not the first-pass budget');
+  assert(/adaptiveReserve/.test(workerSrc), 'first-pass leaves fetch headroom for adaptive continuation');
   assert(/entityAssociatedVisualQueries/.test(workerSrc), 'entity-seeded visual path wired');
   assert(!/new SearchEngine|parallel retrieval engine/i.test(workerSrc), 'no parallel retrieval engine');
 }

@@ -7,8 +7,11 @@ identity variants, topic variants, visual branches, account paths, and
 link chains are exhausted — or a real resource/access guard requires
 stopping. A raw request count is a safety rail, not the stop logic.
 
+First-pass search leaves fetch headroom; the adaptive loop then raises
+SEARCH_BUDGET to FETCH_HARD_CAP and continues while novelty remains.
 Visual retrieval is a first-class branch seeded from entity evidence.
-Concept classification drives discovery queries (frog-tie visual/tutorial).
+Concept classification drives discovery queries (frog-tie visual/tutorial,
+restraint-disambiguated so amphibian images do not dominate).
 Account/Premium investigates public profiles with provenance. Belle
 Delphine identity collision is enforced before visual ranking.
 “Why did you stop?” distinguishes exhausted / no-novelty / provider /

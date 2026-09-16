@@ -104,6 +104,8 @@ import {
   identityDisambiguation,
   conceptOrthographyVariants,
   conceptDiscoveryQueries,
+  conceptVisualSearchQuery,
+  isRestraintTechnique,
   identityVariantQueries,
   visualInvestigationQueries,
   entityAssociatedVisualQueries,
@@ -1833,7 +1835,7 @@ function imageSearchQuery(q, classification) {
   }, classification, fb);
   let out = '';
   if (classification && (classification.type === 'technique' || classification.type === 'object' || classification.type === 'clothing' || classification.intentClass === 'OBJECT')) {
-    out = '"' + subject + '"' + (extra ? ' ' + extra : '') + ' (photos OR images OR reference OR stills OR diagram OR tutorial)';
+    out = conceptVisualSearchQuery(subject, extra);
   } else if ((adult === 'on' || adult === 'both') && concepts.length) out = '"' + subject + '" ' + concepts[0];
   else if ((adult === 'on' || adult === 'both') && extra) out = '"' + subject + '" ' + extra;
   else if (adult === 'on' && adultLensEntity) out = '"' + subject + '" (photoset OR scene OR models OR gallery)';
@@ -5162,10 +5164,11 @@ async function runDiscovery(query, opts = {}) {
   const topicMap = buildTopicMap(intent, classification);
   const depth = normalizeDepth(opts.depth, classification);
   classification.researchDepth = depth;
-  // Resource guardrail is remaining Worker fetches. Investigation logic is
-  // novelty / unexplored paths — not this number.
-  const defaultCap = Math.max(16, remainingFetches() - 2);
-  const cap = Math.min(opts.budget || defaultCap, Math.max(8, remainingFetches() - (opts.continueBudget ? 6 : 2)));
+  // First-pass cap stays modest so the adaptive controller can actually run.
+  // FETCH_HARD_CAP + the time guard are the resource rails — not this number.
+  const adaptiveReserve = Math.min(16, Math.max(10, Math.floor(remainingFetches() * 0.35)));
+  const firstPassCap = expanded || visualMore || further || visualMode ? 20 : (depth === 'deep' ? 16 : depth === 'contextual' ? 14 : 12);
+  const cap = Math.min(opts.budget || firstPassCap, Math.max(8, remainingFetches() - adaptiveReserve));
   SEARCH_BUDGET = { used: FETCH_COUNT, max: FETCH_COUNT + cap, reserved: SEARCH_BUDGET.reserved || emptyReservedBudget() };
   const graph = discoveryLanes(classification, depth);
   const variants = [];
@@ -5430,8 +5433,8 @@ async function runDiscovery(query, opts = {}) {
       : adultOnPerson
         ? new Set(['identity', 'intersection', 'adult', 'adult-identity', 'productions', 'interviews', 'primary', 'visual', 'accounts', 'identity-variants', 'premium'])
         : new Set(['primary', 'intersection', 'identity', 'visual', 'topic-variants', 'instructional', 'accounts']);
-    const visualReserve = wantVisualBranch ? 8 : 0;
-    const accountReserve = (classification.type === 'person' || intent.premiumAccounts) ? 4 : 0;
+    const visualReserve = wantVisualBranch ? 3 : 0;
+    const accountReserve = (classification.type === 'person' || intent.premiumAccounts) ? 2 : 0;
     let redditLaneDone = false;
     const redditQuery = String(classification.subject || q).replace(/"/g, '').trim() || q;
     for (let i = 0; i < Math.min(webVariants.length, cap); i++) {
@@ -5519,7 +5522,97 @@ async function runDiscovery(query, opts = {}) {
   let ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification, { cap: (isDiveLens || intent.mode === 'find-more' || expanded) ? DIVE_RESULTS_CAP : MAX_RESULTS });
   if (opts.enrich !== false && !visualOnly && !skipLive) ranked = await enrichTopResults(ranked, classification);
 
-  if (!skipLive && !visualOnly && !classification.isUrl && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous') && remainingFetches() > 4) {
+  async function runAdaptiveQuery(qv) {
+    if (!qv || !qv.q) return;
+    addVar(qv.q, qv.why, qv.lane || qv.family, qv.kind, { sourceClass: qv.sourceClass });
+    adaptive.attemptedSet.add(String(qv.q).toLowerCase());
+    if (qv.kind === 'image') await bingImages(qv.q, results, seen, diagnostics, 16, visualHits);
+    else if (qv.kind === 'video') await bingVideos(qv.q, results, seen, diagnostics);
+    else await runVariant(qv, false);
+  }
+
+  let graphLeads = [];
+  {
+    // Adaptive continuation is the investigation loop. First-pass budget is not
+    // the stop condition — FETCH_HARD_CAP + time guard are the rails.
+    SEARCH_BUDGET.max = FETCH_HARD_CAP;
+    const earlyIdentity = buildEntityIdentityRecord(classification, ranked, ranked.filter(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'), graphLeads, {
+      identityConfidence: 'medium',
+    });
+    adaptive.identity = earlyIdentity;
+    classification.entityIdentity = earlyIdentity;
+    adaptive.pending = adaptive.pending.filter(p => !adaptive.attemptedSet.has(String(p.q).toLowerCase()));
+    const seedPack = extractInvestigationSeeds(ranked, classification, { identity: earlyIdentity });
+    enqueueInvestigationPaths(adaptive, seedsToQueries(seedPack, classification, [...adaptive.attemptedSet]));
+    enqueueAdaptiveFamilies(adaptive, {
+      classification,
+      identity: earlyIdentity,
+      evidence: ranked,
+      wantVisual: wantVisualBranch,
+      premiumAccounts: !!intent.premiumAccounts,
+      tutorialIntent: !!intent.tutorialIntent || isTutorialIntent(q) || classification.tutorialIntent,
+      discoveredAccounts: earlyIdentity.accounts || [],
+    });
+    adaptive.pending = adaptive.pending.filter(p => !adaptive.attemptedSet.has(String(p.q).toLowerCase()));
+    if (!skipLive && !visualOnly && !classification.isUrl) {
+      const priorUrls = () => ranked.concat(results).map(r => r.url).filter(Boolean);
+      const priorHosts = () => ranked.concat(results).map(r => hostOf(r.url).replace(/^www\./, '')).filter(Boolean);
+      while (true) {
+        const decision = decideInvestigationContinuation(adaptive, {
+          remainingFetches: remainingFetches(),
+          budgetLeft: remainingFetches() > 2,
+          elapsedMs: Date.now() - startedAt,
+          timeGuardMs: INVESTIGATION_TIME_GUARD_MS,
+          maxIterations: ADAPTIVE_MAX_ITERATIONS,
+          resourceExhausted: remainingFetches() <= 2,
+        });
+        if (!decision.continue) {
+          diagnostics.AdaptiveInvestigation = { stopKind: decision.stopKind, stopClass: decision.stopClass, reason: decision.reason, remaining: decision.remaining, iterations: adaptive.iterations };
+          break;
+        }
+        const batch = nextInvestigationBatch(adaptive, ADAPTIVE_BATCH_SIZE);
+        if (!batch.length) {
+          const stop = decideInvestigationContinuation(adaptive, { remainingFetches: remainingFetches(), budgetLeft: remainingFetches() > 2, elapsedMs: Date.now() - startedAt });
+          diagnostics.AdaptiveInvestigation = { stopKind: stop.stopKind, stopClass: stop.stopClass, reason: stop.reason, remaining: 0, iterations: adaptive.iterations };
+          break;
+        }
+        const urlSnap = new Set(priorUrls());
+        const hostSnap = new Set(priorHosts());
+        for (const qv of batch) {
+          if (remainingFetches() <= 2) break;
+          if (Date.now() - startedAt >= INVESTIGATION_TIME_GUARD_MS) break;
+          await runAdaptiveQuery(qv);
+        }
+        const newItems = results.filter(r => r.url && !urlSnap.has(r.url));
+        const novelty = evaluateNovelty({ items: newItems }, {
+          urls: [...urlSnap],
+          hosts: [...hostSnap],
+          aliases: adaptive.aliases,
+          accounts: adaptive.accounts,
+        });
+        recordInvestigationBatch(adaptive, batch, novelty);
+        if (novelty.meaningful) {
+          ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification, { cap: (isDiveLens || intent.mode === 'find-more' || expanded) ? DIVE_RESULTS_CAP : MAX_RESULTS });
+          if (opts.enrich !== false && remainingFetches() > 4) ranked = await enrichTopResults(ranked, classification);
+          const moreSeeds = extractInvestigationSeeds(ranked, classification, { identity: adaptive.identity });
+          enqueueInvestigationPaths(adaptive, seedsToQueries(moreSeeds, classification, [...adaptive.attemptedSet]));
+          enqueueInvestigationPaths(adaptive, entityAssociatedVisualQueries(classification, newItems, [...adaptive.attemptedSet]));
+          if ((adaptive.identity.aliases || []).length !== (earlyIdentity.aliases || []).length) {
+            enqueueInvestigationPaths(adaptive, identityVariantQueries(classification, adaptive.identity, extraContext(classification) || keepTopic, [...adaptive.attemptedSet]));
+          }
+        }
+      }
+      ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification, { cap: (isDiveLens || intent.mode === 'find-more' || expanded) ? DIVE_RESULTS_CAP : MAX_RESULTS });
+      if (opts.enrich !== false && remainingFetches() > 3) ranked = await enrichTopResults(ranked, classification);
+    } else {
+      const novelty = evaluateNovelty({ items: ranked }, { urls: [], hosts: [] });
+      recordInvestigationBatch(adaptive, [], novelty);
+      const stop = decideInvestigationContinuation(adaptive, { remainingFetches: remainingFetches(), budgetLeft: true, elapsedMs: 0, maxIterations: ADAPTIVE_MAX_ITERATIONS });
+      diagnostics.AdaptiveInvestigation = { stopKind: stop.stopKind, fixture: !!skipLive, reason: stop.reason, remaining: stop.remaining, iterations: adaptive.iterations };
+    }
+  }
+
+  if (!skipLive && !visualOnly && !classification.isUrl && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous') && remainingFetches() > 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
     const hasIdentitySurface = ranked.some(r => {
       const sc = r.sourceClass || classifySourceClass(r, classification);
       if (sc === 'DATABASE' || sc === 'PRIMARY' || sc === 'PUBLIC_PROFILE') return true;
@@ -5545,7 +5638,7 @@ async function runDiscovery(query, opts = {}) {
   const restricted = ranked.filter(r => r.accessState === 'PAYWALLED' || r.accessState === 'AUTHENTICATION_REQUIRED' || r.accessState === 'AGE_RESTRICTED' || r.accessState === 'BLOCKED').length;
   const intersectionCountEarly = ranked.filter(r => r.intersection).length;
   const extraActive = extraContext(classification);
-  if (!skipLive && !visualOnly && !expanded && extraActive && intersectionCountEarly === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+  if (!skipLive && !visualOnly && !expanded && extraActive && intersectionCountEarly === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
     diagnostics.ContinuedSearch = {
       reason: 'first-pass intersection was thin — broadening the entity ∩ context lane, not dumping biography',
       philosophy: 'Progressive intersection retrieval. Semantic variants are planning knowledge, not case evidence.',
@@ -5576,8 +5669,7 @@ async function runDiscovery(query, opts = {}) {
     if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
   }
 
-  let graphLeads = [];
-  if (!skipLive && !visualOnly && depth !== 'broad' && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+  if (!skipLive && !visualOnly && depth !== 'broad' && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
     graphLeads = extractGraphLeads(
       ranked.filter(r => r.provenance === 'RETRIEVED' || r.textExcerpt).map(r => ({
         title: r.title,
@@ -5622,7 +5714,7 @@ async function runDiscovery(query, opts = {}) {
   }
 
   const diversity = sourceDiversityReport(ranked, { adultOn: adult === 'on' || adult === 'both' });
-  if (!skipLive && !visualOnly && shouldOpenMoreAdultLanes(diversity) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+  if (!skipLive && !visualOnly && shouldOpenMoreAdultLanes(diversity) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
     diagnostics.AdultSourceDiversity = {
       reason: 'Adult Lens ON but results were mostly generic indexes / YouTube / Pinterest / mirrors — opening additional adult source lanes',
       genericHeavy: diversity.genericHeavy,
@@ -5688,92 +5780,6 @@ async function runDiscovery(query, opts = {}) {
     }
   }
 
-  async function runAdaptiveQuery(qv) {
-    if (!qv || !qv.q) return;
-    addVar(qv.q, qv.why, qv.lane || qv.family, qv.kind, { sourceClass: qv.sourceClass });
-    adaptive.attemptedSet.add(String(qv.q).toLowerCase());
-    if (qv.kind === 'image') await bingImages(qv.q, results, seen, diagnostics, 16, visualHits);
-    else if (qv.kind === 'video') await bingVideos(qv.q, results, seen, diagnostics);
-    else await runVariant(qv, false);
-  }
-
-  {
-    const earlyIdentity = buildEntityIdentityRecord(classification, ranked, ranked.filter(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'), graphLeads, {
-      identityConfidence: 'medium',
-    });
-    adaptive.identity = earlyIdentity;
-    classification.entityIdentity = earlyIdentity;
-    adaptive.pending = adaptive.pending.filter(p => !adaptive.attemptedSet.has(String(p.q).toLowerCase()));
-    const seedPack = extractInvestigationSeeds(ranked, classification, { identity: earlyIdentity });
-    enqueueInvestigationPaths(adaptive, seedsToQueries(seedPack, classification, [...adaptive.attemptedSet]));
-    enqueueAdaptiveFamilies(adaptive, {
-      classification,
-      identity: earlyIdentity,
-      evidence: ranked,
-      wantVisual: wantVisualBranch,
-      premiumAccounts: !!intent.premiumAccounts,
-      tutorialIntent: !!intent.tutorialIntent || isTutorialIntent(q) || classification.tutorialIntent,
-      discoveredAccounts: earlyIdentity.accounts || [],
-    });
-    adaptive.pending = adaptive.pending.filter(p => !adaptive.attemptedSet.has(String(p.q).toLowerCase()));
-    if (!skipLive && !visualOnly && !classification.isUrl) {
-      const priorUrls = () => ranked.concat(results).map(r => r.url).filter(Boolean);
-      const priorHosts = () => ranked.concat(results).map(r => hostOf(r.url).replace(/^www\./, '')).filter(Boolean);
-      while (true) {
-        const decision = decideInvestigationContinuation(adaptive, {
-          remainingFetches: remainingFetches(),
-          budgetLeft: SEARCH_BUDGET.used < SEARCH_BUDGET.max - 2 && remainingFetches() > 2,
-          elapsedMs: Date.now() - startedAt,
-          timeGuardMs: INVESTIGATION_TIME_GUARD_MS,
-          maxIterations: ADAPTIVE_MAX_ITERATIONS,
-          resourceExhausted: SEARCH_BUDGET.used >= SEARCH_BUDGET.max || remainingFetches() <= 2,
-        });
-        if (!decision.continue) {
-          diagnostics.AdaptiveInvestigation = { stopKind: decision.stopKind, stopClass: decision.stopClass, reason: decision.reason, remaining: decision.remaining, iterations: adaptive.iterations };
-          break;
-        }
-        const batch = nextInvestigationBatch(adaptive, ADAPTIVE_BATCH_SIZE);
-        if (!batch.length) {
-          const stop = decideInvestigationContinuation(adaptive, { remainingFetches: remainingFetches(), budgetLeft: true, elapsedMs: Date.now() - startedAt });
-          diagnostics.AdaptiveInvestigation = { stopKind: stop.stopKind, stopClass: stop.stopClass, reason: stop.reason, remaining: 0, iterations: adaptive.iterations };
-          break;
-        }
-        const urlSnap = new Set(priorUrls());
-        const hostSnap = new Set(priorHosts());
-        for (const qv of batch) {
-          if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max || remainingFetches() <= 2) break;
-          if (Date.now() - startedAt >= INVESTIGATION_TIME_GUARD_MS) break;
-          await runAdaptiveQuery(qv);
-        }
-        const newItems = results.filter(r => r.url && !urlSnap.has(r.url));
-        const novelty = evaluateNovelty({ items: newItems }, {
-          urls: [...urlSnap],
-          hosts: [...hostSnap],
-          aliases: adaptive.aliases,
-          accounts: adaptive.accounts,
-        });
-        recordInvestigationBatch(adaptive, batch, novelty);
-        if (novelty.meaningful) {
-          ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification, { cap: (isDiveLens || intent.mode === 'find-more' || expanded) ? DIVE_RESULTS_CAP : MAX_RESULTS });
-          if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
-          const moreSeeds = extractInvestigationSeeds(ranked, classification, { identity: adaptive.identity });
-          enqueueInvestigationPaths(adaptive, seedsToQueries(moreSeeds, classification, [...adaptive.attemptedSet]));
-          enqueueInvestigationPaths(adaptive, entityAssociatedVisualQueries(classification, newItems, [...adaptive.attemptedSet]));
-          if ((adaptive.identity.aliases || []).length !== (earlyIdentity.aliases || []).length) {
-            enqueueInvestigationPaths(adaptive, identityVariantQueries(classification, adaptive.identity, extraContext(classification) || keepTopic, [...adaptive.attemptedSet]));
-          }
-        }
-      }
-      ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification, { cap: (isDiveLens || intent.mode === 'find-more' || expanded) ? DIVE_RESULTS_CAP : MAX_RESULTS });
-      if (opts.enrich !== false && remainingFetches() > 3) ranked = await enrichTopResults(ranked, classification);
-    } else {
-      const novelty = evaluateNovelty({ items: ranked }, { urls: [], hosts: [] });
-      recordInvestigationBatch(adaptive, [], novelty);
-      const stop = decideInvestigationContinuation(adaptive, { remainingFetches: remainingFetches(), budgetLeft: true, elapsedMs: 0, maxIterations: ADAPTIVE_MAX_ITERATIONS });
-      diagnostics.AdaptiveInvestigation = { stopKind: stop.stopKind, fixture: !!skipLive, reason: stop.reason, remaining: stop.remaining, iterations: adaptive.iterations };
-    }
-  }
-
   ranked = applyExclusions(ranked, { excludeUrls, excludeHosts });
   const knownImageSet = new Set(knownMedia.map(k => visualDedupeKey(k)).filter(Boolean));
   const knownVidSet = new Set(knownVideoIds.map(k => String(k).toLowerCase()).filter(Boolean));
@@ -5801,7 +5807,7 @@ async function runDiscovery(query, opts = {}) {
     const vis = classifyVisualRelevance(im, classification);
     im.visualClass = vis.visualClass;
     im.visualClassReason = vis.reason;
-    if (vis.demote && classification.type === 'person') {
+    if (vis.demote && (classification.type === 'person' || classification.type === 'technique' || classification.type === 'object' || classification.intentClass === 'OBJECT')) {
       visualIdentity.dropped.push({ ...im, primaryCorpus: false, reason: vis.reason || ('visual class ' + vis.visualClass + ' is not identity evidence') });
       continue;
     }
@@ -8613,4 +8619,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing, composeInvestigationQuery, parseInvestigationIntent, resolveKnownEntity, buildTopicMap, plannerLaneQueries, evidenceForResult, isQueryEchoTitle, isRedditSearchPage, isActualRedditEvidence, annotateProvenance, classifyAccountOwnership, mergeInvestigationEvidence, sourceDiversityReport, competingIdentityCandidates, findMoreQueries, moreLikeThisQueries, findDifferentQueries, analyzePayloadKind, PLANNER_BUILD, PLANNER_VERSION, identityIsAmbiguous, applyIdentityFeedback, serializeEvidenceItem, createInvestigationState, applyInvestigationAction, evidenceBuckets, knownSiteAccessStatus, intentClassFor, routeNaturalLanguageResearch, extractImagesFromHtml, describeImageExtraction, looksLikeFirstPartySource, fillTopicMapFromEvidence, isObjectOrTechniquePhrase, isTutorialIntent, parseRetrievalIntents, fictionalNameCollision, semanticVariations, classifyVisualRelevance, classifyMatchQuality, classifyContentType, socialShouldDeprioritize, sourceVolumePenalty, premiumAccessClassification, premiumEscalationQueries, publicAccountQueries, tutorialQueries, detectImpersonator, buildEntityIdentityRecord, buildWhatCarmenChecked, buildWhyDidYouStop, coupleEntityTopic, keepEntityTopicQueries, negativeResultReport, identityDisambiguation, conceptOrthographyVariants, conceptDiscoveryQueries, identityVariantQueries, visualInvestigationQueries, entityAssociatedVisualQueries, accountInvestigationQueries, extractInvestigationSeeds, evaluateNovelty, createAdaptiveController, enqueueInvestigationPaths, nextInvestigationBatch, recordInvestigationBatch, decideInvestigationContinuation, enqueueAdaptiveFamilies, seedsToQueries, adaptiveTrace, ADAPTIVE_TIME_GUARD_MS, ADAPTIVE_MAX_ITERATIONS, ADAPTIVE_BATCH_SIZE };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing, composeInvestigationQuery, parseInvestigationIntent, resolveKnownEntity, buildTopicMap, plannerLaneQueries, evidenceForResult, isQueryEchoTitle, isRedditSearchPage, isActualRedditEvidence, annotateProvenance, classifyAccountOwnership, mergeInvestigationEvidence, sourceDiversityReport, competingIdentityCandidates, findMoreQueries, moreLikeThisQueries, findDifferentQueries, analyzePayloadKind, PLANNER_BUILD, PLANNER_VERSION, identityIsAmbiguous, applyIdentityFeedback, serializeEvidenceItem, createInvestigationState, applyInvestigationAction, evidenceBuckets, knownSiteAccessStatus, intentClassFor, routeNaturalLanguageResearch, extractImagesFromHtml, describeImageExtraction, looksLikeFirstPartySource, fillTopicMapFromEvidence, isObjectOrTechniquePhrase, isTutorialIntent, parseRetrievalIntents, fictionalNameCollision, semanticVariations, classifyVisualRelevance, classifyMatchQuality, classifyContentType, socialShouldDeprioritize, sourceVolumePenalty, premiumAccessClassification, premiumEscalationQueries, publicAccountQueries, tutorialQueries, detectImpersonator, buildEntityIdentityRecord, buildWhatCarmenChecked, buildWhyDidYouStop, coupleEntityTopic, keepEntityTopicQueries, negativeResultReport, identityDisambiguation, conceptOrthographyVariants, conceptDiscoveryQueries, identityVariantQueries, visualInvestigationQueries, entityAssociatedVisualQueries, accountInvestigationQueries, extractInvestigationSeeds, evaluateNovelty, createAdaptiveController, enqueueInvestigationPaths, nextInvestigationBatch, recordInvestigationBatch, decideInvestigationContinuation, enqueueAdaptiveFamilies, seedsToQueries, adaptiveTrace, ADAPTIVE_TIME_GUARD_MS, ADAPTIVE_MAX_ITERATIONS, ADAPTIVE_BATCH_SIZE, conceptVisualSearchQuery, isRestraintTechnique };
