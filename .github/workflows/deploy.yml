@@ -88,6 +88,7 @@ jobs:
           node test-v49.4-identity-anchor.mjs
           node test-v49.4-surgical.mjs
           node test-v49.5.mjs
+          node test-v49.6.mjs
           node test-browser-test.mjs
 
       - name: Install Wrangler

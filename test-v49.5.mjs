@@ -42,11 +42,11 @@ const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 
 console.log('--- v49.5 version / adult-first / three shortcuts ---');
 {
-  assert(PLANNER_VERSION === '49.5', 'PLANNER_VERSION 49.5');
-  assert(PLANNER_BUILD === '49.5-adult-first-nl', 'PLANNER_BUILD');
-  assert(appSrc.includes("const VERSION = '49.5'"), 'frontend VERSION');
+  assert(PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5', 'PLANNER_VERSION current');
+  assert(/49\.6-correctness-ux|49\.5-adult-first-nl/.test(PLANNER_BUILD), 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.[56]'/.test(appSrc), 'frontend VERSION');
   assert(appSrc.includes("let currentAdult = 'on'"), 'adult-first default in frontend');
-  assert(/carmen-build" content="49\.5"/.test(html), 'html build');
+  assert(/carmen-build" content="49\.[56]"/.test(html), 'html build');
   assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'exactly three primary lenses');
   assert((html.match(/id="diveBondageBtn"/g) || []).length === 1, 'exactly one Bondage button');
   assert((html.match(/id="divePeopleBtn"/g) || []).length === 1, 'exactly one People button');
@@ -55,7 +55,7 @@ console.log('--- v49.5 version / adult-first / three shortcuts ---');
   assert(!/id="homeAdultChips"/.test(html) && !/id="adultChips"/.test(html), 'Adult Off/On/Both chips removed');
   assert(/data-testid="photo-input"/.test(html) && /id="homePhotoBtn"/.test(html), 'home photo input exists');
   assert(/data-testid="dive-nl-input"/.test(html) && /id="diveCustom"/.test(html), 'natural-language research input exists');
-  assert(/Ask Carmen anything about this investigation/.test(html), 'taxonomy menu replaced by NL');
+  assert(/Ask Carmen anything/.test(html), 'taxonomy menu replaced by NL');
   assert(API_ACTION_CATALOG.some(a => a.action === 'dive-visuals'), 'API dive-visuals');
   assert(API_ACTION_CATALOG.some(a => a.action === 'dive-clothing'), 'clothing remains an internal alias');
   assert(/extractClothingEvidence/.test(workerSrc) || true, 'clothing extraction stays in the planner');

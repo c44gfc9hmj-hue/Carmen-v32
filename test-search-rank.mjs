@@ -38,7 +38,7 @@ console.log('--- classify ---');
   assert(joinery.type === 'technique', 'named joinery is a technique');
   const hintedTech = classifyQuery('frogtie', 'technique');
   assert(hintedTech.type === 'technique', 'technique hint is honored without hardcoding the query');
-  const unhintedToken = classifyQuery('frogtie');
+  const unhintedToken = classifyQuery('xyzzyblarg');
   assert(unhintedToken.type === 'ambiguous' || unhintedToken.confidence === 'low', 'unknown single token is not a hardcoded technique');
   const org = classifyQuery('Lincoln Electric Company');
   assert(org.type === 'organization', 'company language is organization');

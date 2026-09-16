@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.5';
+const VERSION = '49.6';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -516,6 +516,22 @@ function imgSrc(u) {
 function confidenceLabel(c) {
   return c === 'high' ? 'High confidence' : c === 'medium' ? 'Medium confidence' : 'Low confidence';
 }
+function investigationPhase() {
+  const root = document.documentElement;
+  const busy = root && root.getAttribute('data-carmen-busy') === 'true';
+  const status = root && root.getAttribute('data-carmen-status');
+  const n = lastResults.length;
+  if (status === 'error' && !n) return 'ERROR';
+  if (busy && (status === 'loading' || status === 'searching')) {
+    return lastDiscoveryMeta && lastDiscoveryMeta.expansion ? 'EXPANDING' : 'SEARCHING';
+  }
+  if (lastDiscoveryMeta && lastDiscoveryMeta.noNewSources) return 'EXHAUSTED';
+  if (n && confirmedIdentity.length) return 'IDENTITY_CONFIRMED';
+  if (n && (lastClassification?.type || currentSubject) === 'person' && !selectedEntity && !selectedCandidate) return 'IDENTITY_NEEDS_CONFIRMATION';
+  if (n && (lastVisuals.length || lastVideos.length || lastRelatedPeople.length)) return 'RESULTS_READY';
+  if (n) return 'CANDIDATES_FOUND';
+  return 'IDLE';
+}
 function updateDeepDiveState() {
   const btn = $('deepDiveBtn');
   const hint = $('deepDiveHint');
@@ -526,18 +542,23 @@ function updateDeepDiveState() {
   const ready = !!(selectedCandidate || selectedEntity || hasCandidates);
   btn.disabled = !ready;
   btn.classList.toggle('primary', !!(selectedCandidate || selectedEntity));
-  if (!q && !hasCandidates) {
+  const phase = investigationPhase();
+  if (hasCandidates) {
+    if (!selectedCandidate && !selectedEntity) {
+      hint.textContent = isPerson
+        ? 'Tap the person you mean. A picture is not proof of identity.'
+        : 'Tap a candidate, then Deep Dive.';
+      btn.disabled = false;
+    } else {
+      const name = selectedEntity?.canonicalName || selectedCandidate?.title || 'this investigation';
+      hint.textContent = 'Selected: “' + name + '”. Deep Dive is ready.';
+    }
+  } else if (phase === 'SEARCHING' || phase === 'EXPANDING') {
+    hint.textContent = 'Searching public sources…';
+  } else if (!q) {
     hint.textContent = 'Search, tap what you mean, then Deep Dive.';
-  } else if (!hasCandidates) {
-    hint.textContent = 'No public candidates yet. Search first — Deep Dive will not invent sources.';
-  } else if (!selectedCandidate && !selectedEntity) {
-    hint.textContent = isPerson
-      ? 'Tap the person you mean. A picture is not proof of identity.'
-      : 'Tap a candidate, then Deep Dive.';
-    btn.disabled = false;
   } else {
-    const name = selectedEntity?.canonicalName || selectedCandidate?.title || 'this person';
-    hint.textContent = 'Selected: “' + name + '”. Deep Dive is ready.';
+    hint.textContent = 'No public candidates yet. Search first — Deep Dive will not invent sources.';
   }
 }
 
@@ -786,6 +807,7 @@ function persistSession() {
       lastTopicMap,
       confirmedIdentity,
       rejectedPeople,
+      liveInvestigationId,
     }));
   } catch {}
 }
@@ -910,6 +932,7 @@ function restoreSession() {
     if (s.lastTopicMap) lastTopicMap = s.lastTopicMap;
     if (Array.isArray(s.confirmedIdentity)) confirmedIdentity = s.confirmedIdentity;
     if (Array.isArray(s.rejectedPeople)) rejectedPeople = s.rejectedPeople;
+    if (s.liveInvestigationId) liveInvestigationId = s.liveInvestigationId;
     if (s.selectedUrl) selectedCandidate = lastResults.find(r => r.url === s.selectedUrl) || null;
     renderInterestChips();
     renderLensStack(s.meta || { classification: lastClassification });
@@ -940,6 +963,19 @@ async function discover(opts = {}) {
     || !!(opts.entity)
     || !!(opts.topic && selectedEntity)
     || (!!selectedEntity && opts.keepSubject !== false && !!(opts.visualMore || opts.visualMode || opts.videoMore || opts.append || opts.progressive));
+  const typedNow = ($('searchQuery')?.value || $('homeQuery')?.value || '').trim();
+  const priorSubject = String(selectedEntity?.canonicalName || lastClassification?.subject || researchSubject || '').trim();
+  if (!keepSubject && priorSubject && typedNow) {
+    const priorN = priorSubject.toLowerCase();
+    const typedN = typedNow.toLowerCase();
+    const shares = typedN.includes(priorN) || priorN.includes(typedN.split(/\s+/).slice(0, 2).join(' '));
+    if (!shares) {
+      const qKeep = typedNow;
+      hardNewInvestigation({ silent: true, stay: true });
+      if ($('searchQuery')) $('searchQuery').value = qKeep;
+      if ($('homeQuery')) $('homeQuery').value = qKeep;
+    }
+  }
   const entityName = String(opts.entity || (keepSubject && selectedEntity && selectedEntity.canonicalName) || '').trim();
   const topicName = String(opts.topic != null ? opts.topic : (keepSubject ? diveTopic : '') || '').trim();
   if (!keepSubject) {
@@ -980,6 +1016,7 @@ async function discover(opts = {}) {
   if (!visualMore && !visualMode && !videoMore && !keepSubject) {
     selectedCandidate = null;
     selectedEntity = null;
+    lastResults = [];
     lastVisualCandidates = [];
     lastVisuals = [];
     lastVideos = [];
@@ -988,8 +1025,14 @@ async function discover(opts = {}) {
     attemptedQueries = [];
     lastPremium = [];
     lastRetrievalTrace = null;
+    lastRelatedPeople = [];
+    lastClothingEvidence = [];
+    lastTopicMap = null;
+    lastDiscoveryMeta = null;
     diveTopic = '';
     identityVerdict = null;
+    if ($('suggestBar')) $('suggestBar').innerHTML = '';
+    if ($('topicMap')) $('topicMap').innerHTML = '';
   }
   if (!keepSubject) originalQuery = q;
   else if (entityName) originalQuery = composeInvestigationQuery(originalQuery || entityName, entityName, topicName);
@@ -1176,12 +1219,28 @@ async function discover(opts = {}) {
   } catch (e) {
     if (gen !== discoverGen) return;
     if (e && (e.name === 'AbortError' || /abort/i.test(String(e.message || e)))) return;
+    const msg = String(e.message || e || '');
+    const transient = /\b503\b|\b429\b|temporarily unavailable|UNAVAILABLE/i.test(msg);
+    if (transient) {
+      setAgentState({ status: lastResults.length ? 'complete' : 'error', busy: false, error: '', results: lastResults.length });
+      toast('A source is temporarily unavailable. Carmen is keeping what it already found — this is not evidence that nothing exists.');
+      if (lastResults.length) {
+        renderResults(lastResults);
+        renderVisualCorpus();
+        updateDeepDiveState();
+        return;
+      }
+      $('resultsEmpty').textContent = 'A public source was temporarily unavailable (HTTP 503). This is not evidence that nothing exists.';
+      $('resultsEmpty').classList.remove('hidden');
+      $('searchDiagnostics').textContent = 'Service temporarily unavailable. Existing investigation state was not reset.';
+      return;
+    }
     $('results').innerHTML = '';
-    $('resultsEmpty').textContent = 'Discovery failed: ' + e.message;
+    $('resultsEmpty').textContent = 'Discovery failed: ' + msg;
     $('resultsEmpty').classList.remove('hidden');
     $('searchDiagnostics').textContent = '';
-    setAgentState({ status: 'error', busy: false, error: e.message || String(e), results: lastResults.length });
-    toast('Discovery failed: ' + e.message);
+    setAgentState({ status: 'error', busy: false, error: msg, results: lastResults.length });
+    toast('Discovery failed: ' + msg);
   } finally {
     if (gen === discoverGen) {
       if (btn) btn.disabled = false;
@@ -1409,9 +1468,10 @@ function measurementsForRequest() {
 function renderVisualCorpus() {
   const el = $('visualCorpus');
   if (!el) return;
-  const visuals = lastVisuals.length ? lastVisuals : (lastDiscoveryMeta?.visuals || lastDiscoveryMeta?.visualCorpus || []);
+  const visuals = (lastVisuals.length ? lastVisuals : (lastDiscoveryMeta?.visuals || lastDiscoveryMeta?.visualCorpus || [])).filter(im => im && (im.url || im.src) && /^https?:|^data:image\//i.test(im.url || im.src));
   lastVisuals = visuals;
-  if (!visuals.length) {
+  const failures = (lastDiscoveryMeta && lastDiscoveryMeta.extractionFailures) || lastResults.filter(r => r.imageExtraction && r.imageExtraction.extractionFailed);
+  if (!visuals.length && !failures.length) {
     el.innerHTML = '';
     return;
   }
@@ -1436,6 +1496,15 @@ function renderVisualCorpus() {
         <div class="vcap">${esc((im.domain || '') + (im.title ? ' · ' + String(im.title).slice(0, 48) : ''))}</div>
       </button>`;
     }).join('')}</div>
+    ${failures.length ? failures.slice(0, 8).map(f => {
+      const url = f.url || f.pageUrl || '';
+      const domain = f.domain || '';
+      return `<div class="person-rel" data-testid="extraction-failed">
+        <b>${esc(f.title || domain || 'Source')}</b>
+        <p class="warning">Source found, but images could not be extracted from this page.</p>
+        ${url ? `<div class="row" style="margin-top:8px"><a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open source</a></div>` : ''}
+      </div>`;
+    }).join('') : ''}
     <div class="row" style="margin-top:10px">
       <button class="btn" data-visual-act="more">More images</button>
       <button class="btn" data-visual-act="different">Find different</button>
@@ -1918,13 +1987,11 @@ function renderTopicMap(map) {
   const diversity = lastDiscoveryMeta && lastDiscoveryMeta.sourceDiversity;
   el.innerHTML = `<div class="topic-map-head"><b>${esc(title)}</b>
     ${diag && diag.status && diag.status !== 'ok' ? `<p class="hint">Retrieval status: ${esc(diag.label || diag.status)}. This is not automatically a thin public corpus.</p>` : ''}
-    ${diversity && diversity.shouldOpenMoreAdultLanes ? '<p class="warning">Adult Lens ON but coverage was generic-heavy — additional adult source lanes were opened.</p>' : ''}
     ${lastDiscoveryMeta && lastDiscoveryMeta.redditEvidence === 'unavailable' ? '<p class="hint">Reddit evidence unavailable — search pages are not counted as posts.</p>' : ''}
-  </div>` + tm.branches.map(b => {
+  </div>` + tm.branches.filter(b => Number(b.results || 0) > 0 || (b.status && b.status !== 'pending' && b.status !== 'unexplored' && b.status !== 'thin')).map(b => {
     const n = Number(b.results || 0);
     return `<div class="topic-branch" data-branch="${esc(b.id)}">
-      <div class="tb-h"><b>${esc(b.label)}</b><span class="ev-badge">${esc(b.status || 'pending')} · ${n}</span></div>
-      <div class="subtle">${esc(sourceClassLabel(b.sourceClass))}${b.queries && b.queries[0] ? ' · ' + esc(String(b.queries[0]).slice(0, 72)) : ''}</div>
+      <div class="tb-h"><b>${esc(b.label)}</b><span class="ev-badge">${esc(b.status || 'observed')}${n ? ' · ' + n : ''}</span></div>
     </div>`;
   }).join('');
 }
@@ -1944,16 +2011,14 @@ function resultCardHtml(r, i, isPersonType) {
         <div class="rtitle">${esc(displayName)}</div>
         <div class="rmeta">
           <span class="badge">${esc(r.source || 'Public web')}</span>
-          ${r.retrievalLane ? `<span class="badge">${esc(r.retrievalLane)}</span>` : ''}
           ${r.accessState ? `<span class="badge">${esc(r.accessState)}</span>` : ''}
-          ${kindLabel ? `<span class="badge rkind">${esc(kindLabel)}</span>` : ''}
-          ${r.sourceClass ? `<span class="badge">${esc(sourceClassLabel(r.sourceClass))}</span>` : ''}
         </div>
         <div class="subtle">${esc(r.domain || hostOf(r.url))}</div>
         ${ev ? `<div class="rmeta">${ev}</div>` : ''}
         ${r.reason ? `<div class="rwhy">${esc(r.reason)}</div>` : ''}
         ${personCard ? `<p class="hint">A picture is not proof of identity.</p>` : ''}
         ${r.accessNote ? `<p class="warning">${esc(r.accessNote)}</p>` : ''}
+        ${r.imageExtraction && r.imageExtraction.extractionFailed ? `<p class="warning">Source found, but images could not be extracted from this page.</p>` : ''}
         ${r.publicEvidence ? `<p class="hint">Public evidence (not protected content): ${esc(r.publicEvidence)}</p>` : ''}
         ${r.snippet ? `<div class="rsnippet">${esc(r.snippet)}</div>` : ''}
         ${provenanceRow(r)}
@@ -2014,6 +2079,10 @@ function renderDiagnostics(providers) {
 function renderSearchSuggestions(results) {
   const el = $('suggestBar');
   if (!el) return;
+  if (!results || !results.length) {
+    el.innerHTML = '';
+    return;
+  }
   const notes = [];
   const c = lastClassification;
   if (c && (c.type === 'ambiguous' || c.confidence === 'low')) {
@@ -2027,7 +2096,9 @@ function renderSearchSuggestions(results) {
   }
   const clustered = Object.entries(hosts).filter(([, n]) => n >= 2)[0];
   if (clustered) notes.push('Several results on ' + clustered[0] + ' appear to describe the same entity.');
-  if ((results || []).length >= 3) notes.push('Carmen found ' + results.length + ' public candidates. Choose what to investigate.');
+  if ((results || []).length >= 3 && lastResults.length >= 3) {
+    notes.push('Carmen found ' + results.length + ' public candidates. Choose what to investigate.');
+  }
   el.innerHTML = notes.slice(0, 2).map(n => `<div class="suggest">${esc(n)}</div>`).join('');
 }
 async function saveResultAsEvidence(r) {
@@ -2123,14 +2194,30 @@ function resetInvestigationContext() {
   lastRelatedPeople = [];
   lastClothingEvidence = [];
   pendingPhoto = null;
+  currentSubject = '';
+  currentLensId = 'everything';
+  lastLenses = [];
+  lastInvestigationChoices = [];
+  lastPaths = [];
+  lastFoundThrough = null;
+  selectedInvestigationId = 'everything';
   if ($('diveSearchQuery')) $('diveSearchQuery').value = '';
+  if ($('diveCustom')) $('diveCustom').value = '';
   if ($('diveExpansionNote')) $('diveExpansionNote').classList.add('hidden');
-  if ($('diveLensHint')) $('diveLensHint').textContent = 'One tap investigates that dimension using everything already found — not a repeat of the same search.';
-
+  if ($('diveLensHint')) $('diveLensHint').textContent = 'Tap a shortcut, type anything, or Find More to expand from new evidence.';
   if ($('howHerePanel')) $('howHerePanel').classList.add('hidden');
   if ($('surpriseWhy')) $('surpriseWhy').classList.add('hidden');
   if ($('teachPanel')) $('teachPanel').classList.add('hidden');
   if ($('analyzePanel')) $('analyzePanel').classList.add('hidden');
+  if ($('suggestBar')) $('suggestBar').innerHTML = '';
+  if ($('visualCorpus')) $('visualCorpus').innerHTML = '';
+  if ($('videoCorpus')) $('videoCorpus').innerHTML = '';
+  if ($('graphTrail')) { $('graphTrail').innerHTML = ''; $('graphTrail').classList.add('hidden'); }
+  if ($('identityBanner')) $('identityBanner').innerHTML = '';
+  if ($('resultsEmpty')) {
+    $('resultsEmpty').textContent = 'Public sources will appear here after Search.';
+    $('resultsEmpty').classList.remove('hidden');
+  }
 }
 function hardNewInvestigation(opts = {}) {
   discoverGen++;
@@ -2174,6 +2261,9 @@ function hardNewInvestigation(opts = {}) {
   if ($('classBar')) $('classBar').innerHTML = '';
   if ($('diveStream')) $('diveStream').innerHTML = '';
   if ($('resultCount')) $('resultCount').textContent = '';
+  if ($('searchDiagnostics')) $('searchDiagnostics').textContent = '';
+  if ($('diveIdentity')) $('diveIdentity').innerHTML = '<p class="muted">Search and pick someone or something first. Deep Dive investigates that selection.</p>';
+  try { sessionStorage.removeItem(SESSION_KEY); sessionStorage.removeItem(SESSION_KEY_LEGACY); } catch {}
   persistSession();
   setAgentState({
     status: 'idle',
@@ -2185,6 +2275,7 @@ function hardNewInvestigation(opts = {}) {
     howHere: 'closed',
     investigation: carmenNewInvestigationId(),
   });
+  updateDeepDiveState();
   if (!opts.silent) toast('New investigation. Saved collections stay. Live search state is cleared.');
   if (!opts.stay) setTab('home');
 }
@@ -2221,18 +2312,7 @@ function streamItemsForTab() {
   return { results: ordered.length ? ordered : lastResults, images: lastVisuals.slice(0, 6), videos: lastVideos.slice(0, 4), redditFirst: true };
 }
 function findMoreActions(i, kind) {
-  return `<div class="find-more">
-    <button type="button" data-findmore="who" data-kind="${esc(kind)}" data-i="${i}">Who is this?</button>
-    <button type="button" data-findmore="person" data-kind="${esc(kind)}" data-i="${i}">More from this person</button>
-    <button type="button" data-findmore="like" data-kind="${esc(kind)}" data-i="${i}">More like this</button>
-    <button type="button" data-findmore="similar" data-kind="${esc(kind)}" data-i="${i}">Find similar</button>
-    <button type="button" data-findmore="subject" data-kind="${esc(kind)}" data-i="${i}">Find more</button>
-    <button type="button" data-findmore="topic" data-kind="${esc(kind)}" data-i="${i}">More on this topic</button>
-    <button type="button" data-findmore="source" data-kind="${esc(kind)}" data-i="${i}">More from this source</button>
-    <button type="button" data-findmore="visual" data-kind="${esc(kind)}" data-i="${i}">Search this visual</button>
-    <button type="button" data-findmore="different" data-kind="${esc(kind)}" data-i="${i}">Find different</button>
-    <button type="button" data-findmore="surprise" data-kind="${esc(kind)}" data-i="${i}">Surprise me</button>
-  </div>`;
+  return '';
 }
 function renderDiveStream() {
   const el = $('diveStream');
@@ -2394,6 +2474,7 @@ async function investigateTopic(topic) {
   diveTopic = routed.topic || t;
   if (selectedEntity) selectedEntity.context = diveTopic;
   if ($('diveSearchQuery')) $('diveSearchQuery').value = t;
+  if ($('diveCustom') && !$('diveCustom').value.trim()) $('diveCustom').value = t;
   if ($('diveSearchHint')) $('diveSearchHint').textContent = 'Searching “' + entity + '” + “' + diveTopic + '”. Carmen keeps this subject.';
   setTab('dive');
   await discover({ keepSubject: true, entity, topic: diveTopic, mode: routed.mode || 'intersection' });
@@ -3324,7 +3405,7 @@ function wire() {
   $('homeSearchBtn').onclick = e => { if (e) e.preventDefault(); submitHomeSearch(); };
   if ($('newInvestigationBtn')) $('newInvestigationBtn').onclick = () => hardNewInvestigation();
   if ($('surpriseMeBtn')) $('surpriseMeBtn').onclick = () => surpriseMe();
-  if ($('diveSearchBtn')) $('diveSearchBtn').onclick = () => investigateTopic($('diveSearchQuery')?.value || '');
+  if ($('diveSearchBtn')) $('diveSearchBtn').onclick = () => investigateTopic($('diveCustom')?.value || $('diveSearchQuery')?.value || '');
   if ($('diveBondageBtn')) $('diveBondageBtn').onclick = () => runDiveLens('bondage');
   if ($('divePeopleBtn')) $('divePeopleBtn').onclick = () => runDiveLens('people');
   if ($('diveVisualsBtn')) $('diveVisualsBtn').onclick = () => runDiveLens('visuals');
@@ -3346,6 +3427,9 @@ function wire() {
 
   if ($('diveSearchQuery')) $('diveSearchQuery').addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); investigateTopic($('diveSearchQuery').value); }
+  });
+  if ($('diveCustom')) $('diveCustom').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); investigateTopic($('diveCustom').value); }
   });
   if ($('howGotHereBtn')) $('howGotHereBtn').onclick = () => {
     const panel = $('howHerePanel');

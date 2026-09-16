@@ -1,15 +1,16 @@
-Carmen v49.5 (49.5-adult-first-nl) — surgical product correction
-==============================================================
-Parent: 44e5bc89a28aec0324bf7d93d1b105bb68e50590 (v49.4 surgical)
+Carmen v49.6 (49.6-correctness-ux) — surgical correctness + iPhone UX
+====================================================================
+Parent: 8c1fd77f361099d5ca015c7d98014a0c875acd86 (v49.5 adult-first)
 
-Adult-first by default (Adult Off/On/Both chips removed). Photo is a real
-investigation input. Deep Dive keeps exactly three shortcuts — Bondage /
-People / Visuals — plus one natural-language research box. Clothing stays
-internal. Find More is additive and sends knownMedia. Intent classifies
-PERSON vs OBJECT/TECHNIQUE vs TOPIC vs VISUAL vs URL vs QUESTION before
-person pipelines. Visuals inherit the active investigation.
+Drea Morgan is a first-class identity/extraction regression. Image extraction
+is distinct from source discovery (og:image, srcset, lazy-load, JSON-LD).
+Adult terminology is semantic (subject × topic), not synonym stuffing.
+PERSON vs OBJECT/TECHNIQUE remains correct. New Investigation never leaks
+live state. Deep Dive is Bondage / People / Visuals + one NL box + Find More.
+Find More expands from newly discovered first-party domains. Visuals stay
+subject-aware. HTTP 503 is a service failure, not “nothing exists.”
 
-No architecture rewrite. v49.4 identity, provenance, Machine API,
-browser-test, and external-action safety remain.
+No architecture rewrite. v49.5 adult-first, photo input, Visuals lens, and
+v49.4 identity / provenance / Machine API / external-action safety remain.
 
-Build identifier: **49.5-adult-first-nl**.
+Build identifier: **49.6-correctness-ux**.

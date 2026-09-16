@@ -9,6 +9,31 @@ This is the single canonical Carmen application. There are no separate V25/V32/
 V33/V34/V35 builds — those accumulated during earlier development and have been
 consolidated into this one project.
 
+## Investigation workspace (v49.6)
+
+v49.6 is a surgical correctness + iPhone UX pass on live v49.5. It does not
+rebuild Carmen or replace the investigation engine.
+
+- **Drea Morgan** is the primary public identity/extraction regression. First-party
+  domains (for example a discovered official site) are crawled for accessible
+  evidence; image URLs are extracted, not merely discovered.
+- **Image extraction** covers `img[src]`, lazy-load attributes, srcset,
+  picture/source, Open Graph, Twitter cards, JSON-LD, and embedded JSON. A
+  visual card is only an image result when a usable URL exists. Extraction
+  failure is shown as “Source found, but images could not be extracted.”
+- **Adult terminology is semantic.** Subject × topic, not synonym stuffing.
+  “frog tie” stays OBJECT/TECHNIQUE. “Drea Morgan bondage” stays PERSON × TOPIC.
+- **New Investigation** wipes live search state. Riley Reid → frog tie leaves
+  zero Riley state.
+- **Deep Dive** hierarchy: Bondage / People / Visuals, then “Ask Carmen
+  anything”, then Find More. Clothing stays internal. No giant taxonomy menu.
+- **Find More** expands the evidence graph from newly discovered domains and
+  entities instead of repeating the same query with extra synonyms.
+- **HTTP 503** retries once, preserves successful results, and is never reported
+  as “nothing found.”
+
+Build identifier: **49.6-correctness-ux**.
+
 ## Investigation workspace (v49.4)
 
 v49.4 is a Deep Dive retrieval-architecture pass on live v49.3. It does not

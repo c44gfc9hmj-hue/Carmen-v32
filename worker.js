@@ -65,6 +65,10 @@ import {
   PRIMARY_DIVE_LENSES,
   NO_NEW_SOURCES_MESSAGE,
   primaryDiveLenses,
+  looksLikeFirstPartySource,
+  fillTopicMapFromEvidence,
+  isObjectOrTechniquePhrase,
+  firstPartyDomains,
   isNaiveLensQuery,
   resolveIdentityAnchor,
   subsequentRetrievalFromFeedback,
@@ -340,11 +344,23 @@ async function fetchText(url, init = {}, timeout = SEARCH_TIMEOUT_MS) {
   FETCH_COUNT++;
   noteFetchKind(url);
   SEARCH_BUDGET.used = Math.max(SEARCH_BUDGET.used, FETCH_COUNT);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally { clearTimeout(timer); }
+  const attemptOnce = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally { clearTimeout(timer); }
+  };
+  let res = await attemptOnce();
+  if (res && (res.status === 503 || res.status === 429)) {
+    await new Promise(r => setTimeout(r, 280));
+    if (FETCH_COUNT < FETCH_HARD_CAP) {
+      FETCH_COUNT++;
+      SEARCH_BUDGET.used = Math.max(SEARCH_BUDGET.used, FETCH_COUNT);
+      try { res = await attemptOnce(); } catch { /* keep first 503 */ }
+    }
+  }
+  return res;
 }
 
 const BROWSER_HEADERS = {
@@ -727,45 +743,103 @@ async function yahooImages(q, results, seen, diagnostics, limit, visualHits) {
 
 function extractImagesFromHtml(html, pageUrl) {
   const raw = [];
-  const push = (u) => { if (u && typeof u === 'string') raw.push(u); };
-  const tw = String(html || '').match(/<meta[^>]+(?:name|property)=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)/i)
-    || String(html || '').match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']twitter:image/i);
+  const push = (u) => {
+    if (!u || typeof u !== 'string') return;
+    const t = u.trim();
+    if (!t || t.startsWith('data:image/svg') || t.startsWith('data:image/gif')) return;
+    raw.push(t);
+  };
+  const pushSrcset = (ss) => {
+    if (!ss) return;
+    const parts = String(ss).split(',').map(s => s.trim().split(/\s+/)[0]).filter(Boolean);
+    if (parts.length) push(parts[parts.length - 1]);
+  };
+  const doc = String(html || '');
+  const og = doc.match(/<meta[^>]+property=["']og:image(?::url)?["'][^>]+content=["']([^"']+)/i)
+    || doc.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image(?::url)?["']/i);
+  if (og) push(og[1]);
+  const tw = doc.match(/<meta[^>]+(?:name|property)=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)/i)
+    || doc.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']twitter:image/i);
   if (tw) push(tw[1]);
-  const link = String(html || '').match(/<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)/i);
+  const link = doc.match(/<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)/i);
   if (link) push(link[1]);
   const imgRe = /<img\b([^>]*)>/gi;
   let m;
-  while ((m = imgRe.exec(html || '')) && raw.length < 80) {
+  while ((m = imgRe.exec(doc)) && raw.length < 80) {
     const tag = m[1];
     const src = (tag.match(/\ssrc=["']([^"']+)/i) || [])[1];
-    const data = (tag.match(/\s(?:data-src|data-lazy-src|data-original|data-url)=["']([^"']+)/i) || [])[1];
-    const srcset = (tag.match(/\ssrcset=["']([^"']+)/i) || [])[1];
-    if (srcset) {
-      const parts = srcset.split(',').map(s => s.trim().split(/\s+/)[0]).filter(Boolean);
-      if (parts.length) push(parts[parts.length - 1]);
-    }
+    const data = (tag.match(/\s(?:data-src|data-lazy-src|data-original|data-url|data-lazy|data-image|data-bg|data-full|data-large_image|data-hi-res-src)=["']([^"']+)/i) || [])[1];
+    pushSrcset((tag.match(/\ssrcset=["']([^"']+)/i) || [])[1]);
+    pushSrcset((tag.match(/\sdata-srcset=["']([^"']+)/i) || [])[1]);
     push(data);
     push(src);
   }
+  const picRe = /<source\b([^>]*)>/gi;
+  while ((m = picRe.exec(doc)) && raw.length < 100) {
+    const tag = m[1];
+    pushSrcset((tag.match(/\ssrcset=["']([^"']+)/i) || [])[1]);
+    push((tag.match(/\ssrc=["']([^"']+)/i) || [])[1]);
+  }
+  const nsRe = /<noscript[^>]*>([\s\S]*?)<\/noscript>/gi;
+  while ((m = nsRe.exec(doc)) && raw.length < 100) {
+    const inner = m[1] || '';
+    let im;
+    const innerImg = /<img\b([^>]*)>/gi;
+    while ((im = innerImg.exec(inner)) && raw.length < 100) {
+      push((im[1].match(/\ssrc=["']([^"']+)/i) || [])[1]);
+    }
+  }
   const ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-  while ((m = ldRe.exec(html || '')) && raw.length < 100) {
+  while ((m = ldRe.exec(doc)) && raw.length < 120) {
     try {
       const j = JSON.parse(m[1]);
       const walk = (o) => {
-        if (!o || raw.length > 100) return;
-        if (typeof o === 'string' && /^https?:/i.test(o)) push(o);
-        else if (Array.isArray(o)) o.slice(0, 8).forEach(walk);
+        if (!o || raw.length > 120) return;
+        if (typeof o === 'string') {
+          if (/^https?:/i.test(o) && /(\.(jpe?g|png|webp|gif)(\?|$)|\/(image|photo|media|uploads?|content)\b)/i.test(o)) push(o);
+        } else if (Array.isArray(o)) o.slice(0, 12).forEach(walk);
         else if (typeof o === 'object') {
           if (o.image) walk(o.image);
           if (o.thumbnailUrl) walk(o.thumbnailUrl);
           if (o.contentUrl) walk(o.contentUrl);
-          if (o.url && typeof o.url === 'string' && /\.(jpe?g|png|webp)/i.test(o.url)) walk(o.url);
+          if (o.thumbnail) walk(o.thumbnail);
+          if (o.url && typeof o.url === 'string' && /\.(jpe?g|png|webp|gif)/i.test(o.url)) walk(o.url);
+          if (o['@type'] && /ImageObject/i.test(String(o['@type'])) && o.url) walk(o.url);
         }
       };
       walk(j);
     } catch {}
   }
+  const jsonRe = /<script[^>]+type=["']application\/(?:ld\+)?json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  while ((m = jsonRe.exec(doc)) && raw.length < 140) {
+    const blob = m[1] || '';
+    const urlRe = /https?:\/\/[^"'\\\s>]+\.(?:jpe?g|png|webp)(?:\?[^"'\\\s>]*)?/gi;
+    let u;
+    while ((u = urlRe.exec(blob)) && raw.length < 140) push(u[0]);
+  }
   return rankImages(raw, pageUrl);
+}
+
+function describeImageExtraction(html, pageUrl, retrieved) {
+  const accessible = !!(retrieved && (retrieved.status === 'RETRIEVED' || retrieved.accessState === 'DIRECTLY_RETRIEVED' || retrieved.accessState === 'PARTIALLY_RETRIEVED' || retrieved.accessState === 'PUBLIC_ALTERNATIVE'));
+  const urls = extractImagesFromHtml(html || (retrieved && retrieved.html) || '', pageUrl);
+  const extracted = (retrieved && Array.isArray(retrieved.images) && retrieved.images.length) ? retrieved.images : urls;
+  const n = (extracted || []).filter(Boolean).length;
+  let reason = '';
+  if (!retrieved) reason = 'Source was discovered but the page was not retrieved.';
+  else if (retrieved.status === 'RETRIEVAL_FAILED' || !accessible) {
+    reason = retrieved.accessNote || retrieved.error || 'Page was not accessible.';
+  } else if (!n) reason = 'Source found, but images could not be extracted from this page.';
+  return {
+    sourceDiscovered: true,
+    pageAccessible: !!accessible,
+    imagesFound: n,
+    imageUrlsExtracted: (extracted || []).slice(0, 18),
+    extractionSucceeded: n > 0,
+    extractionFailed: !!accessible && n === 0,
+    reason,
+    visualEvidence: n > 0 ? 'EXTRACTED' : (accessible ? 'UNKNOWN' : 'UNAVAILABLE'),
+  };
 }
 
 function galleryLinks(html, pageUrl) {
@@ -1366,7 +1440,7 @@ const SKIP_IMAGE_RE = /(favicon|sprite|1x1|pixel|tracking|badge\.svg|logo\.(png|
 const NON_NAME_TOKENS = /^(workers?|iphone|ipad|server|engine|cloud|docs?|api|sdk|framework|protocol|database|linux|windows|android|ios|iphones?)$/i;
 const VEHICLE_CUE_RE = /\b(toyota|honda|ford|chevy|chevrolet|nissan|bmw|lincoln|aviator|runner|civic|f-?150|mustang|ram|dodge|jeep|gmc|tesla|hyundai|kia|mazda|subaru|volkswagen|\bvw\b|audi|mercedes|porsche|lexus|acura|cadillac|buick|chrysler|volvo|jaguar|wrangler|silverado|sierra|tacoma|tundra|camry|accord|corolla|truck|suv|pickup|sedan|van|coupe|minivan)\b/i;
 const PROFILE_HOST_RE = /(^|\.)(linkedin|instagram|twitter|x|onlyfans)\.com$/i;
-const TECHNIQUE_WORD_RE = /\b(technique|techniques|position|positions|tutorial|tutorials|how[- ]to|howto|knot|knots|tie|ties|pose|poses|grip|stance|method|procedure|form|hitch|splice|joinery|jig|frog[- ]tie|hog[- ]tie|shibari|kinbaku)\b/i;
+const TECHNIQUE_WORD_RE = /\b(technique|techniques|position|positions|tutorial|tutorials|how[- ]to|howto|knot|knots|tie|ties|pose|poses|grip|stance|method|procedure|form|hitch|splice|joinery|jig|frog[- ]tie|hog[- ]tie|shibari|kinbaku|suspension|rope[- ]bondage|bondage[- ](?:chair|position))\b/i;
 const SKILL_WORD_RE = /\b(weld|welding|welder|woodwork|woodworking|carpentry|fabricat(?:e|ion)|repair|repairs|solder|soldering|machin(?:e|ing)|plumbing|electrical|diy|craft|crafts|build(?:ing)?|project)\b/i;
 const INSTRUCTIONAL_HOST_RE = /(youtube\.com|youtu\.be|wikihow\.com|instructables\.com|wikipedia\.org|reddit\.com|khronos|familyhandyman|thisoldhouse|finewoodworking|lincolnelectric|millerwelds|hobart)/i;
 const TECHNIQUE_HINTS = new Set(['technique', 'position', 'instruction']);
@@ -1431,7 +1505,7 @@ function classifyAccess({ httpStatus, html, url, host, error } = {}) {
     return { accessState: 'BLOCKED', status: 'RETRIEVAL_FAILED', error: 'HTTP ' + httpStatus, note: 'This page is gone or was not found.' };
   }
   if (httpStatus && httpStatus >= 500) {
-    return { accessState: 'UNAVAILABLE', status: 'RETRIEVAL_FAILED', error: 'HTTP ' + httpStatus, note: 'The host did not return a usable page.' };
+    return { accessState: 'UNAVAILABLE', status: 'RETRIEVAL_FAILED', error: 'HTTP ' + httpStatus, note: httpStatus === 503 ? 'The source is temporarily unavailable (HTTP 503). This is not evidence that nothing exists.' : 'The host did not return a usable page.' };
   }
   if (/cloudflare[- ](?:challenge|error)|attention required|just a moment\.\.\.|enable javascript and cookies to continue/i.test(low) && textLen < 500) {
     return { accessState: 'BLOCKED', status: 'RETRIEVAL_FAILED', error: error || 'challenge page', note: 'An anti-bot or challenge page blocked retrieval. Carmen does not bypass it.' };
@@ -1480,11 +1554,11 @@ const CONTEXT_RELATIONS = [
   { id: 'performance', re: /\b(concert|performance|show|tour|stage|set)\b/i, synonyms: 'performance OR concert OR live OR show' },
   { id: 'hobby', re: /\b(hobby|hobbies)\b/i, synonyms: 'hobby OR photos' },
   { id: 'location', re: /\b(in|at|near)\s+[A-Z][A-Za-z.-]+/i, synonyms: 'photos OR event OR location' },
-  { id: 'technique', re: /\b(technique|position|pose|poses|frog[- ]tie|hog[- ]tie|shibari|kinbaku)\b/i, synonyms: 'photos OR video OR reference OR tutorial' },
+  { id: 'technique', re: /\b(technique|position|pose|poses|frog[- ]tie|hog[- ]tie|shibari|kinbaku|suspension)\b/i, synonyms: 'photos OR video OR reference OR tutorial' },
   { id: 'object', re: /\b(harness|collar|gag|chair|cuffs?|restraints?|with|holding|using)\b/i, synonyms: 'photos OR images OR reference' },
 ];
 
-const TRAILING_CONTEXT_RE = /\s+((?:adult(?:\s+content)?)|nsfw|bondage|bdsm|shibari|kinbaku|interview|interviews|photos?|images?|videos?|repair|towing|maintenance|welding)$/i;
+const TRAILING_CONTEXT_RE = /\s+((?:adult(?:\s+content)?)|nsfw|bondage(?:\s+(?:images?|photos?|videos?|scenes?|interview|position))?|bdsm|shibari|kinbaku|restrained|restraint|tied(?:\s+up)?|rope(?:\s+bondage)?|suspension|frog[- ]tie|interview|interviews|photos?|images?|videos?|repair|towing|maintenance|welding)$/i;
 const NAME_PARTICLE_RE = /^(?:d[aeu]|del|della|dei|degli|di|des|van|von|la|le|el|al|bin|ibn|ter|ten|dos|das|do|y|af|st|saint)$/i;
 
 function isNameParticle(w) {
@@ -2431,7 +2505,9 @@ function buildVisualCorpus(results, retrieved, classification, extraHits) {
   const seen = new Set();
   const push = (im) => {
     if (!im) return;
-    const key = visualDedupeKey(im.url || im.image);
+    const rawUrl = im.url || im.image || im.src || '';
+    if (!usableImage(rawUrl)) return;
+    const key = visualDedupeKey(rawUrl);
     if (!key || seen.has(key)) return;
     seen.add(key);
     out.push({
@@ -3268,6 +3344,9 @@ function classifyQuery(q, hint = '') {
   }
   if (hinted === 'tutorial') {
     return done({ type: 'skill', confidence: 'medium', reason: 'Tutorial / instructional research focus', isUrl: false });
+  }
+  if (isObjectOrTechniquePhrase(typeSource) && hinted !== 'person') {
+    return done({ type: 'technique', confidence: 'medium', reason: 'Looks like an object or technique, not a person', isUrl: false, relation: 'technique' });
   }
   const maybeUrl = /^https?:\/\//i.test(raw) || (/^[\w.-]+\.[a-z]{2,}([/:?]|$)/i.test(raw) && !/\s/.test(raw));
   if (maybeUrl) {
@@ -4389,8 +4468,11 @@ function scoreResult(query, item, classification) {
       }
     }
   }
-  if (/official site|official website/i.test(item.snippet || '') || /\/models\/|\/about|\/profile/i.test(url)) {
+  if (/official site|official website/i.test(item.snippet || item.title || '') || /\/models\/|\/about|\/profile/i.test(url)) {
     score += 16; bits.push('likely official or profile page');
+  }
+  if (looksLikeFirstPartySource(item, (classification && classification.subject) || q)) {
+    score += 28; bits.push('first-party / official source for the requested identity');
   }
   if (classification.type === 'person' && nameTokens.length >= 2) {
     const missingName = nameTokens.filter(t => t.length > 2 && !title.includes(t) && !url.includes(t));
@@ -4689,6 +4771,11 @@ async function enrichTopResults(results, classification) {
         const imgs = rankImages([retrieved.ogImage, ...(retrieved.images || []), ...(item.images || [])], retrieved.finalUrl || item.url);
         item.images = imgs.slice(0, 12);
         item.image = item.images[0] || '';
+        item.imageExtraction = retrieved.imageExtraction || describeImageExtraction('', item.url, retrieved);
+        if (item.imageExtraction && item.imageExtraction.extractionFailed) {
+          item.visualEvidence = 'UNKNOWN';
+          item.accessNote = (item.accessNote ? item.accessNote + ' ' : '') + 'Source found, but images could not be extracted from this page.';
+        }
         item.fingerprint = retrieved.fingerprint;
         item.textExcerpt = String(retrieved.textExcerpt || retrieved.text || '').slice(0, 1800);
         item.provenance = 'RETRIEVED';
@@ -5459,6 +5546,15 @@ async function runDiscovery(query, opts = {}) {
     b.status = n > 0 ? 'ran' : (diagnosis.status === 'source_inaccessible' ? 'blocked' : 'thin');
   }
   const discoverySeeds = extractDiscoverySeeds(ranked, intent, { visuals: visualCorpus, graphLeads });
+  Object.assign(topicMap, fillTopicMapFromEvidence(topicMap, ranked, { relatedPeople: discoverySeeds.people, visuals: visualCorpus }));
+  const extractionFailures = ranked.filter(r => r.imageExtraction && r.imageExtraction.extractionFailed).map(r => ({
+    url: r.url,
+    title: r.title,
+    domain: r.domain || hostOf(r.url),
+    reason: (r.imageExtraction && r.imageExtraction.reason) || 'Source found, but images could not be extracted from this page.',
+    pageAccessible: !!(r.imageExtraction && r.imageExtraction.pageAccessible),
+    visualEvidence: 'UNKNOWN',
+  }));
   const expansion = expansionReport(additive, {
     totalResults: ranked.length,
     lens: intent.diveLens || intent.mode || '',
@@ -5570,6 +5666,8 @@ async function runDiscovery(query, opts = {}) {
     discoverySeeds,
     relatedPeople: discoverySeeds.people,
     clothingEvidence: discoverySeeds.clothing,
+    firstPartySources: discoverySeeds.firstParty || [],
+    extractionFailures,
     primaryVisuals,
     visualIdentityDropped: visualIdentity.dropped || [],
     primaryDiveLenses: primaryDiveLenses(),
@@ -7773,7 +7871,7 @@ export default {
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
         api: { docs: '/api', version: 'v1', samePipelineAsIphoneUi: true },
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -8022,6 +8120,7 @@ async function retrieveSource(targetUrl, opts = {}) {
     const text = cleanText(html).slice(0, MAX_TEXT_CHARS);
     const extraImgs = extractImagesFromHtml(html, r.url || url);
     const images = rankImages([meta.ogImage, ...extraImgs], r.url || url).slice(0, 18);
+    const imageExtraction = describeImageExtraction(html, r.url || url, { status: 'RETRIEVED', accessState: access.accessState, images });
     const identifiers = extractPublicIdentifiers(html, r.url || url);
     const graph = harvestPageGraph(html, r.url || url);
     let ogAbs = meta.ogImage;
@@ -8041,6 +8140,7 @@ async function retrieveSource(targetUrl, opts = {}) {
       ogImage: ogAbs || images[0] || '',
       ogVideo,
       images,
+      imageExtraction,
       fingerprint: simpleFingerprint(text),
       retrievedAt: new Date().toISOString(),
       bytes: buf.byteLength,
@@ -8130,4 +8230,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing, composeInvestigationQuery, parseInvestigationIntent, resolveKnownEntity, buildTopicMap, plannerLaneQueries, evidenceForResult, isQueryEchoTitle, isRedditSearchPage, isActualRedditEvidence, annotateProvenance, classifyAccountOwnership, mergeInvestigationEvidence, sourceDiversityReport, competingIdentityCandidates, findMoreQueries, moreLikeThisQueries, findDifferentQueries, analyzePayloadKind, PLANNER_BUILD, PLANNER_VERSION, identityIsAmbiguous, applyIdentityFeedback, serializeEvidenceItem, createInvestigationState, applyInvestigationAction, evidenceBuckets, knownSiteAccessStatus, intentClassFor, routeNaturalLanguageResearch };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing, composeInvestigationQuery, parseInvestigationIntent, resolveKnownEntity, buildTopicMap, plannerLaneQueries, evidenceForResult, isQueryEchoTitle, isRedditSearchPage, isActualRedditEvidence, annotateProvenance, classifyAccountOwnership, mergeInvestigationEvidence, sourceDiversityReport, competingIdentityCandidates, findMoreQueries, moreLikeThisQueries, findDifferentQueries, analyzePayloadKind, PLANNER_BUILD, PLANNER_VERSION, identityIsAmbiguous, applyIdentityFeedback, serializeEvidenceItem, createInvestigationState, applyInvestigationAction, evidenceBuckets, knownSiteAccessStatus, intentClassFor, routeNaturalLanguageResearch, extractImagesFromHtml, describeImageExtraction, looksLikeFirstPartySource, fillTopicMapFromEvidence, isObjectOrTechniquePhrase };

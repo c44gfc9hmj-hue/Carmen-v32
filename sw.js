@@ -1,7 +1,7 @@
 /* Carmen service worker — caches the app shell for offline use.
    Network-first for navigation/JS so a new deploy is picked up immediately;
    cache-first fallback when offline. API routes are never cached. */
-const CACHE = 'carmen-v49.5-adult-first-nl';
+const CACHE = 'carmen-v49.6-correctness-ux';
 const CORE = ['./', './index.html', './app.js', './manifest.webmanifest', './icon.svg'];
 const API_RE = /^\/(health|search|classify|retrieve|source|img|dive|learn|chat|analyze|synthesize|api)(\/|\?|$)/;
 

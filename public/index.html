@@ -10,7 +10,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon.svg">
 <title>Carmen</title>
-<meta name="carmen-build" content="49.5">
+<meta name="carmen-build" content="49.6">
 <style>
 :root{
   color-scheme:dark;
@@ -127,6 +127,7 @@ details.adv summary::-webkit-details-marker{display:none}
 .dive-primary{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .dive-primary .flabel{margin-bottom:8px}
 .dive-primary .row .btn{flex:1 1 0;min-width:96px;text-transform:uppercase;letter-spacing:.06em;font-size:13px}
+.dive-primary textarea{min-height:56px;font-size:16px;border-radius:var(--radius-lg)}
 .dive-primary .btn.active{background:var(--fg);color:var(--bg);border-color:transparent}
 .expansion-note{margin:8px 0 0;font-size:12px;color:var(--muted)}
 .expansion-note b{color:var(--fg)}
@@ -251,7 +252,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <div id="carmenAgentStatus" class="carmen-agent-status" data-testid="carmen-status" aria-live="polite" data-status="idle" data-view="home" data-busy="false">idle · home</div>
 <header class="appbar">
   <div class="rowbits">
-    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.5</span></h1>
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.6</span></h1>
     <button class="btn ghost" id="newInvestigationBtn" type="button" data-testid="new-investigation">New investigation</button>
   </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
@@ -362,11 +363,6 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <div class="card" id="diveIdentityCard">
     <p class="kicker">Investigate</p>
     <div id="diveIdentity"><p class="muted">Search and pick someone or something first. Deep Dive investigates that selection.</p></div>
-    <div class="searchbox" style="margin-top:12px">
-      <input id="diveSearchQuery" data-testid="search-input-dive" placeholder="Tell Carmen what to find — career, related people, videos, original source…" enterkeyhint="search" autocomplete="off">
-      <button class="btn primary" id="diveSearchBtn" type="button" data-testid="search-submit-dive">Search</button>
-    </div>
-    <p class="hint" id="diveSearchHint">Type what you want. Carmen picks the search paths. Bondage, People, and Visuals are shortcuts.</p>
     <div class="dive-primary" id="divePrimaryLenses">
       <p class="flabel">Deep Dive</p>
       <div class="row">
@@ -374,21 +370,25 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
         <button class="btn" id="divePeopleBtn" type="button" data-testid="dive-people">People</button>
         <button class="btn" id="diveVisualsBtn" type="button" data-testid="dive-visuals">Visuals</button>
       </div>
+      <p class="flabel" style="margin-top:14px">Ask Carmen anything:</p>
+      <div class="searchbox stack" style="margin-top:6px">
+        <textarea id="diveCustom" data-testid="dive-nl-input" placeholder="Career, related people, the original source of this image…" rows="2"></textarea>
+        <input id="diveSearchQuery" data-testid="search-input-dive" class="hidden" hidden aria-hidden="true">
+        <button class="btn primary" id="diveSearchBtn" type="button" data-testid="search-submit-dive">Ask</button>
+      </div>
       <div class="row" style="margin-top:8px">
         <button class="btn ghost" id="diveFindMoreBtn" type="button" data-testid="find-more">Find More</button>
       </div>
-      <p class="hint" id="diveLensHint">One tap investigates that dimension using everything already found — not a repeat of the same search.</p>
+      <p class="hint" id="diveLensHint">Tap a shortcut, type anything, or Find More to expand from new evidence.</p>
+      <p class="hint" id="diveSearchHint" hidden>Type what you want. Carmen picks the search paths.</p>
       <p class="expansion-note hidden" id="diveExpansionNote"></p>
     </div>
     <div class="row" style="margin-top:8px">
-
-      <button class="btn ghost" id="howGotHereBtn" type="button" data-testid="how-i-got-here">How I got here?</button>
-      <button class="btn ghost" id="diveSurpriseBtn" type="button">Surprise me</button>
+      <button class="btn ghost" id="howGotHereBtn" type="button" data-testid="how-i-got-here">How I got here</button>
     </div>
     <div class="ws-tabs" id="diveTabs" style="margin-top:12px">
       <button class="chip active" type="button" data-divetab="overview">Overview</button>
       <button class="chip" type="button" data-divetab="posts">Posts</button>
-      <button class="chip" type="button" data-divetab="search">Search</button>
       <button class="chip" type="button" data-divetab="images">Images</button>
       <button class="chip" type="button" data-divetab="sources">Sources</button>
     </div>
@@ -402,23 +402,17 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   <div id="diveStream"></div>
   <div id="teachPanel" class="card hidden"></div>
   <div id="analyzePanel" class="card hidden"></div>
-  <div class="card" id="diveStartCard">
-    <details>
-      <summary style="cursor:pointer;font-weight:600">Ask Carmen anything about this investigation</summary>
-    <h3>What do you want to find out?</h3>
+  <div class="card hidden" id="diveStartCard" hidden>
     <p class="muted" id="diveAdultNote"></p>
     <div id="divePlanner">
       <p id="divePlannerLead" class="muted"></p>
       <div class="pathpick hidden" id="diveSelectChips" hidden></div>
-      <div id="diveQuestionWrap" style="margin-top:8px">
-        <label class="hint">Natural-language research request</label>
-        <textarea id="diveCustom" data-testid="dive-nl-input" placeholder="Show me everything on this person in bondage. Find related people. Find the original source of this image."></textarea>
-      </div>
-      <label class="hint" style="display:flex;gap:8px;align-items:center;margin-top:8px">
+      <div id="diveQuestionWrap" class="hidden" hidden></div>
+      <label class="hint hidden" hidden>
         <input id="diveExpanded" type="checkbox" style="width:auto;flex:0 0 auto"> Look further if sources are blocked
       </label>
       <div class="row" style="margin-top:8px">
-        <button class="btn primary" id="startDiveBtn" data-testid="deep-dive-more">Deep Dive</button>
+        <button class="btn hidden" id="startDiveBtn" data-testid="deep-dive-more">Deep Dive</button>
         <button class="btn hidden" id="continueDiveBtn">Continue</button>
         <button class="btn hidden" id="furtherDiveBtn">Investigate further</button>
         <button class="btn hidden" id="retryAnalysisBtn">Retry analysis</button>
@@ -426,7 +420,6 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
         <button class="btn ghost" id="cancelDiveBtn" data-testid="back-to-search">Back to Search</button>
       </div>
     </div>
-    </details>
   </div>
   <div id="divePaths" class="pathchips hidden"></div>
   <div id="deepDiveProgress"></div>

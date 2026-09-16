@@ -1,8 +1,13 @@
-// Carmen v49.5 — investigation / topic-map planner + ChatGPT-access helpers.
+// Carmen v49.6 — investigation / topic-map planner + ChatGPT-access helpers.
 // Query-centric retrieval is the fallback. The planner independently
 // establishes subject evidence, topic evidence, and intersection evidence,
 // then opens source-class lanes (especially adult) instead of stuffing
 // tokens into one search string.
+//
+// v49.6: Drea Morgan is a first-class identity/extraction regression. Adult
+// terminology is semantic (subject × topic), not synonym stuffing. Image
+// extraction is distinct from source discovery. New Investigation never leaks
+// live state. Find More expands the evidence graph from new domains/pages.
 //
 // v49.5: Adult-first by default. Deep Dive is three investigation shortcuts
 // (Bondage / People / Visuals) plus one natural-language research input.
@@ -17,8 +22,8 @@
 // This module is self-contained: no import from worker.js (avoids cycles).
 // worker.js imports it. The machine-readable API uses these same functions.
 
-export const PLANNER_VERSION = '49.5';
-export const PLANNER_BUILD = '49.5-adult-first-nl';
+export const PLANNER_VERSION = '49.6';
+export const PLANNER_BUILD = '49.6-correctness-ux';
 
 function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
@@ -141,6 +146,30 @@ export const TOPIC_VOCAB = {
   clothing: ['outfit', 'garment', 'dress', 'heels', 'boots', 'collar', 'corset', 'latex', 'leather', 'lingerie', 'harness', 'stockings'],
 };
 
+// Semantic adult family used for INTENT / MATCHING, never concatenated into one giant search string.
+export const ADULT_TOPIC_FAMILY = {
+  bondage: {
+    canonical: 'bondage',
+    related: [
+      'bondage', 'bondage images', 'bondage scene', 'bondage photos', 'bondage videos',
+      'bondage interview', 'bondage position', 'restrained', 'restraint', 'tied', 'tied up',
+      'rope', 'rope bondage', 'shibari', 'kinbaku', 'suspension', 'frog tie', 'frog-tie',
+      'frogtie', 'hogtie', 'hog-tie', 'hog tie', 'metal bondage', 'bdsm', 'fetish', 'kink',
+    ],
+  },
+};
+
+export const OBJECT_TECHNIQUE_TERMS = [
+  'frog tie', 'frog-tie', 'frogtie', 'hog tie', 'hog-tie', 'hogtie',
+  'shibari', 'kinbaku', 'suspension', 'rope bondage', 'bondage chair',
+  'harness', 'spreader', 'cinch', 'ball gag', 'bit gag',
+];
+
+export const INVESTIGATION_PHASES = [
+  'IDLE', 'SEARCHING', 'CANDIDATES_FOUND', 'IDENTITY_NEEDS_CONFIRMATION',
+  'IDENTITY_CONFIRMED', 'RESEARCHING', 'RESULTS_READY', 'EXPANDING', 'EXHAUSTED', 'ERROR',
+];
+
 export const PRIMARY_DIVE_LENSES = [
   { id: 'bondage', label: 'Bondage', mode: 'dive-bondage', topic: 'bondage' },
   { id: 'people', label: 'People', mode: 'dive-people', topic: 'people' },
@@ -153,11 +182,40 @@ export const NO_NEW_SOURCES_MESSAGE = 'No new sources found from the remaining s
 export function topicTerms(topic) {
   const t = norm(topic);
   if (!t) return [];
-  const extra = [];
-  for (const [k, vals] of Object.entries(TOPIC_VOCAB)) {
-    if (t.includes(k) || vals.some(v => t.includes(norm(v)))) extra.push(...vals);
+  // Query construction uses the requested topic tokens only — not the entire synonym family.
+  return [...new Set([t, ...tokens(topic)])].filter(Boolean);
+}
+
+export function relatedTopicFamily(topic) {
+  const t = norm(topic);
+  if (!t) return [];
+  const out = [...topicTerms(topic)];
+  for (const [k, fam] of Object.entries(ADULT_TOPIC_FAMILY)) {
+    const related = fam.related || [];
+    if (t === k || t.includes(k) || related.some(v => t.includes(norm(v)) || norm(v).includes(t))) {
+      out.push(fam.canonical, ...related.map(norm));
+    }
   }
-  return [...new Set([t, ...tokens(topic), ...extra.map(norm)])].filter(Boolean);
+  for (const [k, vals] of Object.entries(TOPIC_VOCAB)) {
+    if (t.includes(k) || vals.some(v => t.includes(norm(v)))) out.push(...vals.map(norm));
+  }
+  return [...new Set(out)].filter(Boolean);
+}
+
+export function isObjectOrTechniquePhrase(text) {
+  const n = norm(text);
+  if (!n) return false;
+  return OBJECT_TECHNIQUE_TERMS.some(term => n === norm(term) || n.startsWith(norm(term) + ' ') || n.includes(' ' + norm(term)));
+}
+
+export function canonicalAdultTopic(text) {
+  const n = norm(text);
+  if (!n) return '';
+  for (const [k, fam] of Object.entries(ADULT_TOPIC_FAMILY)) {
+    if (n === k || n.includes(k)) return fam.canonical;
+    if ((fam.related || []).some(v => n === norm(v) || n.endsWith(' ' + norm(v)))) return fam.canonical;
+  }
+  return '';
 }
 
 // ---------------------------------------------------------------------------
@@ -221,13 +279,29 @@ export function parseInvestigationIntent(query, opts = {}) {
     const stripped = raw.replace(new RegExp(known.names.concat(known.aliases || []).map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'ig'), ' ').replace(FIND_EVERYTHING_RE, ' ').replace(PREMIUM_RE, ' ');
     topic = stripped.replace(/\s+/g, ' ').trim();
   }
+  const objectPhrase = isObjectOrTechniquePhrase(raw) || isObjectOrTechniquePhrase(entity);
   if (!subject && !known) {
     // "Drea Morgan bondage" → subject + topic when trailing known investigative context
-    const trail = raw.match(/^(.+?)\s+(bondage|bdsm|fetish|kink|lawsuits?|transmission problems?|premium accounts?)\s*$/i);
+    const trail = raw.match(/^(.+?)\s+(bondage(?:\s+(?:images?|photos?|videos?|scenes?|interview|position))?|bdsm|fetish|kink|shibari|kinbaku|suspension|restrained|restraint|lawsuits?|transmission problems?|premium accounts?)\s*$/i);
     if (trail) {
-      subject = trail[1].trim();
-      topic = topic || trail[2].trim();
-      if (mode === 'search') mode = 'intersection';
+      const head = trail[1].trim();
+      const tail = trail[2].trim();
+      if (isObjectOrTechniquePhrase(head) || isObjectOrTechniquePhrase(raw)) {
+        // Technique × topic. Never invent a person subject from a position name.
+        topic = topic || raw;
+        if (mode === 'search') mode = 'intersection';
+      } else if (head && !isObjectOrTechniquePhrase(head)) {
+        subject = head;
+        topic = topic || canonicalAdultTopic(tail) || tail;
+        if (mode === 'search') mode = 'intersection';
+      }
+    }
+  }
+  if (objectPhrase && !subject) {
+    // Technique/object queries are not people. The phrase itself is the topic.
+    if (!topic) topic = raw;
+    if (mode === 'search' && canonicalAdultTopic(raw) && norm(raw) !== canonicalAdultTopic(raw)) {
+      // "frog tie bondage" already split; bare "frog tie" stays the topic.
     }
   }
 
@@ -247,6 +321,13 @@ export function parseInvestigationIntent(query, opts = {}) {
 
   let entityTypeHint = String(opts.hint || opts.type || '').trim();
   if (known && !entityTypeHint) entityTypeHint = known.type || 'website';
+  if (objectPhrase && (!entityTypeHint || entityTypeHint === 'person')) entityTypeHint = 'technique';
+
+  const visualIntent = mode === 'dive-visuals' || /visual|image|photo|gallery/i.test(mode) || opts.visualMode || /\b(images?|photos?|visuals?|gallery|photoset)\b/i.test(raw);
+  const relatedTerms = topic ? relatedTopicFamily(topic).filter(t => t && t !== norm(topic)).slice(0, 8) : [];
+  const intentClass = entityTypeHint === 'technique' || entityTypeHint === 'object' || entityTypeHint === 'clothing' || objectPhrase
+    ? 'OBJECT'
+    : (entityTypeHint === 'person' || entityTypeHint === 'social' ? 'PERSON' : (entityTypeHint === 'website' || entityTypeHint === 'url' ? 'URL' : 'TOPIC'));
 
   return {
     rawQuery: raw,
@@ -268,6 +349,11 @@ export function parseInvestigationIntent(query, opts = {}) {
     attemptedQueries: [].concat(opts.attemptedQueries || opts.attempted || []),
     discoveredEntities: Array.isArray(opts.discoveredEntities) ? opts.discoveredEntities : [],
     graphLeads: Array.isArray(opts.graphLeads) ? opts.graphLeads : [],
+    visual: !!visualIntent,
+    relatedTerms,
+    intentClass,
+    objectTechnique: !!objectPhrase,
+    adult: adult === 'on' || adult === 'both' || adult === 'off' ? adult : 'on',
   };
 }
 
@@ -526,6 +612,28 @@ export function buildTopicMap(intent, classification) {
     organizeBy: 'source-class',
     branches: deduped,
   };
+}
+
+export function fillTopicMapFromEvidence(map, results, extras = {}) {
+  const tm = map && typeof map === 'object' ? { ...map, branches: (map.branches || []).map(b => ({ ...b })) } : { branches: [] };
+  const rows = results || [];
+  const peopleN = (extras.relatedPeople || []).filter(p => p && p.name).length;
+  const visualN = (extras.visuals || extras.visualResults || []).filter(v => v && (v.url || v.image)).length;
+  const sourceN = rows.length;
+  tm.counts = { people: peopleN, visuals: visualN, sources: sourceN };
+  tm.branches = (tm.branches || []).map(b => {
+    const id = String(b.id || b.sourceClass || '').toLowerCase();
+    let n = Number(b.results || 0);
+    if (/people|collaborator/.test(id) && peopleN) n = Math.max(n, peopleN);
+    if (/visual|image|gallery/.test(id) && visualN) n = Math.max(n, visualN);
+    const matching = rows.filter(r => {
+      const sc = String(r.sourceClass || r.plannerSourceClass || '').toLowerCase();
+      return sc && (sc === String(b.sourceClass || '').toLowerCase() || sc === String(b.id || '').toLowerCase());
+    });
+    if (matching.length) n = Math.max(n, matching.length);
+    return { ...b, results: n, status: n > 0 ? 'observed' : (b.status && b.status !== 'pending' ? b.status : 'unexplored') };
+  });
+  return tm;
 }
 
 export function plannerLaneQueries(topicMap, opts = {}) {
@@ -1185,6 +1293,38 @@ export function extractClothingEvidence(results, visuals, opts = {}) {
   return out.slice(0, 12);
 }
 
+export function looksLikeFirstPartySource(item, subject) {
+  const title = String((item && item.title) || '');
+  const snippet = String((item && (item.snippet || item.description)) || '');
+  const url = String((item && (item.url || item.pageUrl)) || '');
+  const blob = title + ' ' + snippet;
+  if (/official\s+site|official\s+website/i.test(blob)) return true;
+  const toks = tokens(subject);
+  if (toks.length >= 2) {
+    const camel = toks.map(t => t.charAt(0).toUpperCase() + t.slice(1)).join('');
+    const slug = toks.join('-');
+    const compact = toks.join('');
+    if (camel && url.includes(camel)) return true;
+    if (slug && url.toLowerCase().includes(slug)) return true;
+    if (compact.length >= 8 && new RegExp('/' + compact.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(url)) return true;
+  }
+  if (/\/models\//i.test(url) && toks.length && toks.every(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(url + ' ' + title))) return true;
+  return false;
+}
+
+export function firstPartyDomains(results, subject) {
+  const out = [];
+  const seen = new Set();
+  for (const r of results || []) {
+    if (!looksLikeFirstPartySource(r, subject)) continue;
+    const d = String(r.domain || hostOf(r.url) || '').replace(/^www\./, '').toLowerCase();
+    if (!d || seen.has(d) || GENERIC_INDEX_HOSTS.some(g => d === g || d.endsWith('.' + g))) continue;
+    seen.add(d);
+    out.push({ domain: d, url: r.url, title: r.title, firstParty: true });
+  }
+  return out;
+}
+
 export function extractDiscoverySeeds(results, intent, extras = {}) {
   const subject = String((intent && intent.subject) || '').trim();
   const people = extractRelatedPeople(results, subject, { query: intent && intent.rawQuery });
@@ -1193,6 +1333,7 @@ export function extractDiscoverySeeds(results, intent, extras = {}) {
   const clothing = extractClothingEvidence(results, extras.visuals || [], extras);
   const sourceClasses = [...new Set((results || []).map(r => r.sourceClass || r.plannerSourceClass).filter(Boolean))];
   const domains = [...new Set((results || []).map(r => String(r.domain || hostOf(r.url) || '').replace(/^www\./, '')).filter(Boolean))];
+  const firstParty = firstPartyDomains(results, subject);
   const graphLeads = extras.graphLeads || intent.graphLeads || [];
   const extraLeads = [].concat(extras.relatedPeople || [], graphLeads || [], extras.productions || []);
   for (const g of extraLeads) {
@@ -1247,6 +1388,7 @@ export function extractDiscoverySeeds(results, intent, extras = {}) {
     clothing,
     sourceClasses,
     domains,
+    firstParty,
     graphLeads,
   };
 }
@@ -1372,11 +1514,12 @@ export function buildLensQueries(intent, corpus, attempted, extras = {}) {
 }
 
 export const FIND_MORE_LANE_ORDER = [
-  'unexplored-source-class',
-  'discovered-entity',
+  'first-party-domain',
   'discovered-domain',
-  'collaborator',
+  'discovered-entity',
   'production',
+  'collaborator',
+  'unexplored-source-class',
   'historical',
   'related-topic',
   'visual-source',
@@ -1399,7 +1542,14 @@ export function nextFindMoreLane(intent, corpus, attempted, extras = {}) {
 
   const tryLane = (id) => {
     if (out.length) return;
-    if (id === 'unexplored-source-class') {
+    if (id === 'first-party-domain') {
+      const fp = (seeds.firstParty || [])[0];
+      if (fp && fp.domain && !seen.has((rawSubject + ' site:' + fp.domain).toLowerCase())) {
+        add(subject + ' site:' + fp.domain, 'first-party / official domain ' + fp.domain, id, 'web', { sourceClass: 'creator-owned', relatedTo: fp.domain });
+        add('site:' + fp.domain + ' (gallery OR models OR photoset OR video OR scene)', 'crawl accessible pages on discovered first-party domain', id, 'web', { sourceClass: 'creator-owned', relatedTo: fp.domain });
+        picked.push(id);
+      }
+    } else if (id === 'unexplored-source-class') {
       const catalog = adultOn ? ADULT_SOURCE_CLASSES : ADULT_SOURCE_CLASSES.filter(c => ['interviews', 'identity-profile', 'related-sites', 'archival', 'community-social'].includes(c.id));
       for (const cls of catalog) {
         if (reached.has(cls.id) || reached.has(cls.kind)) continue;
@@ -1673,6 +1823,10 @@ export function corpusDiagnosis(results, diagnostics, intent) {
   const diags = diagnostics || {};
   const providerFails = Object.values(diags).filter(d => d && typeof d === 'object' && (d.error || (d.status >= 400 && d.ok === false)));
   const providerOk = Object.values(diags).filter(d => d && typeof d === 'object' && (d.ok === true || (typeof d.added === 'number' && d.added > 0)));
+  const transient = Object.values(diags).some(d => d && (d.status === 503 || d.status === 429 || /503|temporarily unavailable/i.test(String(d.error || d.note || '')) || d.failureReason === 'unavailable'));
+  if (!n && transient) {
+    return { status: 'search_failed', label: 'temporarily unavailable — not evidence that nothing exists' };
+  }
   if (!n && providerFails.length && !providerOk.length) return { status: 'search_failed', label: 'search failed' };
   if (!n && Object.values(diags).some(d => d && (d.accessState === 'BLOCKED' || d.status === 403))) {
     return { status: 'source_inaccessible', label: 'source inaccessible' };
@@ -2099,7 +2253,8 @@ export function classifyProviderFailure(entry) {
   const status = Number(entry.status) || 0;
   let failureReason = 'UNKNOWN';
   if (/timeout|abort/i.test(err) || entry.timedOut) failureReason = 'timeout';
-  else if (status === 403 || status === 429 || /block|captcha|forbidden/i.test(err) || entry.accessState === 'BLOCKED') failureReason = 'blocked';
+  else if (status === 503 || status === 429 || /temporarily unavailable|503/i.test(err)) failureReason = 'unavailable';
+  else if (status === 403 || /block|captcha|forbidden/i.test(err) || entry.accessState === 'BLOCKED') failureReason = 'blocked';
   else if (status >= 500) failureReason = 'http_error';
   else if (status >= 400) failureReason = 'http_error';
   else if (entry.empty || (typeof entry.added === 'number' && entry.added === 0 && !entry.error)) failureReason = 'empty';
@@ -2187,16 +2342,26 @@ export function newInvestigationId() {
 export function createInvestigationState(opts = {}) {
   return {
     investigationId: opts.investigationId || newInvestigationId(),
+    query: opts.query || '',
+    intent: opts.intent || '',
+    intentClass: opts.intentClass || '',
     subject: opts.subject || '',
     topic: opts.topic || '',
     adultLens: opts.adultLens || opts.adult || 'on',
     entityType: opts.entityType || opts.type || '',
+    phase: opts.phase || 'IDLE',
+    identityCandidates: [],
+    confirmedIdentity: [],
+    discoveredSources: [],
+    results: [],
+    visualResults: [],
+    searchHistory: [],
+    expansionState: { attemptedQueries: [], domains: [], visitedUrls: [], extractedEntities: [], imageUrls: [], mediaUrls: [], rejectedDuplicates: [], blockedSources: [], exhaustedLanes: [] },
     candidates: [],
     visuals: [],
     rejected: { urls: [], hosts: [], images: [], people: [] },
     confirmed: [],
     trail: [{ kind: 'new', label: 'New investigation', at: new Date().toISOString() }],
-    results: [],
     savedEvidence: [],
     parentInvestigationId: opts.parentInvestigationId || null,
     derivedFrom: opts.derivedFrom || null,
@@ -2220,13 +2385,19 @@ export function applyInvestigationAction(state, action, payload = {}) {
     const keptSaved = s.savedEvidence || [];
     const next = createInvestigationState({ adultLens: s.adultLens });
     next.savedEvidence = keptSaved;
+    next.phase = 'IDLE';
     next.trail = [{ kind: 'new', label: 'Hard live-state reset — saved collections kept', at: next.createdAt }];
     return next;
   }
   if (act === 'search' || act === 'identify' || act === 'topic-search' || act === 'intersection' || act === 'find-everything' || act === 'find-more' || act === 'premium-accounts' || act === 'dive-bondage' || act === 'dive-people' || act === 'dive-visuals' || act === 'dive-clothing' || act === 'photo-input') {
     if (payload.subject) s.subject = payload.subject;
     if (payload.topic) s.topic = payload.topic;
+    if (payload.query) s.query = payload.query;
+    if (payload.intent) s.intent = payload.intent;
+    if (payload.intentClass) s.intentClass = payload.intentClass;
     s.retrievalRuns = (s.retrievalRuns || 0) + 1;
+    s.phase = act === 'find-more' ? 'EXPANDING' : 'RESEARCHING';
+    s.searchHistory = [...(s.searchHistory || []), payload.query || act].filter(Boolean).slice(-48);
     pushTrail(act, (payload.query || [s.subject, s.topic].filter(Boolean).join(' + ') || act));
   }
   if (act === 'confirm-identity' || act === 'confirm') {
@@ -2345,6 +2516,7 @@ export const DETERMINISTIC_FIXTURES = {
   'drea-intersection': {
     items: [
       { title: 'Drea Morgan - IAFD', url: 'https://www.iafd.com/person.rme/perfid=dreamorgan', snippet: 'Performer bio and filmography.', source: 'IAFD' },
+      { title: "Drea Morgan's Official Site", url: 'https://dreamorgan.com/models/DreaMorgan.html', snippet: "Drea Morgan's Official Site! Offering full-length videos", source: 'Bing', domain: 'dreamorgan.com' },
       { title: 'Drea Morgan metal bondage photoset at House of Gord', url: 'https://www.houseofgord.com/dreamorgan-cinch', snippet: 'Drea Morgan in a metal bondage feature with cinch straps.', source: 'DuckDuckGo' },
       { title: 'Drea Morgan bondage', url: 'https://example.com/search?q=drea+morgan+bondage', snippet: 'Search results for Drea Morgan bondage', source: 'Bing' },
       { title: 'Reddit public search', url: 'https://www.reddit.com/search/?q=drea', snippet: 'search', source: 'DuckDuckGo' },
