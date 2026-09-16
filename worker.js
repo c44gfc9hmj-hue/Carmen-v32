@@ -123,6 +123,24 @@ import {
   ADAPTIVE_TIME_GUARD_MS,
   ADAPTIVE_MAX_ITERATIONS,
   ADAPTIVE_BATCH_SIZE,
+  buildIdentityVerificationPack,
+  visualEvidenceGate,
+  applyVisualEvidenceGate,
+  dedupeVisualEvidence,
+  findMoreVisualQueries,
+  serializeAdaptiveController,
+  restoreAdaptiveController,
+  persistInvestigationQueue,
+  resumeInvestigationQueue,
+  identityPhaseShouldHoldExpansion,
+  analyzePublicAccountPlan,
+  sourceLifecycleState,
+  parseResearchFocus,
+  adaptiveLensesForFocus,
+  researchFocusQueries,
+  honestResourceStop,
+  queuedWorkSummary,
+  suppressionFromRejection,
 } from './investigation-planner.js';
 
 
@@ -5097,6 +5115,9 @@ async function runDiscovery(query, opts = {}) {
   const adult = normalizeAdult(opts.adult || opts.adultContent);
   const keepEntity = String(opts.entity || '').replace(/"/g, '').trim();
   const keepTopic = String(opts.topic || '').replace(/"/g, '').trim();
+  const researchFocus = parseResearchFocus(opts.researchFocus || opts.focus || opts.hint || '', { type: opts.hint, tutorialIntent: !!opts.tutorialIntent, wantVisual: !!(opts.visualMore || opts.visualMode || opts.wantVisual) });
+  const resumeQueue = opts.resumeQueue || opts.investigationQueue || (opts.investigationState && opts.investigationState.investigationQueue) || null;
+  const resume = opts.resume === true || opts.resume === '1' || !!resumeQueue;
   let q = composeInvestigationQuery(String(query || '').trim().slice(0, 500), keepEntity, keepTopic);
   const hint = String(opts.hint || '').trim();
   const classification = applyResearchFilter(classifyQuery(q, hint), adult, q);
@@ -5132,6 +5153,7 @@ async function runDiscovery(query, opts = {}) {
     excludeHosts,
     priorResults: opts.priorResults || opts.prior || [],
     identityFeedback: opts.identityFeedback || {},
+    researchFocus: opts.researchFocus || researchFocus,
     keepSubject: !!keepEntity,
     diveLens: opts.diveLens || '',
     attemptedQueries,
@@ -5288,14 +5310,31 @@ async function runDiscovery(query, opts = {}) {
       }
     }
   }
-  const adaptive = createAdaptiveController({
-    query: q,
-    classification,
-    identity: { canonicalName: classification.subject, aliases: [], knownHandles: [], historicalHandles: [], accounts: [] },
-    attempted: attemptedQueries,
-    startedAt,
+  const adaptive = resumeQueue
+    ? restoreAdaptiveController(resumeQueue, {
+        query: q,
+        classification,
+        identity: { canonicalName: classification.subject, aliases: [], knownHandles: [], historicalHandles: [], accounts: [] },
+        attempted: attemptedQueries,
+        startedAt,
+      })
+    : createAdaptiveController({
+        query: q,
+        classification,
+        identity: { canonicalName: classification.subject, aliases: [], knownHandles: [], historicalHandles: [], accounts: [] },
+        attempted: attemptedQueries,
+        startedAt,
+      });
+  const wantVisualBranch = isVisualSubject(classification) || visualMore || further || !!visualMode || classification.type === 'technique' || classification.type === 'object' || classification.type === 'person' || researchFocus.includes('visuals');
+  const identityHold = identityPhaseShouldHoldExpansion(classification, intent.identityFeedback, {
+    identityPhase: opts.identityPhase === true,
+    confirmIdentity: opts.confirmIdentity || intent.mode === 'confirm-identity',
+    findMore: !!opts.findMore,
+    diveLens: opts.diveLens || intent.diveLens,
+    premiumAccounts: !!intent.premiumAccounts,
+    forceFullInvestigation: resume || !!keepTopic || opts.findMore || !!opts.diveLens || intent.mode === 'confirm-identity',
+    mode: intent.mode,
   });
-  const wantVisualBranch = isVisualSubject(classification) || visualMore || further || !!visualMode || classification.type === 'technique' || classification.type === 'object' || classification.type === 'person';
   enqueueAdaptiveFamilies(adaptive, {
     classification,
     identity: adaptive.identity,
@@ -5304,6 +5343,9 @@ async function runDiscovery(query, opts = {}) {
     wantVisual: wantVisualBranch,
     premiumAccounts: !!intent.premiumAccounts,
     tutorialIntent: !!intent.tutorialIntent || isTutorialIntent(q) || classification.tutorialIntent,
+    researchFocus,
+    identityFeedback: intent.identityFeedback,
+    identityPhase: identityHold,
   });
   for (const qv of adaptive.pending) {
     addVar(qv.q, qv.why, qv.lane || qv.family, qv.kind, { sourceClass: qv.sourceClass });
@@ -5552,6 +5594,9 @@ async function runDiscovery(query, opts = {}) {
       premiumAccounts: !!intent.premiumAccounts,
       tutorialIntent: !!intent.tutorialIntent || isTutorialIntent(q) || classification.tutorialIntent,
       discoveredAccounts: earlyIdentity.accounts || [],
+      researchFocus,
+      identityFeedback: intent.identityFeedback,
+      identityPhase: identityHold,
     });
     adaptive.pending = adaptive.pending.filter(p => !adaptive.attemptedSet.has(String(p.q).toLowerCase()));
     if (!skipLive && !visualOnly && !classification.isUrl) {
@@ -5815,6 +5860,32 @@ async function runDiscovery(query, opts = {}) {
   }
   visualIdentity.kept = classKept;
   visualCorpus = visualIdentity.kept.concat(visualIdentity.dropped.map(im => ({ ...im, primaryCorpus: false })));
+  {
+    const known = (knownMedia || []).concat((opts.knownVisuals || []).map(v => v.url || v.image || v)).filter(Boolean);
+    const deduped = dedupeVisualEvidence(visualIdentity.kept, known);
+    const gated = applyVisualEvidenceGate(deduped.unique, classification, {
+      identityFeedback: intent.identityFeedback,
+      topic: extraContext(classification) || keepTopic || intent.topic,
+      subject: classification.subject,
+    });
+    diagnostics.VisualEvidenceGate = {
+      verified: gated.verified.length,
+      unverified: gated.unverified.length,
+      rejected: gated.rejected.length,
+      duplicatesRemoved: deduped.duplicatesRemoved,
+    };
+    visualIdentity.kept = gated.verified;
+    visualIdentity.dropped = (visualIdentity.dropped || []).concat(gated.rejected).concat(gated.unverified.map(im => ({ ...im, unverifiedVisual: true })));
+    visualCorpus = gated.verified.concat(gated.unverified.map(im => ({ ...im, primaryCorpus: false, unverifiedVisual: true })));
+    if ((visualMore || visualMode === 'more' || intent.mode === 'find-more') && gated.verified.length === 0) {
+      diagnostics.NO_NEW_RELEVANT_VISUALS = {
+        reason: 'Find More did not produce additional unique, relevant visual evidence after the visual evidence gate and dedupe.',
+        rejected: gated.rejected.length,
+        unverified: gated.unverified.length,
+        duplicatesRemoved: deduped.duplicatesRemoved,
+      };
+    }
+  }
   const primaryVisuals = visualIdentity.kept;
   const wrongPersonVisuals = visualIdentity.dropped.filter(im => im.identityCollision || im.identityGrade === 'unverified' && im.identityCollision);
 
@@ -5825,9 +5896,10 @@ async function runDiscovery(query, opts = {}) {
     if (key && knownVidSet.has(key)) { duplicateMediaRejected++; return false; }
     return true;
   });
-  const noNewMedia = (visualMore || videoMore || visualMode === 'more') && visualCorpus.length === 0 && videoCorpus.length === 0;
-  if (noNewMedia) {
-    diagnostics.NO_NEW_MEDIA = { reason: 'same media IDs returned — pivoting to the next query class', attempted: attemptedQueries.length };
+  const noNewRelevantVisuals = !!(diagnostics.NO_NEW_RELEVANT_VISUALS);
+  const noNewMedia = ((visualMore || videoMore || visualMode === 'more') && visualIdentity.kept.length === 0 && videoCorpus.length === 0) || noNewRelevantVisuals;
+  if (noNewMedia && !diagnostics.NO_NEW_MEDIA) {
+    diagnostics.NO_NEW_MEDIA = { reason: noNewRelevantVisuals ? 'no additional unique relevant visual evidence after the visual evidence gate' : 'same media IDs returned — pivoting to the next query class', attempted: attemptedQueries.length };
   }
   const pivot = providerPivotReport(diagnostics);
   const sourceClassesReached = [...new Set(ranked.map(r => r.sourceClass).filter(Boolean))];
@@ -5843,6 +5915,7 @@ async function runDiscovery(query, opts = {}) {
 
   const buckets = evidenceBuckets(ranked);
   const identityCluster = competingIdentityCandidates(ranked, classification, { identityFeedback: intent.identityFeedback, subject: classification.subject });
+  const identityVerification = buildIdentityVerificationPack(ranked, classification, { identityFeedback: intent.identityFeedback, subject: classification.subject });
   const diagnosis = corpusDiagnosis(ranked, diagnostics, intent);
   const providerStatuses = Object.fromEntries(Object.entries(diagnostics).map(([k, v]) => [k, { ...(v || {}), ...classifyProviderFailure(v) }]));
   const knownSiteStatus = diagnostics.KnownSite ? knownSiteAccessStatus(diagnostics.KnownSite) : null;
@@ -5895,6 +5968,30 @@ async function runDiscovery(query, opts = {}) {
     const note = 'Restricted or incomplete sources triggered a public-alternative search. Carmen does not bypass paywalls or logins.';
     warning = warning ? warning + ' ' + note : note;
   }
+  if (noNewRelevantVisuals) {
+    const note = 'Carmen did not find additional unique, relevant visual evidence. Unrelated images were not appended.';
+    warning = warning ? warning + ' ' + note : note;
+  }
+
+  const resourceStop = (adaptive.stopKind === 'E') ? honestResourceStop(adaptive, { iterations: adaptive.iterations, sourceClasses: sourceClassesReached }) : null;
+  const investigationState = persistInvestigationQueue(createInvestigationState({
+    query: q,
+    subject: classification.subject,
+    topic: keepTopic || extraContext(classification) || '',
+    researchFocus,
+    investigationId: opts.investigationId || (opts.investigationState && opts.investigationState.investigationId) || undefined,
+  }), adaptive, {
+    visualCandidates: visualCorpus,
+    verifiedVisuals: visualIdentity.kept,
+    rejectedVisuals: (visualIdentity.dropped || []).filter(im => im.visualGate === 'rejected' || im.identityCollision),
+    stopKind: (resourceStop && resourceStop.stopKind) || adaptive.stopKind,
+    headline: (resourceStop && resourceStop.headline) || adaptive.headline,
+  });
+  investigationState.identityFeedback = intent.identityFeedback || investigationState.identityFeedback;
+  investigationState.identityVerification = identityVerification;
+  investigationState.canonicalEntities = [...new Set([].concat((intent.identityFeedback && intent.identityFeedback.confirmed) || [], investigationState.canonicalEntities || []))].filter(Boolean);
+  investigationState.resumable = !!(adaptive.pending && adaptive.pending.length);
+  const queueSummary = queuedWorkSummary(adaptive);
 
   return {
     query: q,
@@ -5922,6 +6019,7 @@ async function runDiscovery(query, opts = {}) {
     identityCandidates: identityCluster.candidates,
     identityAmbiguous: !!identityCluster.ambiguous,
     identityAmbiguousReason: identityCluster.reason || '',
+    identityVerification,
     sourceDiversity: diversity,
     corpusDiagnosis: diagnosis,
     redditEvidence: redditUnavailable ? 'unavailable' : (redditResultCount(ranked) ? 'present' : 'none'),
@@ -5967,6 +6065,7 @@ async function runDiscovery(query, opts = {}) {
     duplicateMediaRejected,
     premiumContent,
     noNewMedia,
+    noNewRelevantVisuals,
     noNewSources: !!(additive.exhausted && lensMode),
     noNewSourcesMessage: (additive.exhausted && lensMode) ? NO_NEW_SOURCES_MESSAGE : '',
     expansion,
@@ -6081,6 +6180,20 @@ async function runDiscovery(query, opts = {}) {
       inaccessible: ranked.filter(r => /BLOCKED|UNAVAILABLE|AUTHENTICATION_REQUIRED|PAYWALLED/.test(r.accessState || '')).map(r => ({ url: r.url, accessState: r.accessState })),
       identityInsufficient: !!identityCluster.ambiguous,
     }),
+    researchFocus,
+    investigationQueue: investigationState.investigationQueue,
+    investigationState,
+    remainingWork: investigationState.remainingWork || [],
+    remainingQueue: queueSummary,
+    resumable: !!investigationState.resumable,
+    investigationComplete: adaptive.stopKind === 'A' || adaptive.stopKind === 'B' ? true : false,
+    stopKind: (resourceStop && resourceStop.stopKind) || adaptive.stopKind || '',
+    stopHeadline: (resourceStop && resourceStop.headline) || adaptive.headline || '',
+    verifiedVisuals: visualIdentity.kept,
+    rejectedVisuals: (visualIdentity.dropped || []).filter(im => im.visualGate === 'rejected'),
+    unverifiedVisuals: (visualCorpus || []).filter(im => im.unverifiedVisual || im.visualGate === 'unverified'),
+    adaptiveLenses: adaptiveLensesForFocus(researchFocus, classification),
+    identityPhase: !!identityHold,
   };
 }
 
@@ -6108,10 +6221,14 @@ function classifyHandler(req) {
   const classification = applyQuestionToClassification(applyResearchFilter(classifyQuery(q, hint), adult, q), u.searchParams.get('question') || '');
   const depth = normalizeDepth(u.searchParams.get('depth') || '', classification);
   const interpreted = interpretRequest(classification, u.searchParams.get('question') || '');
+  const researchFocus = parseResearchFocus(u.searchParams.get('focus') || u.searchParams.get('researchFocus') || hint, { type: hint || classification.type, tutorialIntent: isTutorialIntent(q) });
+  const adaptiveLenses = adaptiveLensesForFocus(researchFocus, classification);
   return json({
     classification,
     depth,
-    lenses: interestLenses(classification.type, classification),
+    researchFocus,
+    lenses: adaptiveLenses.length ? adaptiveLenses : interestLenses(classification.type, classification),
+    adaptiveLenses,
     investigationChoices: investigationChoices(classification.type, classification),
     paths: researchPaths(classification.type, classification),
     concepts: interpreted.concepts,
@@ -6164,6 +6281,18 @@ async function searchWeb(req) {
   const confirmed = (u.searchParams.get('confirmedIdentity') || '').split(',').map(x => x.trim()).filter(Boolean);
   const rejectedPeople = (u.searchParams.get('rejectedPeople') || '').split(',').map(x => x.trim()).filter(Boolean);
   const rejectedImages = (u.searchParams.get('rejectedImages') || '').split(',').map(x => x.trim()).filter(Boolean);
+  const researchFocus = u.searchParams.get('focus') || u.searchParams.get('researchFocus') || '';
+  const resume = u.searchParams.get('resume') === '1' || u.searchParams.get('resume') === 'true';
+  const confirmIdentity = u.searchParams.get('confirmIdentity') === '1' || u.searchParams.get('confirmIdentity') === 'true' || intentMode === 'confirm-identity';
+  const identityPhase = u.searchParams.get('identityPhase') === '1' || u.searchParams.get('identityPhase') === 'true';
+  const pendingQueue = parseAttemptedList(u.searchParams.get('pendingQueue') || '');
+  let resumeQueue = null;
+  try {
+    if (u.searchParams.get('investigationQueue')) resumeQueue = JSON.parse(u.searchParams.get('investigationQueue'));
+  } catch {}
+  if (!resumeQueue && pendingQueue.length) {
+    resumeQueue = { pending: pendingQueue.map(q => ({ q, family: 'resume', why: 'resumed queued investigation path', lane: 'resume', kind: 'web' })), attemptedQueries: attemptedQueries };
+  }
   const fixture = (u.searchParams.get('fixture') || '').trim();
   const diagnostic = u.searchParams.get('diagnostic') === '1' || u.searchParams.get('diagnostic') === 'true';
   let priorResults = [];
@@ -6198,6 +6327,12 @@ async function searchWeb(req) {
     graphLeads,
     fixture,
     diagnostic,
+    researchFocus,
+    resume,
+    resumeQueue,
+    confirmIdentity,
+    identityPhase,
+    wantVisual: researchFocus.split(/[,+|]/).map(s => s.trim().toLowerCase()).includes('visuals') || visualMore || !!visualMode,
   });
   return json(discovery, 200, req);
 }
@@ -6406,6 +6541,30 @@ async function analyzeEvidenceObject(req, env, body) {
   if (kind === 'reddit' && isRedditSearchPage(url, title)) {
     unknowns.push('A Reddit search page is not Reddit evidence.');
   }
+  const subject = String(body.subject || evidence.subject || '').trim();
+  const handle = String(body.handle || evidence.handle || evidence.accountHandle || '').replace(/^@/, '');
+  const accountPlan = url ? analyzePublicAccountPlan(url, { subject, type: 'person' }, { handle, subject }) : null;
+  const lifecycle = sourceLifecycleState({
+    url,
+    retrievalStatus: retrieved && retrieved.status,
+    provenance: retrieved && retrieved.status,
+    accessState: retrieved && retrieved.accessState,
+  }, { analyzed: true, verified: !!(retrieved && retrieved.status === 'RETRIEVED') });
+  if (accountPlan && /onlyfans|fansly|loyalfans|manyvids|patreon/i.test(accountPlan.host || url)) {
+    unknowns.push(accountPlan.boundary);
+    unknowns.push('Finding or opening a public profile URL is not content retrieval. Carmen does not bypass authentication, paywalls, DRM, or access controls.');
+  }
+  let publicRefs = [];
+  if (accountPlan && accountPlan.queries && accountPlan.queries.length && remainingFetches() > 6) {
+    try {
+      const qv = accountPlan.queries[0];
+      const hits = [];
+      const seen = new Set();
+      await ddg(qv.q, hits, seen, {});
+      publicRefs = (hits || []).slice(0, 6).map(h => ({ title: h.title, url: h.url, domain: h.domain || hostOf(h.url), why: qv.why, provenance: 'DISCOVERED' }));
+      if (publicRefs.length) supported.push({ field: 'indexedPublicReferences', value: publicRefs.length + ' public references found for this handle/profile', provenance: 'SEARCH' });
+    } catch {}
+  }
   const payload = {
     kind,
     title: title || (kind + ' evidence'),
@@ -6418,6 +6577,12 @@ async function analyzeEvidenceObject(req, env, body) {
     videoFrames: kind === 'video' ? frames : undefined,
     retrieved: retrieved ? { status: retrieved.status, accessState: retrieved.accessState, url: retrieved.finalUrl || retrieved.url } : null,
     audit: { inputKind: kind, usedVision: false, usedPageBody: !!(retrieved && retrieved.status === 'RETRIEVED') },
+    accountPlan,
+    sourceLifecycle: lifecycle,
+    publicReferences: publicRefs,
+    neverBypassAuth: true,
+    accessBoundary: lifecycle.accessBoundary,
+    note: lifecycle.note,
   };
   if (getApiKey(env) && excerpt) {
     try {
@@ -7780,6 +7945,15 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
     identityCandidates: discovery.identityCandidates,
     identityAmbiguous: discovery.identityAmbiguous,
     identityAmbiguousReason: discovery.identityAmbiguousReason,
+    identityVerification: discovery.identityVerification,
+    investigationQueue: discovery.investigationQueue,
+    remainingWork: discovery.remainingWork,
+    remainingQueue: discovery.remainingQueue,
+    resumable: discovery.resumable,
+    researchFocus: discovery.researchFocus,
+    noNewRelevantVisuals: discovery.noNewRelevantVisuals,
+    verifiedVisuals: discovery.verifiedVisuals,
+    adaptiveLenses: discovery.adaptiveLenses,
     identityState: identityStateFrom(state, discovery),
     relationships: relationshipsFrom(discovery, state),
     retrievalLanes: retrievalLanesFrom(discovery),
@@ -8099,6 +8273,13 @@ async function handleCarmenApi(req, env) {
     fixture,
     diagnostic,
     enrich: !fixture,
+    researchFocus: body.researchFocus || body.focus || state.researchFocus || '',
+    resume: body.resume === true || action === 'resume' || action === 'continue',
+    resumeQueue: body.resumeQueue || body.investigationQueue || state.investigationQueue || null,
+    confirmIdentity: action === 'confirm-identity' || body.confirmIdentity === true,
+    identityPhase: body.identityPhase === true,
+    investigationId: state.investigationId,
+    investigationState: state,
   });
   const packed = packApiDiscovery(discovery, state, action || 'search', req, { diagnostic, env });
   return json(packed, 200, req);
@@ -8260,7 +8441,7 @@ export default {
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
         api: { docs: '/api', version: 'v1', samePipelineAsIphoneUi: true },
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants', 'v49.9-identity-verification', 'v49.9-persistent-queue', 'v49.9-visual-evidence-gate', 'v49.9-find-more-unique', 'v49.9-research-focus', 'v49.9-adaptive-lens-focus', 'v49.9-analyze-public-account'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);

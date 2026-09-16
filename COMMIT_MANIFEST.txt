@@ -1,22 +1,19 @@
-Carmen v49.8 (49.8-adaptive-investigation) — adaptive open-ended retrieval
+Carmen v49.9 (49.9-identity-queue-visual) — identity + queue + visual gate
 ==========================================================================
-Parent: 7735a2e3a3dbea12d271072c840c2167b41fe65f (v49.7 retrieval-engine)
+Parent: 9cb6289 (v49.8 adaptive-investigation)
 
-Carmen is an investigation engine. It keeps expanding until meaningful
-identity variants, topic variants, visual branches, account paths, and
-link chains are exhausted — or a real resource/access guard requires
-stopping. A raw request count is a safety rail, not the stop logic.
+Incremental production fix. Extends the v49.8 planner + worker engine.
+Does not rebuild Carmen or replace retrieval.
 
-First-pass search leaves fetch headroom; the adaptive loop then raises
-SEARCH_BUDGET to FETCH_HARD_CAP and continues while novelty remains.
-Visual retrieval is a first-class branch seeded from entity evidence.
-Concept classification drives discovery queries (frog-tie visual/tutorial,
-restraint-disambiguated so amphibian images do not dominate).
-Account/Premium investigates public profiles with provenance. Belle
-Delphine identity collision is enforced before visual ranking.
-“Why did you stop?” distinguishes exhausted / no-novelty / provider /
-resource-guard / access-boundary.
+- PERSON identity-first verification pack (small candidate set, multiple Yes,
+  “Not this person” is negative evidence).
+- Persistent investigation queue survives Worker resource/time rails and is
+  resumable. StopKind E never says “Research complete.”
+- Visual evidence gate: entity + topic + visual relevance. UNVERIFIED VISUAL
+  when Carmen cannot verify. Find More returns unique relevant visuals or none.
+- Research Focus PERSON/VISUALS/TUTORIAL/CLOTHING/POSITION/URL/TOPIC are real
+  planner branches. Adaptive Lens follows focus. Topic follow-up is entity×topic.
+- Analyze investigates public account metadata only. Never bypasses auth.
+- Deep Dive snaps/transitions into the investigation view.
 
-No architecture rewrite. Extends the existing planner + worker engine.
-
-Build identifier: **49.8-adaptive-investigation**.
+Build identifier: **49.9-identity-queue-visual**.

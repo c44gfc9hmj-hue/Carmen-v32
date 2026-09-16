@@ -9,6 +9,32 @@ This is the single canonical Carmen application. There are no separate V25/V32/
 V33/V34/V35 builds — those accumulated during earlier development and have been
 consolidated into this one project.
 
+## Investigation workspace (v49.9)
+
+v49.9 is an incremental production fix on live v49.8. It does not rebuild
+Carmen or replace the planner/worker retrieval architecture.
+
+- **Identity first.** PERSON searches gather a small high-quality candidate set.
+  Confirm with “Yes, this is the person” (multiple positives allowed). “Not this
+  person” is negative evidence, not a visual dismiss.
+- **Confirmation starts the investigation.** After identity is confirmed, Carmen
+  expands the selected Research Focus (PERSON / VISUALS / TUTORIAL / CLOTHING /
+  POSITION / URL / TOPIC) as real planner branches.
+- **VISUALS** means images + videos + galleries. A search-engine image is not
+  automatically evidence. The visual evidence gate requires entity match +
+  query/topic match + visual relevance, or labels **UNVERIFIED VISUAL**.
+- **Find More** returns additional unique, relevant visuals — or honestly says
+  none remain. Wildlife, stock, first-name-only, and identity collisions are not
+  success.
+- **Persistent queue.** If a Worker execution hits a resource/time rail, queued
+  work is persisted and resumable. StopKind E never says “Research complete.”
+- **Adaptive Lens** follows Research Focus. Topic follow-up is a genuine
+  entity × topic investigation. Deep Dive snaps into the investigation view.
+- **Analyze** on a discovered account investigates public metadata only. Never
+  bypasses authentication, paywalls, DRM, or private accounts.
+
+Build identifier: **49.9-identity-queue-visual**.
+
 ## Investigation workspace (v49.6)
 
 v49.6 is a surgical correctness + iPhone UX pass on live v49.5. It does not

@@ -10,7 +10,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon.svg">
 <title>Carmen</title>
-<meta name="carmen-build" content="49.8">
+<meta name="carmen-build" content="49.9">
 <style>
 :root{
   color-scheme:dark;
@@ -118,6 +118,9 @@ details.adv summary::-webkit-details-marker{display:none}
 .person-tile img.hero{width:100%;height:min(62vw,300px);object-fit:cover;display:block;background:#050607}
 .person-tile .rbody{padding:12px}
 .person-tile.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.id-verify{margin:8px 0 14px}
+.id-card .racts button.primary{background:var(--accent);color:var(--accent-fg);border-color:transparent}
+.visual-tile.unverified .vcap{color:var(--warn)}
 .person-tile .pname{font-size:20px;letter-spacing:-.03em;font-weight:620;margin:0 0 4px}
 .result.person .hero{height:min(58vw,280px)}
 .dive-id{display:flex;gap:14px;align-items:stretch}
@@ -252,7 +255,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <div id="carmenAgentStatus" class="carmen-agent-status" data-testid="carmen-status" aria-live="polite" data-status="idle" data-view="home" data-busy="false">idle · home</div>
 <header class="appbar">
   <div class="rowbits">
-    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.8</span></h1>
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.9</span></h1>
     <button class="btn ghost" id="newInvestigationBtn" type="button" data-testid="new-investigation">New investigation</button>
   </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
@@ -301,13 +304,14 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
         <p class="flabel">Research Focus</p>
         <div class="chips" id="subjectChips" style="margin-top:0">
           <button class="chip" data-subject="person">Person</button>
-          <button class="chip" data-subject="visuals">Visuals</button>
+          <button class="chip" data-subject="visuals" title="Images, videos, galleries, and other visual media">Visuals</button>
           <button class="chip" data-subject="position">Position</button>
           <button class="chip" data-subject="tutorial">Tutorial</button>
           <button class="chip" data-subject="clothing">Clothing</button>
           <button class="chip" data-subject="website">URL</button>
           <button class="chip" data-subject="topic">Topic</button>
         </div>
+        <p class="hint">Multi-select. VISUALS means images + videos + galleries. Selecting a focus does not mean that branch has succeeded — Carmen has to actually run it.</p>
       </div>
       <div class="stage" id="interestBlock" style="margin-top:10px">
         <h3>Adaptive lenses</h3>
@@ -353,7 +357,9 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   </div>
   <div class="card">
     <h3 id="resultsHeading">Results <span id="resultCount" class="badge"></span></h3>
-    <p class="hint" id="identifyHint">For a person, tap the image that matches. A picture is not proof of identity.</p>
+    <p class="hint" id="identifyHint">For a person, confirm the identity first. A picture is not proof of identity.</p>
+    <div id="identityVerify" data-testid="identity-verify"></div>
+    <div id="resumeQueue" class="hidden" data-testid="resume-queue"></div>
     <div id="selectedBanner"></div>
     <div id="graphTrail" class="graph-trail hidden"></div>
     <div id="topicMap" class="topic-map"></div>

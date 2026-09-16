@@ -21,7 +21,7 @@ page.setDefaultTimeout(90000);
 try {
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   const html = await page.content();
-  assert(/carmen-build" content="49\.[678]"/.test(html), 'html build current');
+  assert(/carmen-build" content="49\.[6789]"/.test(html), 'html build current');
   assert(await page.getByTestId('new-investigation').count() === 1, 'New investigation');
   await page.getByTestId('nav-dive').click({ force: true });
   assert(await page.getByTestId('dive-bondage').count() === 1, 'Bondage shortcut');
