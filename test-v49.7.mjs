@@ -59,12 +59,12 @@ const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 
 console.log('--- v49.7 version / hierarchy preserved ---');
 {
-  assert(PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7', 'PLANNER_VERSION current');
-  assert(PLANNER_BUILD === '49.12-investigation-workflow' || PLANNER_BUILD === '49.11-exact-source-retrieval' || PLANNER_BUILD === '49.9-identity-queue-visual' || PLANNER_BUILD === '49.8-adaptive-investigation' || PLANNER_BUILD === '49.7-retrieval-engine', 'PLANNER_BUILD');
-  assert(/const VERSION = '49\.(?:[7-9]|11|12)'/.test(appSrc), 'frontend VERSION');
-  assert(/carmen-build" content="49\.(?:[7-9]|11|12)"/.test(html), 'html build');
-  assert(/v49\.(?:[7-9]|11|12)/.test(html), 'header shows current version');
-  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'Deep Dive hierarchy unchanged');
+  assert(PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7', 'PLANNER_VERSION current');
+  assert(PLANNER_BUILD === '49.13-investigation-actions' || PLANNER_BUILD === '49.12-investigation-workflow' || PLANNER_BUILD === '49.11-exact-source-retrieval' || PLANNER_BUILD === '49.9-identity-queue-visual' || PLANNER_BUILD === '49.8-adaptive-investigation' || PLANNER_BUILD === '49.7-retrieval-engine', 'PLANNER_BUILD');
+  assert(/const VERSION = '49.(?:[7-9]|11|12|13)'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49.(?:[7-9]|11|12|13)"/.test(html), 'html build');
+  assert(/v49.(?:[7-9]|11|12|13)/.test(html), 'header shows current version');
+  assert(PRIMARY_DIVE_LENSES.map(l => l.id).includes('bondage') && PRIMARY_DIVE_LENSES.map(l => l.id).includes('visuals'), 'Deep Dive hierarchy still has Bondage + Visuals');
   assert(/data-testid="premium-accounts"/.test(html) && /id="divePremiumBtn"/.test(html), 'Account/Premium button present');
   assert(/premiumAccounts:\s*true/.test(appSrc) && /mode:\s*'premium-accounts'/.test(appSrc), 'Account/Premium is a real retrieval branch');
   assert(/data-testid="what-carmen-checked"/.test(html) && /data-testid="why-did-you-stop"/.test(html), 'What Carmen checked / Why did you stop UI');
@@ -97,7 +97,7 @@ console.log('--- TEST B entity × topic coupling ---');
   const naive = isNaiveLensQuery('Riley Reid bondage photoset', { subject: 'Riley Reid', topic: 'bondage', diveLens: 'bondage' });
   assert(naive === false, 'sourced intersection is not a naive lens clone');
   const clone = isNaiveLensQuery('Riley Reid bondage', { subject: 'Riley Reid', topic: 'bondage', diveLens: 'bondage' });
-  assert(clone === true, 'bare subject+topic clone is naive once already attempted');
+  assert(clone === false, 'Bondage branch person × bondage is the entity-specific investigation, not a naive skip');
   const rileyB = applyResearchFilter(classifyQuery('Riley Reid bondage'), 'on', 'Riley Reid bondage');
   const inter = scoreResult('Riley Reid bondage', {
     title: 'Riley Reid bondage scene credits',
@@ -348,7 +348,7 @@ console.log('--- health features ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert((body.version === '49.12' || body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7') && /49\.(12-investigation-workflow|11-exact-source-retrieval|9-identity-queue-visual|8-adaptive-investigation|7-retrieval-engine)/.test(body.build || ''), 'health reports current');
+  assert((body.version === '49.13' || body.version === '49.12' || body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7') && /49\.(13-investigation-actions|12-investigation-workflow|11-exact-source-retrieval|9-identity-queue-visual|8-adaptive-investigation|7-retrieval-engine)/.test(body.build || ''), 'health reports current');
   assert((body.features || []).includes('v49.7-retrieval-engine'), 'feature flag retrieval-engine');
   assert((body.features || []).includes('v49.7-what-carmen-checked'), 'feature flag what-carmen-checked');
   assert((body.features || []).includes('v49.6-state-isolation'), 'v49.6 flags retained');

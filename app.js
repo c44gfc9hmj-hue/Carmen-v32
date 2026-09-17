@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.12';
+const VERSION = '49.13';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -1135,7 +1135,7 @@ async function discover(opts = {}) {
       params.set('pendingQueue', lastInvestigationQueue.pending.map(p => p.q || p).filter(Boolean).slice(0, 24).join('\n'));
     }
     if (opts.confirmIdentity) params.set('confirmIdentity', '1');
-    if (opts.identityPhase || (lastClassification?.type === 'person' && !confirmedIdentity.length && !opts.confirmIdentity && !opts.findMore && !opts.diveLens && !opts.resume)) params.set('identityPhase', '1');
+    if (opts.identityPhase || (lastClassification?.type === 'person' && !confirmedIdentity.length && !opts.confirmIdentity && !opts.findMore && !opts.diveLens && !opts.resume && !opts.recreatePosition)) params.set('identityPhase', '1');
     if (rejectedCandidateIds.length) params.set('rejectedCandidateIds', rejectedCandidateIds.slice(0, 12).join(','));
     if (expanded) params.set('expanded', '1');
     if (visualMore || visualMode === 'more') params.set('visualMore', '1');
@@ -1158,7 +1158,9 @@ async function discover(opts = {}) {
     if (opts.moreFromThisPerson) params.set('moreFromThisPerson', '1');
     if (opts.moreOnThisTopic) params.set('moreOnThisTopic', '1');
     if (opts.diveLens) params.set('diveLens', opts.diveLens);
+    if (opts.recreatePosition || opts.mode === 'recreate-position') params.set('recreatePosition', '1');
     if (opts.mode && /^dive-/.test(opts.mode)) params.set('mode', opts.mode);
+    if (opts.mode === 'recreate-position') params.set('mode', 'recreate-position');
     if (confirmedIdentity.length) params.set('confirmedIdentity', confirmedIdentity.slice(0, 6).join(','));
 
     if (rejectedPeople.length) params.set('rejectedPeople', rejectedPeople.slice(0, 8).join(','));
@@ -1621,21 +1623,29 @@ function renderFocusPrompt() {
   const name = (canonicalPerson && canonicalPerson.canonicalName) || confirmedIdentity[0] || lastClassification?.subject || '';
   el.classList.remove('hidden');
   el.innerHTML = `<div class="focus-prompt" data-testid="focus-prompt">
-    <p class="flabel">Research Focus</p>
+    <p class="flabel">Investigate</p>
     <h3>What do you want to investigate about ${esc(name)}?</h3>
-    <p class="hint">PERSON + VISUALS searches images, videos, and galleries. PERSON + CAREER searches work and credits. The lens below changes with your selection.</p>
-    <div class="row" style="margin-top:10px">
-      <button class="btn primary" type="button" id="focusInvestigateBtn" data-testid="focus-investigate">Investigate</button>
+    <p class="hint">Bondage, Visuals, and Accounts / Premium are real retrieval branches. They stay on this person.</p>
+    <div class="dive-actions" style="margin-top:10px">
+      <button class="btn" type="button" data-focus-go="bondage" data-testid="focus-bondage">Bondage</button>
+      <button class="btn" type="button" data-focus-go="visuals" data-testid="focus-visuals">Visuals</button>
+      <button class="btn" type="button" data-focus-go="accounts" data-testid="focus-accounts">Accounts / Premium</button>
+      <button class="btn primary" type="button" data-focus-go="dive" data-testid="focus-investigate">Deep Dive</button>
     </div>
   </div>`;
-  const btn = $('focusInvestigateBtn');
-  if (btn) btn.onclick = () => {
-    awaitingFocus = false;
-    el.innerHTML = '';
-    el.classList.add('hidden');
-    const entity = (canonicalPerson && canonicalPerson.canonicalName) || confirmedIdentity[0] || lastClassification?.subject || '';
-    discover({ keepSubject: true, entity, topic: diveTopic, append: true, confirmIdentity: true });
-  };
+  el.querySelectorAll('[data-focus-go]').forEach(btn => {
+    btn.onclick = () => {
+      awaitingFocus = false;
+      el.innerHTML = '';
+      el.classList.add('hidden');
+      const go = btn.dataset.focusGo;
+      if (go === 'bondage' || go === 'visuals' || go === 'accounts') {
+        goToDive();
+        return runDiveLens(go);
+      }
+      goToDive();
+    };
+  });
 }
 function renderResumeQueue(data) {
   const el = $('resumeQueue');
@@ -1737,6 +1747,7 @@ function renderVideoCorpus() {
             ${v.playable && v.embedUrl ? `<button class="btn primary" data-video-act="play" data-i="${i}">Play</button>` : ''}
             <a class="btn" href="${esc(open)}" target="_blank" rel="noopener noreferrer" style="text-align:center">Open source</a>
             <button class="btn" data-video-act="save" data-i="${i}">Save</button>
+            <button class="btn" data-video-act="recreate" data-i="${i}" data-testid="recreate-position-video">Recreate this position</button>
             <button class="btn" data-video-act="not" data-i="${i}">Not this</button>
           </div>
           ${v.playable && v.embedUrl ? `<div class="hidden" data-video-embed="${i}"><iframe src="${esc(v.embedUrl)}" allow="encrypted-media; picture-in-picture" allowfullscreen title="${esc(v.title || 'Video')}" style="width:100%;aspect-ratio:16/9;border:0;background:#000"></iframe></div>` : ''}
@@ -1830,10 +1841,12 @@ function renderDiveIdentity() {
       <div class="cell"><b>Accounts</b><span>${(lastPremium || []).length} found</span></div>
     </div>`;
   }
-  ['diveBondageBtn', 'divePeopleBtn', 'diveVisualsBtn'].forEach(id => {
+  ['diveBondageBtn', 'diveVisualsBtn', 'divePremiumBtn', 'diveFindMoreBtn'].forEach(id => {
     const b = $(id);
-    if (b) b.classList.add('hidden');
+    if (b) b.classList.remove('hidden');
   });
+  const peopleBtn = $('divePeopleBtn');
+  if (peopleBtn) peopleBtn.classList.add('hidden');
   renderIdentityBanner();
   renderDiveTabs();
 }
@@ -1967,33 +1980,51 @@ function renderExpansionNote(data) {
 }
 
 async function runDiveLens(lens) {
-  const entity = selectedEntity?.canonicalName || lastClassification?.subject || researchSubject || '';
+  const entity = selectedEntity?.canonicalName || canonicalPerson?.canonicalName || lastClassification?.subject || researchSubject || '';
   if (!entity) return toast('Search and pick a subject first.');
   let id = String(lens || '').toLowerCase();
   if (id === 'clothing') id = 'visuals';
-  if (!['bondage', 'people', 'visuals'].includes(id)) return;
+  if (id === 'premium' || id === 'premium-accounts') id = 'accounts';
+  if (!['bondage', 'people', 'visuals', 'accounts'].includes(id)) return;
   activeDiveLens = id;
-  document.querySelectorAll('#divePrimaryLenses .btn').forEach(b => {
-    if (b.id === 'diveFindMoreBtn') return;
-    b.classList.toggle('active', (b.id || '').toLowerCase().includes(id));
+  document.querySelectorAll('#diveActionRow .btn, #divePrimaryLenses .dive-actions .btn').forEach(b => {
+    const bid = (b.id || '').toLowerCase();
+    b.classList.toggle('active',
+      (id === 'bondage' && bid.includes('bondage'))
+      || (id === 'visuals' && bid.includes('visuals'))
+      || (id === 'accounts' && bid.includes('premium'))
+      || (id === 'people' && bid.includes('people')));
   });
-  const inherited = extraContextText(lastClassification) || (id === 'bondage' ? 'bondage' : (diveTopic || ''));
-  const topic = id === 'bondage' ? 'bondage' : inherited;
   if (id === 'bondage') diveTopic = 'bondage';
   if ($('diveLensHint')) {
     $('diveLensHint').textContent = id === 'bondage'
-      ? 'Investigating bondage through sources, productions, and people already found — not “' + entity + ' bondage” again.'
+      ? ('Searching “' + entity + '” in bondage-related public sources — not generic bondage, not a tab filter.')
       : (id === 'people'
-        ? 'Looking for people connected to this investigation. Relationships stay OBSERVED / SUPPORTED / INFERRED / UNKNOWN.'
-        : 'Looking for additional and alternate images, galleries, and provenance for this investigation — not generic images.');
+        ? 'Looking for people connected through retrieved evidence. Relationships stay OBSERVED / SUPPORTED / INFERRED / UNKNOWN.'
+        : (id === 'accounts'
+          ? ('Searching public creator/premium accounts for “' + entity + '”. Authentication-required content is reported, never claimed.')
+          : ('Looking for images, videos, and galleries associated with “' + entity + '” — not generic topic images.')));
   }
-  pushTrail({ kind: 'dive-lens', label: 'Deep Dive · ' + id, entity, topic });
+  pushTrail({ kind: 'dive-lens', label: 'Deep Dive · ' + id, entity, topic: id === 'bondage' ? 'bondage' : diveTopic });
   setTab('dive');
   setAgentState({ view: 'dive', lens: id, status: 'loading', busy: true });
+  if (id === 'accounts') {
+    return discover({
+      keepSubject: true,
+      entity,
+      topic: diveTopic || extraContextText(lastClassification) || '',
+      premiumAccounts: true,
+      premium: true,
+      append: true,
+      expanded: true,
+      diveLens: 'accounts',
+      mode: 'premium-accounts',
+    });
+  }
   await discover({
     keepSubject: true,
     entity,
-    topic,
+    topic: id === 'bondage' ? 'bondage' : (extraContextText(lastClassification) || diveTopic || ''),
     append: true,
     diveLens: id,
     mode: 'dive-' + id,
@@ -2635,12 +2666,20 @@ function renderDiveStream() {
         <button type="button" data-stream-act="save" data-i="${i}">Save</button>
         <button type="button" data-stream-act="analyze" data-i="${i}">Analyze</button>
         <button type="button" data-stream-act="teach" data-i="${i}">Teach me</button>
+        <button type="button" data-stream-act="recreate" data-i="${i}">Recreate this position</button>
       </div>
       ${findMoreActions(i, 'result')}
     </article>`;
   }).join('');
   const imgHtml = imgs.length && (diveTab === 'overview' || diveTab === 'images' || diveTab === 'search')
-    ? `<div class="gallery dense" style="margin-bottom:12px">${imgs.slice(0, diveTab === 'images' ? 48 : 12).map((im, i) => `<img src="${esc(imgSrc(im.url || im.src))}" data-stream-img="${i}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">`).join('')}</div>`
+    ? `<div class="gallery dense" style="margin-bottom:12px">${imgs.slice(0, diveTab === 'images' ? 48 : 12).map((im, i) => {
+        const src = imgSrc(im.url || im.src);
+        const gate = im.evidenceLevel === 'VISUAL_IDENTITY_VERIFIED' ? 'VERIFIED VISUAL' : (im.evidenceLevel === 'REJECTED' || im.visualGate === 'rejected' ? 'REJECTED VISUAL' : 'UNVERIFIED VISUAL');
+        return `<div class="visual-tile" data-stream-img="${i}">
+          <img src="${esc(src)}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">
+          <div class="vcap"><span class="${im.evidenceLevel === 'VISUAL_IDENTITY_VERIFIED' ? 'gate-verified' : (im.evidenceLevel === 'REJECTED' ? 'gate-rejected' : 'gate-unverified')}">${esc(gate)}</span></div>
+        </div>`;
+      }).join('')}</div>`
     : '';
   const vidHtml = videos.length && (diveTab === 'overview' || diveTab === 'search')
     ? videos.slice(0, 4).map((v, i) => `<article class="stream-post">
@@ -2651,6 +2690,7 @@ function renderDiveStream() {
           <a href="${esc(v.pageUrl || v.url)}" target="_blank" rel="noopener noreferrer">Open source</a>
           <button type="button" data-stream-vid="save" data-i="${i}">Save</button>
           <button type="button" data-stream-vid="analyze" data-i="${i}">Analyze</button>
+          <button type="button" data-stream-vid="recreate" data-i="${i}">Recreate this position</button>
         </div>
         ${findMoreActions(i, 'video')}
       </article>`).join('')
@@ -2712,20 +2752,29 @@ function routeDiveRequest(text) {
   const raw = String(text || '').trim();
   const t = raw.toLowerCase();
   if (!raw) return { mode: '', lens: '', topic: '' };
-  if (/\b(dive[- ]?bondage|investigate bondage|bondage (?:path|lens|deep dive|work|material)|in bondage|bdsm (?:work|material|scenes?)|go deeper on the bondage)\b/i.test(t)) {
+  if (/\b(recreate this position|recreate (?:the |this )?position|tutorials? for this (?:position|technique|pose)|analyze this (?:position|technique|pose))\b/i.test(t)) {
+    return { mode: 'recreate-position', lens: '', topic: 'position' };
+  }
+  if (/\b(dive[- ]?bondage|investigate bondage|bondage (?:path|lens|deep dive|work|material)|in bondage|bondage-related|bdsm (?:work|material|scenes?)|go deeper on the bondage|find (?:this person |them |her |him )?in bondage)\b/i.test(t)) {
     return { mode: 'dive-bondage', lens: 'bondage', topic: 'bondage' };
   }
-  if (/\b(dive[- ]?people|related people|collaborators?|who else|connected (?:to|with)|other people|every other person|find related people)\b/i.test(t)) {
+  if (/\b(find accounts|accounts connected|premium accounts?|accounts? ?\/? ?premium|creator accounts?)\b/i.test(t)) {
+    return { mode: 'premium-accounts', lens: 'accounts', topic: 'premium accounts' };
+  }
+  if (/\b(dive[- ]?visuals?|investigate visuals?|more images?|alternate images?|image provenance|original source|find (?:all |more )?(?:public )?visuals?|find (?:all |more )?images?|galleries|public visual sources)\b/i.test(t)) {
+    return { mode: 'dive-visuals', lens: 'visuals', topic: diveTopic || '' };
+  }
+  if (/\b(dive[- ]?people|related people|collaborators?|who else|other people|every other person|find related people|find other people connected|people connected)\b/i.test(t)) {
     return { mode: 'dive-people', lens: 'people', topic: diveTopic || '' };
   }
-  if (/\b(dive[- ]?visuals?|investigate visuals?|more images?|alternate images?|image provenance|original source|find (?:all |more )?images?|find images from|galleries|sources we haven'?t checked)\b/i.test(t)) {
-    return { mode: 'dive-visuals', lens: 'visuals', topic: diveTopic || '' };
+  if (/\b(follow (?:the )?(?:source )?links|investigate (?:the )?links|source.?to.?source|links you discovered)\b/i.test(t)) {
+    return { mode: 'find-more', lens: '', topic: diveTopic || raw };
   }
   if (/\b(find more|keep looking|go deeper|haven'?t checked)\b/i.test(t)) {
     return { mode: 'find-more', lens: '', topic: diveTopic || raw };
   }
   if (/\bpremium accounts?\b/i.test(t)) {
-    return { mode: 'premium-accounts', lens: '', topic: 'premium accounts' };
+    return { mode: 'premium-accounts', lens: 'accounts', topic: 'premium accounts' };
   }
   const topicHit = raw.match(/\b(career|filmography|credits|interviews?|videos?|productions?)\b/i);
   if (topicHit) return { mode: 'intersection', lens: '', topic: topicHit[1] };
@@ -2742,6 +2791,12 @@ async function investigateTopic(topic) {
   }
   const routed = routeDiveRequest(t);
   if (routed.lens) return runDiveLens(routed.lens);
+  if (routed.mode === 'recreate-position') {
+    return recreatePosition({ query: t, visual: selectedVisual });
+  }
+  if (routed.mode === 'premium-accounts') {
+    return runDiveLens('accounts');
+  }
   if (routed.mode === 'find-more') {
     pushTrail({ kind: 'find-more', label: 'Find more', entity, topic: routed.topic || diveTopic });
     return discover({
@@ -3718,6 +3773,40 @@ async function runLearn() {
   } finally { $('learnBtn').disabled = false; }
 }
 
+async function recreatePosition(opts = {}) {
+  const visual = opts.visual || selectedVisual || currentLightboxVisual();
+  const entity = selectedEntity?.canonicalName || canonicalPerson?.canonicalName || lastClassification?.subject || researchSubject || '';
+  if (!visual && !entity) return toast('Select an image or video first.');
+  selectedVisual = visual || selectedVisual;
+  const cap = String((visual && (visual.title || visual.caption || visual.cap)) || opts.query || diveTopic || 'position').trim();
+  diveTopic = cap || diveTopic || 'position';
+  researchFocus = ['position', 'tutorial', 'visuals'];
+  if ($('diveLensHint')) {
+    $('diveLensHint').textContent = 'Analyzing the selected source as the position/technique anchor, then searching instructional references. The selected image stays the anchor.';
+  }
+  pushTrail({
+    kind: 'recreate-position',
+    label: 'Recreate this position',
+    entity,
+    topic: diveTopic,
+  });
+  setTab('dive');
+  setAgentState({ view: 'dive', lens: 'position', status: 'loading', busy: true });
+  await discover({
+    keepSubject: true,
+    entity,
+    topic: diveTopic,
+    append: true,
+    mode: 'recreate-position',
+    recreatePosition: true,
+    seedVisual: visual || selectedVisual,
+    researchFocus: ['position', 'tutorial', 'visuals'],
+  });
+  if (visual && (visual.pageUrl || visual.url)) {
+    try { analyzeDiscoveryItem({ ...visual, kind: visual.kind || 'image', url: visual.pageUrl || visual.url, title: cap }); } catch {}
+  }
+}
+
 async function makeTutorial(opts = {}) {
   const visual = opts.visual || selectedVisual;
   const q = String(opts.query || selectedEntity?.canonicalName || lastClassification?.subject || $('searchQuery')?.value || $('learnQuery')?.value || '').trim();
@@ -3869,6 +3958,10 @@ function wire() {
       if (act.dataset.streamAct === 'save') openSaveSheet({ kind: resultIsReddit(item) ? 'reddit' : 'page', title: item.title, url: item.url, image: item.image, domain: item.domain, provenance: item.provenance, sourceUrl: item.url, foundThrough: currentFoundThrough() });
       if (act.dataset.streamAct === 'analyze') analyzeDiscoveryItem(item);
       if (act.dataset.streamAct === 'teach') teachAbout(item);
+      if (act.dataset.streamAct === 'recreate') {
+        selectedVisual = { url: item.image || item.url, pageUrl: item.url, title: item.title || '', domain: item.domain || hostOf(item.url || '') };
+        recreatePosition({ visual: selectedVisual });
+      }
       return;
     }
     const vid = e.target.closest('[data-stream-vid]');
@@ -3877,6 +3970,10 @@ function wire() {
       if (!v) return;
       if (vid.dataset.streamVid === 'save') openSaveSheet({ kind: 'video', title: v.title, url: v.pageUrl || v.url, image: v.thumbnail, domain: v.domain, sourceUrl: v.pageUrl || v.url, foundThrough: currentFoundThrough() });
       if (vid.dataset.streamVid === 'analyze') analyzeDiscoveryItem({ ...v, kind: 'video', url: v.pageUrl || v.url });
+      if (vid.dataset.streamVid === 'recreate') {
+        selectedVisual = { url: v.thumbnail || v.url, pageUrl: v.pageUrl || v.url, title: v.title || '', domain: v.domain || hostOf(v.pageUrl || v.url || ''), kind: 'video' };
+        recreatePosition({ visual: selectedVisual });
+      }
       return;
     }
     const im = e.target.closest('[data-stream-img]');
@@ -4081,7 +4178,13 @@ function wire() {
     const item = lightboxGallery[lightboxIndex] || {};
     selectedVisual = { url: item.url || item.src, pageUrl: item.pageUrl || lightboxSourceUrl, title: item.title || item.cap || '', domain: item.domain || hostOf(item.pageUrl || '') };
     closeLightbox();
-    makeTutorial({ visual: selectedVisual });
+    recreatePosition({ visual: selectedVisual });
+  };
+  if ($('lightboxRecreate')) $('lightboxRecreate').onclick = () => {
+    const item = lightboxGallery[lightboxIndex] || {};
+    selectedVisual = { url: item.url || item.src, pageUrl: item.pageUrl || lightboxSourceUrl, title: item.title || item.cap || '', domain: item.domain || hostOf(item.pageUrl || '') };
+    closeLightbox();
+    recreatePosition({ visual: selectedVisual });
   };
   if ($('lightboxSave')) $('lightboxSave').onclick = () => {
     const item = lightboxGallery[lightboxIndex] || {};
@@ -4128,6 +4231,15 @@ function wire() {
     if (save) {
       const v = lastVideos[+save.dataset.i];
       if (v) openSaveSheet({ kind: 'video', title: v.title, url: v.pageUrl || v.url, image: v.thumbnail, domain: v.domain, sourceUrl: v.pageUrl || v.url });
+      return;
+    }
+    const recreate = e.target.closest('[data-video-act="recreate"]');
+    if (recreate) {
+      const v = lastVideos[+recreate.dataset.i];
+      if (v) {
+        selectedVisual = { url: v.thumbnail || v.url, pageUrl: v.pageUrl || v.url, title: v.title || '', domain: v.domain || hostOf(v.pageUrl || v.url || ''), kind: 'video' };
+        recreatePosition({ visual: selectedVisual });
+      }
       return;
     }
     const not = e.target.closest('[data-video-act="not"]');
@@ -4484,13 +4596,11 @@ function wire() {
       };
       selectedEntity = selectedEntity || { canonicalName: name, type: 'person', image: (c.representativeImages || [])[0] || '', url: c.sampleUrl || '', confidence: c.confidence || 'high' };
       pushTrail({ kind: 'identity', label: 'YES — THIS PERSON · ' + name, entity: name, topic: diveTopic });
-      toast('Identity confirmed. Choose a Research Focus, then Investigate.');
-      awaitingFocus = !(researchFocus && researchFocus.length);
+      toast('Identity confirmed. What do you want to investigate about this person?');
+      awaitingFocus = true;
       renderIdentityVerification({ identityVerification: { ...pack, userConfirmed: true, needed: false, candidates: [c] } });
       persistSession();
-      if (!awaitingFocus) {
-        discover({ keepSubject: true, entity: name, topic: diveTopic, append: true, confirmIdentity: true });
-      }
+      goToDive();
     } else if (act.dataset.idact === 'no') {
       const name = c.name || '';
       const cid = c.candidateId || '';

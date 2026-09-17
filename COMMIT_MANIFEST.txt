@@ -1,21 +1,21 @@
-Carmen v49.12 (49.12-investigation-workflow) — investigation workflow
+Carmen v49.13 (49.13-investigation-actions) — investigation actions
 ====================================================================
-Parent: 558f20a (v49.11 exact-source retrieval)
+Parent: 3b12ddb (v49.12 identity-first investigation workflow)
 
-Incremental production fix. Extends the v49.11 planner + worker engine.
-Does not rebuild Carmen or restyle the product.
+Incremental production fix. Extends the v49.12 planner + worker engine.
+Does not rebuild Carmen.
 
-- PERSON searches hold expansion until identity is confirmed.
-- Tinder-style identity selector: YES — THIS PERSON / NOT THIS PERSON.
-- Confirmation creates canonicalPerson. Rejection is candidate-id specific.
-- Belle Delphine vs Disney Princess Belle: PERSON_REAL vs PERSON_FICTIONAL.
-- Visual evidence levels. Only VISUAL_IDENTITY_VERIFIED → VERIFIED VISUAL.
-- Query text / search-engine URLs are not identity proof.
-- Research Focus changes planner queries. Adaptive Lens follows focus.
-- Deep Dive is the investigation workspace (legacy Bondage/People/Visuals hidden).
-- Continuation slices (6; 4 during identity hold). STOP KIND E is not complete.
-- Alias filter drops UUID/URL/tracking garbage.
-- Progressive visual loading. New Investigation wipes identity/focus state.
-- v49.11 exact-source Reddit + OnlyFans behavior is preserved.
+- PRIMARY Deep Dive controls: Bondage, Visuals, Accounts/Premium, Find More, Ask.
+- People is not a primary Deep Dive tab (evidence-driven internally).
+- Dashboard tabs (Overview/Evidence/…) are secondary “More views”.
+- Bondage is a real entity-specific retrieval: confirmed person × bondage,
+  then semantic expansion. Not a tab filter. Not generic bondage.
+- Visuals = images + videos + galleries associated with the confirmed person.
+- Ask this investigation parses into planner branches on the current case.
+- Recreate this position analyzes the selected image/video and searches
+  instructional sources; the selected source remains the anchor.
+- Adaptive Lens for PERSON+VISUALS / PERSON+CAREER / TUTORIAL / TOPIC
+  matches the selected Research Focus.
+- v49.11 exact-source and v49.12 identity-first behavior are preserved.
 
-Build identifier: **49.12-investigation-workflow**.
+Build identifier: **49.13-investigation-actions**.

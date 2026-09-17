@@ -51,12 +51,12 @@ const plannerSrc = readFileSync(new URL('./investigation-planner.js', import.met
 
 console.log('--- v49.9 version / hierarchy preserved ---');
 {
-  assert(PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9', 'PLANNER_VERSION current');
-  assert(PLANNER_BUILD === '49.12-investigation-workflow' || PLANNER_BUILD === '49.11-exact-source-retrieval' || PLANNER_BUILD === '49.9-identity-queue-visual', 'PLANNER_BUILD');
-  assert(appSrc.includes("const VERSION = '49.12'") || appSrc.includes("const VERSION = '49.11'") || appSrc.includes("const VERSION = '49.9'"), 'frontend VERSION');
-  assert(/carmen-build" content="49\.(9|11|12)"/.test(html), 'html build');
-  assert(/v49\.(9|11|12)/.test(html), 'header shows version');
-  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'Deep Dive hierarchy unchanged');
+  assert(PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9', 'PLANNER_VERSION current');
+  assert(PLANNER_BUILD === '49.13-investigation-actions' || PLANNER_BUILD === '49.12-investigation-workflow' || PLANNER_BUILD === '49.11-exact-source-retrieval' || PLANNER_BUILD === '49.9-identity-queue-visual', 'PLANNER_BUILD');
+  assert(appSrc.includes("const VERSION = '49.13'") || appSrc.includes("const VERSION = '49.12'") || appSrc.includes("const VERSION = '49.13'") || appSrc.includes("const VERSION = '49.12'") || appSrc.includes("const VERSION = '49.11'") || appSrc.includes("const VERSION = '49.9'"), 'frontend VERSION');
+  assert(/carmen-build" content="49\.(9|11|12|13)"/.test(html), 'html build');
+  assert(/v49\.(9|11|12|13)/.test(html), 'header shows version');
+  assert((PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,visuals,accounts' || PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals'), 'Deep Dive hierarchy unchanged');
   assert(/data-testid="premium-accounts"/.test(html) && /id="divePremiumBtn"/.test(html), 'Account/Premium button present');
   assert(/data-testid="identity-verify"/.test(html), 'identity verification surface');
   assert(/data-testid="resume-queue"/.test(html), 'resume queue surface');
@@ -231,7 +231,7 @@ console.log('--- health features ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert((body.version === '49.12' || body.version === '49.11' || body.version === '49.9') && (body.build === '49.12-investigation-workflow' || body.build === '49.11-exact-source-retrieval' || body.build === '49.9-identity-queue-visual'), 'health reports current');
+  assert((body.version === '49.13' || body.version === '49.12' || body.version === '49.11' || body.version === '49.9') && (body.build === '49.13-investigation-actions' || body.build === '49.12-investigation-workflow' || body.build === '49.11-exact-source-retrieval' || body.build === '49.9-identity-queue-visual'), 'health reports current');
   assert((body.features || []).includes('v49.9-identity-verification'), 'feature identity-verification');
   assert((body.features || []).includes('v49.9-persistent-queue'), 'feature persistent-queue');
   assert((body.features || []).includes('v49.9-visual-evidence-gate'), 'feature visual-evidence-gate');

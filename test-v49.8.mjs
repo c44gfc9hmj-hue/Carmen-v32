@@ -58,12 +58,12 @@ const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 
 console.log('--- v49.8 version / hierarchy preserved ---');
 {
-  assert(PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9', 'PLANNER_VERSION current');
-  assert(PLANNER_BUILD === '49.12-investigation-workflow' || PLANNER_BUILD === '49.11-exact-source-retrieval' || PLANNER_BUILD === '49.8-adaptive-investigation' || PLANNER_BUILD === '49.9-identity-queue-visual', 'PLANNER_BUILD');
-  assert(/const VERSION = '49\.(?:[89]|11|12)'/.test(appSrc), 'frontend VERSION');
-  assert(/carmen-build" content="49\.(?:[89]|11|12)"/.test(html), 'html build');
-  assert(/v49\.(?:[89]|11|12)/.test(html), 'header shows current version');
-  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'Deep Dive hierarchy unchanged');
+  assert(PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9', 'PLANNER_VERSION current');
+  assert(PLANNER_BUILD === '49.13-investigation-actions' || PLANNER_BUILD === '49.12-investigation-workflow' || PLANNER_BUILD === '49.11-exact-source-retrieval' || PLANNER_BUILD === '49.8-adaptive-investigation' || PLANNER_BUILD === '49.9-identity-queue-visual', 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.(?:[89]|11|12|13)'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.(?:[89]|11|12|13)"/.test(html), 'html build');
+  assert(/v49\.(?:[89]|11|12|13)/.test(html), 'header shows current version');
+  assert((PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,visuals,accounts' || PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals'), 'Deep Dive hierarchy unchanged');
   assert(/data-testid="premium-accounts"/.test(html) && /id="divePremiumBtn"/.test(html), 'Account/Premium button present');
   assert(/data-testid="what-carmen-checked"/.test(html) && /data-testid="why-did-you-stop"/.test(html), 'trace UI kept');
   assert(/resource safeguard/i.test(appSrc), 'UI no longer calls an arbitrary research budget “complete”');
@@ -330,7 +330,7 @@ console.log('--- health features ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert((body.version === '49.12' || body.version === '49.8' || body.version === '49.11' || body.version === '49.9') && /49\.(12-investigation-workflow|11-exact-source-retrieval|8-adaptive-investigation|9-identity-queue-visual)/.test(body.build || ''), 'health reports current');
+  assert((body.version === '49.13' || body.version === '49.12' || body.version === '49.8' || body.version === '49.11' || body.version === '49.9') && /49\.(13-investigation-actions|12-investigation-workflow|11-exact-source-retrieval|8-adaptive-investigation|9-identity-queue-visual)/.test(body.build || ''), 'health reports current');
   assert((body.features || []).includes('v49.8-adaptive-investigation'), 'feature flag adaptive-investigation');
   assert((body.features || []).includes('v49.8-visual-branch'), 'feature flag visual-branch');
   assert((body.features || []).includes('v49.7-retrieval-engine'), 'v49.7 flags retained');

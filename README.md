@@ -9,6 +9,26 @@ This is the single canonical Carmen application. There are no separate V25/V32/
 V33/V34/V35 builds — those accumulated during earlier development and have been
 consolidated into this one project.
 
+## Investigation workspace (v49.13)
+
+v49.13 is a product-correction pass on live v49.12. It does not rebuild
+Carmen or replace the planner/worker retrieval architecture.
+
+- **Primary Deep Dive controls:** Bondage, Visuals, Accounts / Premium,
+  Find More, and Ask. People is not a primary tab.
+- **Bondage is a real retrieval.** Confirmed person × bondage, then semantic
+  expansion through galleries, videos, discussions, and specialist sources.
+  Generic bondage without the person is rejected.
+- **Visuals** means images + videos + galleries associated with the confirmed
+  person. Query-echo and stock imagery stay unverified/rejected.
+- **Ask this investigation** parses into planner branches on the current case.
+- **Recreate this position** analyzes the selected image/video and searches
+  instructional sources. The selected source remains the anchor.
+- Dashboard tabs (Overview / Evidence / Timeline / …) are secondary “More views”.
+- v49.12 identity-first workflow and v49.11 exact-source retrieval are preserved.
+
+Build identifier: **49.13-investigation-actions**.
+
 ## Investigation workspace (v49.12)
 
 v49.12 is an incremental production fix on live v49.11. It does not rebuild

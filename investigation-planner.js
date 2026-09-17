@@ -1,8 +1,19 @@
-// Carmen v49.12 — investigation / topic-map planner + ChatGPT-access helpers.
+// Carmen v49.13 — investigation / topic-map planner + ChatGPT-access helpers.
 // Query-centric retrieval is the fallback. The planner independently
 // establishes subject evidence, topic evidence, and intersection evidence,
 // then opens source-class lanes (especially adult) instead of stuffing
 // tokens into one search string.
+//
+// v49.13: Product-correction of the investigation workspace. Primary Deep Dive
+// actions are Bondage / Visuals / Accounts-Premium / Find More / Ask. Bondage
+// is an entity-specific retrieval (X + bondage), not a tab filter. Visuals
+// remain images+videos+galleries. Recreate-this-position analyzes a selected
+// visual and searches instructional sources, staying on the investigation.
+// People stay internal (evidence-driven nodes), not a primary tab.
+//
+// v49.12: Identity-first person workflow, Tinder-style confirmation,
+// canonicalPerson, visual evidence levels, Research Focus / Adaptive Lens,
+// continuation slices. Deep Dive is the investigation workspace.
 //
 // v49.11: Exact-source retrieval. Analyze receives the canonical URL from the
 // source card and fetches THAT URL. Generic platform discovery cannot
@@ -48,8 +59,8 @@
 // This module is self-contained: no import from worker.js (avoids cycles).
 // worker.js imports it. The machine-readable API uses these same functions.
 
-export const PLANNER_VERSION = '49.12';
-export const PLANNER_BUILD = '49.12-investigation-workflow';
+export const PLANNER_VERSION = '49.13';
+export const PLANNER_BUILD = '49.13-investigation-actions';
 
 function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
@@ -278,8 +289,11 @@ export const INVESTIGATION_PHASES = [
 
 export const PRIMARY_DIVE_LENSES = [
   { id: 'bondage', label: 'Bondage', mode: 'dive-bondage', topic: 'bondage' },
-  { id: 'people', label: 'People', mode: 'dive-people', topic: 'people' },
   { id: 'visuals', label: 'Visuals', mode: 'dive-visuals', topic: '' },
+  { id: 'accounts', label: 'Accounts / Premium', mode: 'premium-accounts', topic: 'premium accounts' },
+];
+export const SECONDARY_DIVE_LENSES = [
+  { id: 'people', label: 'People', mode: 'dive-people', topic: 'people' },
 ];
 
 export const NO_NEW_SOURCES_MESSAGE = 'No new sources found from the remaining search paths.';
@@ -341,10 +355,13 @@ const NEW_INVESTIGATION_RE = /\b(new investigation|start over|clear investigatio
 const CONFIRM_IDENTITY_RE = /\b(that(?:'|’)s the one|this is the (?:person|one)|positive identity|confirm(?:ed)? identity)\b/i;
 const REJECT_IDENTITY_RE = /\b(not this person|not this one|wrong person|negative identity)\b/i;
 const REJECT_IMAGE_RE = /\b(not this image|wrong image|reject(?:ed)? image)\b/i;
-const DIVE_BONDAGE_RE = /\b(dive[- ]?bondage|investigate bondage|bondage (?:path|lens|deep dive)|go deeper on the bondage|everything (?:on|about) this person in bondage)\b/i;
-const DIVE_PEOPLE_RE = /\b(dive[- ]?people|investigate people|people (?:path|lens|deep dive)|related people|collaborators?|every other person connected|find related people)\b/i;
-const DIVE_VISUALS_RE = /\b(dive[- ]?visuals?|investigate visuals?|visuals? (?:path|lens|deep dive)|more images?|alternate images?|image provenance|original source of this|find (?:all )?images?|find images from)\b/i;
+const DIVE_BONDAGE_RE = /\b(dive[- ]?bondage|investigate bondage|bondage (?:path|lens|deep dive)|go deeper on the bondage|everything (?:on|about) this person in bondage|find (?:this person |them |her |him )?in bondage|bondage-related)\b/i;
+const DIVE_PEOPLE_RE = /\b(dive[- ]?people|investigate people|people (?:path|lens|deep dive)|related people|collaborators?|every other person connected|find related people|find other people connected)\b/i;
+const DIVE_VISUALS_RE = /\b(dive[- ]?visuals?|investigate visuals?|visuals? (?:path|lens|deep dive)|more images?|alternate images?|image provenance|original source of this|find (?:all |more )?(?:public )?visuals?|find (?:all |more )?images?|find images from|public visual sources)\b/i;
 const DIVE_CLOTHING_RE = /\b(dive[- ]?clothing|investigate clothing|clothing (?:path|lens|deep dive)|outfits?|garments?)\b/i;
+const DIVE_ACCOUNTS_RE = /\b(dive[- ]?accounts?|accounts? ?\/? ?premium|find accounts?(?: connected)?|premium accounts?|creator accounts?|subscription (?:accounts?|pages?))\b/i;
+const RECREATE_POSITION_RE = /\b(recreate this position|recreate (?:the |this )?position|tutorials? for this (?:position|technique|pose)|analyze this (?:position|technique|pose)|position \/ technique)\b/i;
+const LINK_CHAIN_RE = /\b(follow (?:the )?(?:source )?links|investigate (?:the )?links|source.?to.?source|links you discovered)\b/i;
 
 
 export function parseInvestigationIntent(query, opts = {}) {
@@ -357,8 +374,11 @@ export function parseInvestigationIntent(query, opts = {}) {
   let mode = 'search';
   if (opts.mode) mode = String(opts.mode);
   else if (opts.diveLens === 'bondage' || DIVE_BONDAGE_RE.test(raw)) mode = 'dive-bondage';
-  else if (opts.diveLens === 'people' || DIVE_PEOPLE_RE.test(raw)) mode = 'dive-people';
   else if (opts.diveLens === 'visuals' || opts.diveLens === 'clothing' || DIVE_VISUALS_RE.test(raw) || DIVE_CLOTHING_RE.test(raw)) mode = 'dive-visuals';
+  else if (opts.diveLens === 'accounts' || DIVE_ACCOUNTS_RE.test(raw)) mode = 'premium-accounts';
+  else if (RECREATE_POSITION_RE.test(raw) || opts.recreatePosition) mode = 'recreate-position';
+  else if (opts.diveLens === 'people' || DIVE_PEOPLE_RE.test(raw)) mode = 'dive-people';
+  else if (LINK_CHAIN_RE.test(raw) || opts.followLinks) mode = 'find-more';
   else if (FIND_EVERYTHING_RE.test(raw) || opts.findEverything) mode = 'find-everything';
 
   else if (PREMIUM_RE.test(raw) || opts.premiumAccounts) mode = 'premium-accounts';
@@ -418,6 +438,8 @@ export function parseInvestigationIntent(query, opts = {}) {
   }
   if (mode === 'dive-bondage' && !topic) topic = 'bondage';
   if (mode === 'dive-visuals' && !topic) topic = topicIn;
+  if (mode === 'recreate-position' && !topic) topic = topicIn || 'position';
+  if (mode === 'premium-accounts' && !topic) topic = topicIn || 'premium accounts';
   // People is a lens, not a stuffed topic keyword — keep any existing topic.
   // Visuals inherits the active investigation topic instead of replacing it.
 
@@ -453,7 +475,7 @@ export function parseInvestigationIntent(query, opts = {}) {
     seed: opts.seedVisual || opts.seed || null,
     excludeUrls: [].concat(opts.excludeUrls || []),
     excludeHosts: [].concat(opts.excludeHosts || []),
-    diveLens: mode === 'dive-bondage' ? 'bondage' : (mode === 'dive-people' ? 'people' : (mode === 'dive-visuals' ? 'visuals' : (opts.diveLens || ''))),
+    diveLens: mode === 'dive-bondage' ? 'bondage' : (mode === 'dive-people' ? 'people' : (mode === 'dive-visuals' ? 'visuals' : (mode === 'premium-accounts' ? 'accounts' : (opts.diveLens || '')))),
     attemptedQueries: [].concat(opts.attemptedQueries || opts.attempted || []),
     discoveredEntities: Array.isArray(opts.discoveredEntities) ? opts.discoveredEntities : [],
     graphLeads: Array.isArray(opts.graphLeads) ? opts.graphLeads : [],
@@ -476,20 +498,29 @@ export function routeNaturalLanguageResearch(text, opts = {}) {
   const raw = String(text || '').trim();
   const t = raw.toLowerCase();
   if (!raw) return { mode: '', lens: '', topic: '', why: '' };
-  if (DIVE_BONDAGE_RE.test(raw) || /\b(bondage work|in bondage|bondage material|bdsm (?:work|material|scenes?))\b/i.test(t)) {
+  if (DIVE_BONDAGE_RE.test(raw) || /\b(bondage work|in bondage|bondage material|bdsm (?:work|material|scenes?)|bondage-related)\b/i.test(t)) {
     return { mode: 'dive-bondage', lens: 'bondage', topic: 'bondage', why: 'natural-language bondage investigation' };
   }
-  if (DIVE_PEOPLE_RE.test(raw) || /\b(who else|connected (?:to|with)|other people|find (?:every )?person)\b/i.test(t)) {
+  if (RECREATE_POSITION_RE.test(raw) || /\b(tutorials? for this position|recreate this)\b/i.test(t)) {
+    return { mode: 'recreate-position', lens: '', topic: opts.topic || 'position', why: 'position / technique analysis of the selected source' };
+  }
+  if (DIVE_ACCOUNTS_RE.test(raw) || /\b(find accounts|accounts connected|premium accounts?|creator accounts?)\b/i.test(t)) {
+    return { mode: 'premium-accounts', lens: 'accounts', topic: 'premium accounts', why: 'natural-language account / premium investigation' };
+  }
+  if (DIVE_VISUALS_RE.test(raw) || /\b(find (?:more )?(?:public )?visuals?|find (?:more )?images|galleries|original source|sources we haven'?t checked|public visual sources)\b/i.test(t)) {
+    return { mode: 'dive-visuals', lens: 'visuals', topic: opts.topic || '', why: 'natural-language visual investigation' };
+  }
+  if (DIVE_PEOPLE_RE.test(raw) || /\b(who else|other people|find (?:every )?person|people connected)\b/i.test(t)) {
     return { mode: 'dive-people', lens: 'people', topic: opts.topic || '', why: 'natural-language people investigation' };
   }
-  if (DIVE_VISUALS_RE.test(raw) || /\b(find (?:more )?images|visuals?|galleries|original source|sources we haven'?t checked)\b/i.test(t)) {
-    return { mode: 'dive-visuals', lens: 'visuals', topic: opts.topic || '', why: 'natural-language visual investigation' };
+  if (LINK_CHAIN_RE.test(raw)) {
+    return { mode: 'find-more', lens: '', topic: opts.topic || '', why: 'follow discovered source links' };
   }
   if (FIND_MORE_RE.test(raw) || /\b(find more|keep looking|go deeper|haven'?t checked)\b/i.test(t)) {
     return { mode: 'find-more', lens: '', topic: opts.topic || '', why: 'natural-language find more' };
   }
   if (PREMIUM_RE.test(raw) || /\bpremium accounts?\b/i.test(t)) {
-    return { mode: 'premium-accounts', lens: '', topic: 'premium accounts', why: 'natural-language premium accounts' };
+    return { mode: 'premium-accounts', lens: 'accounts', topic: 'premium accounts', why: 'natural-language premium accounts' };
   }
   if (/\b(career|filmography|credits|interview|videos?|productions?)\b/i.test(t)) {
     const topic = (raw.match(/\b(career|filmography|credits|interviews?|videos?|productions?)\b/i) || [])[1] || raw;
@@ -706,9 +737,11 @@ export function buildTopicMap(intent, classification) {
   }
 
   if (intent && (intent.mode === 'dive-bondage' || intent.diveLens === 'bondage')) {
-    add('dive-bondage-chain', 'bondage investigation via discovered evidence', 'fetish-publisher', [
-      qSub + ' (photoset OR scene OR feature) (studio OR publisher OR production)',
-      qSub + ' (metal OR rope OR cinch OR hogtie OR restrained) (credits OR stills)',
+    add('dive-bondage-chain', 'entity-specific bondage investigation plus discovered-evidence expansion', 'fetish-publisher', [
+      qSub + ' bondage',
+      qSub + ' (bondage OR bdsm OR restrained OR hogtie OR shibari)',
+      qSub + ' bondage (photoset OR scene OR gallery OR video)',
+      qSub + ' (photoset OR scene OR feature) (studio OR publisher OR production) bondage',
     ], 5);
   }
   if (intent && (intent.mode === 'dive-people' || intent.diveLens === 'people')) {
@@ -1535,7 +1568,14 @@ export function isNaiveLensQuery(q, intent) {
   const sub = String((intent && intent.subject) || '').replace(/["']/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
   if (!n || !sub) return false;
   const lens = String((intent && intent.diveLens) || '').toLowerCase();
+  const mode = String((intent && intent.mode) || '');
   const topic = String((intent && intent.topic) || '').toLowerCase();
+  // Bondage / Visuals / Accounts are real entity-specific investigation branches.
+  // The attempted-query set already blocks exact clones. Do not treat
+  // "Name bondage" as a naive rewrite when the user asked for that branch.
+  if (lens === 'bondage' || mode === 'dive-bondage') return false;
+  if (lens === 'visuals' || mode === 'dive-visuals' || mode === 'dive-clothing') return false;
+  if (lens === 'accounts' || mode === 'premium-accounts' || mode === 'recreate-position') return false;
   // Only the exact "subject + lens-word" clone is naive. Entity × topic with
   // source-class terms (photoset/scene/gallery/site:) MUST survive Deep Dive.
   const words = [...new Set([lens, 'people', 'clothing', 'visuals'].filter(Boolean))];
@@ -1574,9 +1614,15 @@ export function buildLensQueries(intent, corpus, attempted, extras = {}) {
   const naiveClothing = (rawSubject + ' clothing').trim().toLowerCase();
 
   if (lens === 'bondage') {
-    const topicWord = topic && topic !== 'people' && topic !== 'visuals' && topic !== 'clothing' ? topic : 'bondage';
-    // Entity × topic MUST survive Deep Dive. Sourced intersection is not a
-    // naive clone of "Riley Reid bondage".
+    const topicWord = topic && topic !== 'people' && topic !== 'visuals' && topic !== 'clothing' && topic !== 'accounts' ? topic : 'bondage';
+    // Entity-specific investigation: find THIS PERSON in bondage-related public
+    // sources. Semantic expansion follows. Generic bondage without the person
+    // is never emitted.
+    add(subject + ' bondage', 'entity-specific bondage investigation — find this person in bondage-related public sources', 'bondage-entity', 'web', { sourceClass: 'intersection', family: 'entity-topic' });
+    add(subject + ' (bondage OR bdsm OR restrained OR hogtie OR shibari OR kinbaku)', 'semantic bondage terminology for this person, not generic bondage', 'bondage-semantic', 'web', { sourceClass: 'intersection', family: 'topic-variants' });
+    add(subject + ' bondage (photoset OR gallery OR stills OR scene OR video)', 'person × bondage visual sources', 'bondage-images', 'image', { sourceClass: 'images-galleries', family: 'visual' });
+    add(subject + ' bondage (video OR clip OR scene OR feature)', 'person × bondage video sources', 'bondage-video', 'video', { sourceClass: 'video', family: 'visual' });
+    add(subject + ' bondage (reddit OR discussion OR forum OR blog)', 'person × bondage discussions', 'bondage-discuss', 'web', { sourceClass: 'community-social' });
     add(subject + ' ' + topicWord + ' (photoset OR scene OR gallery OR interview OR feature)', 'entity × topic sourced intersection — both tokens survive Deep Dive', 'bondage-intersection', 'web', { sourceClass: 'intersection' });
     add(subject + ' "' + topicWord + '" (stills OR credits OR production)', 'entity × quoted-topic evidence', 'bondage-intersection', 'web', { sourceClass: 'intersection' });
     for (const st of seeds.studios.slice(0, 6)) {
@@ -1606,10 +1652,6 @@ export function buildLensQueries(intent, corpus, attempted, extras = {}) {
     add(subject + ' (photoset OR stills OR gallery) (bound OR restrained OR metal OR rope OR ' + topicWord + ')', 'bondage image lane from investigation state, not a query rewrite', 'bondage-images', 'image', { sourceClass: 'images-galleries' });
     add(subject + ' (scene OR clip OR feature) (studio OR production) ' + topicWord, 'bondage video lane keeps the requested topic', 'bondage-video', 'video', { sourceClass: 'video' });
     add(subject + ' (interview OR article OR archive OR history) (studio OR production OR feature) ' + topicWord, 'historical bondage references keep entity × topic', 'bondage-historical', 'web', { sourceClass: 'interviews' });
-    // Only use the naive clone if nothing else is available AND it was never attempted.
-    if (!out.length && !seen.has(naiveBondage) && rawSubject) {
-      add(rawSubject + ' bondage', 'first bondage intersection — no prior evidence to chain from yet', 'bondage-intersection', 'web', { sourceClass: 'intersection' });
-    }
   } else if (lens === 'people') {
     for (const person of seeds.people) {
       if (person.observationState === 'UNKNOWN') continue;
@@ -1631,7 +1673,9 @@ export function buildLensQueries(intent, corpus, attempted, extras = {}) {
   } else if (lens === 'visuals' || lens === 'clothing') {
     const observed = seeds.clothing.filter(c => c.term && c.observationState === 'OBSERVED');
     const inferred = seeds.clothing.filter(c => c.term && c.observationState === 'INFERRED');
-    const activeTopic = topic && topic !== 'clothing' && topic !== 'visuals' && topic !== 'people' ? topic : '';
+    const activeTopic = topic && topic !== 'clothing' && topic !== 'visuals' && topic !== 'people' && topic !== 'accounts' ? topic : '';
+    add(subject + (activeTopic ? ' ' + activeTopic : '') + ' (photos OR gallery OR photoset OR stills OR video)', 'PERSON + VISUALS — images, videos, and galleries associated with this person', 'visuals-entity', 'image', { sourceClass: 'images-galleries', family: 'visual' });
+    add(subject + (activeTopic ? ' ' + activeTopic : '') + ' (video OR clip OR scene OR trailer)', 'PERSON + VISUALS — video evidence for this person', 'visuals-video', 'video', { sourceClass: 'video', family: 'visual' });
     for (const g of observed.slice(0, 5)) {
       add(subject + ' "' + g.term + '" (stills OR photoset OR gallery' + (activeTopic ? ' OR ' + activeTopic : '') + ')', 'visual expansion from OBSERVED garment in this investigation', 'visuals-observed', 'image', { foundThrough: g.foundThrough, relatedTo: g.term });
     }
@@ -1651,6 +1695,10 @@ export function buildLensQueries(intent, corpus, attempted, extras = {}) {
     if ((seen.has(naiveVisuals) || seen.has(naiveClothing)) && out.every(x => x.q.toLowerCase() !== naiveVisuals && x.q.toLowerCase() !== naiveClothing)) {
       // never re-add naive clone
     }
+  } else if (lens === 'accounts') {
+    add(subject + ' (OnlyFans OR Fansly OR LoyalFans OR ManyVids OR FanCentro OR Reddit OR Linktree)', 'creator/adult account discovery for this person', 'accounts-premium', 'web', { sourceClass: 'premium-subscription', family: 'accounts' });
+    add(subject + ' (Fansly OR OnlyFans OR "justfor.fans" OR Fanvue OR "all my links") (profile OR bio OR links)', 'additional creator platforms discovered dynamically', 'accounts-discover', 'web', { sourceClass: 'premium-subscription', family: 'premium' });
+    add(subject + ' site:reddit.com (u/ OR user/ OR profile)', 'public Reddit profile evidence', 'accounts-reddit', 'web', { sourceClass: 'community-social', family: 'accounts' });
   } else {
     // Find-more / generic expansion uses next unexplored lane below.
   }
@@ -2607,7 +2655,7 @@ export function applyInvestigationAction(state, action, payload = {}) {
     next.trail = [{ kind: 'new', label: 'Hard live-state reset — saved collections kept', at: next.createdAt }];
     return next;
   }
-  if (act === 'search' || act === 'identify' || act === 'topic-search' || act === 'intersection' || act === 'find-everything' || act === 'find-more' || act === 'premium-accounts' || act === 'dive-bondage' || act === 'dive-people' || act === 'dive-visuals' || act === 'dive-clothing' || act === 'photo-input') {
+  if (act === 'search' || act === 'identify' || act === 'topic-search' || act === 'intersection' || act === 'find-everything' || act === 'find-more' || act === 'premium-accounts' || act === 'dive-bondage' || act === 'dive-people' || act === 'dive-visuals' || act === 'dive-clothing' || act === 'recreate-position' || act === 'photo-input') {
     if (payload.subject) s.subject = payload.subject;
     if (payload.topic) s.topic = payload.topic;
     if (payload.query) s.query = payload.query;
@@ -2730,10 +2778,11 @@ export const API_ACTION_CATALOG = [
   { action: 'more-from-this-source', method: 'POST', path: '/api/v1/investigations/:id/more-from-this-source', description: 'More from this host (host ≠ creator).' },
   { action: 'more-from-this-person', method: 'POST', path: '/api/v1/investigations/:id/more-from-this-person', description: 'More from the confirmed person.' },
   { action: 'more-on-this-topic', method: 'POST', path: '/api/v1/investigations/:id/more-on-this-topic', description: 'More on the current topic.' },
-  { action: 'dive-bondage', method: 'POST', path: '/api/v1/investigations/:id/dive-bondage', description: 'Bondage investigation lens — expands through discovered evidence, not a query rewrite.' },
+  { action: 'dive-bondage', method: 'POST', path: '/api/v1/investigations/:id/dive-bondage', description: 'Entity-specific bondage investigation: confirmed person × bondage, then semantic expansion. Not a tab filter and not generic bondage.' },
   { action: 'dive-people', method: 'POST', path: '/api/v1/investigations/:id/dive-people', description: 'People investigation lens — connected people with OBSERVED/SUPPORTED/INFERRED/UNKNOWN evidence.' },
-  { action: 'dive-visuals', method: 'POST', path: '/api/v1/investigations/:id/dive-visuals', description: 'Visuals investigation lens — additional/alternate image sources, galleries, provenance. Inherits the active investigation.' },
+  { action: 'dive-visuals', method: 'POST', path: '/api/v1/investigations/:id/dive-visuals', description: 'Visuals investigation — images + videos + galleries associated with the confirmed person. Not generic topic imagery.' },
   { action: 'dive-clothing', method: 'POST', path: '/api/v1/investigations/:id/dive-clothing', description: 'Alias of dive-visuals. Clothing evidence extraction remains internal.' },
+  { action: 'recreate-position', method: 'POST', path: '/api/v1/investigations/:id/recreate-position', description: 'Analyze the selected image/video position or technique and search instructional/tutorial sources. Selected source remains the anchor.' },
 
   { action: 'confirm-identity', method: 'POST', path: '/api/v1/investigations/:id/confirm-identity', description: 'That’s the one — persistent retrieval state.' },
   { action: 'reject-identity', method: 'POST', path: '/api/v1/investigations/:id/reject-identity', description: 'Not this person — negative weight on later retrieval.' },
@@ -3395,6 +3444,35 @@ export function tutorialQueries(subject, topic, attempted) {
   add(seed + ' (wikihow OR instructables OR "step by step" OR safety)', 'educational / responsible instructional material');
   add(seed + ' (glossary OR "what is" OR meaning OR technique)', 'definitional educational material');
   return out.slice(0, 8);
+}
+
+export function recreatePositionQueries(intent, visual, attempted) {
+  const subject = String((intent && intent.subject) || '').trim();
+  const topic = String((intent && intent.topic) || '').trim();
+  const seed = visual || (intent && (intent.seed || intent.seedVisual)) || {};
+  const cap = String(seed.title || seed.caption || seed.cap || '').replace(/\s+/g, ' ').trim();
+  const page = String(seed.pageUrl || seed.url || '').trim();
+  const host = hostOf(page);
+  const seen = attemptedSet(attempted || (intent && intent.attemptedQueries));
+  const out = [];
+  const add = (q, why, lane, kind, extra) => pushQuery(out, seen, q, why, lane || 'position', kind || 'web', extra);
+  const qSub = quote(subject) || subject;
+  const technique = cap || topic || 'position';
+  if (qSub) {
+    add(qSub + ' ' + technique + ' (position OR pose OR technique OR restraint)', 'selected visual remains the anchor — position/technique of this person', 'position', 'web', { sourceClass: 'instructional', family: 'position', foundThrough: page });
+  }
+  add(technique + ' (tutorial OR "how to" OR instruction OR demonstration OR diagram)', 'instructional sources describing the demonstrated position', 'instructional', 'web', { sourceClass: 'instructional', family: 'instructional', foundThrough: page });
+  add(technique + ' (diagram OR "visual reference" OR stills OR "step by step")', 'diagrams and visual references for the technique', 'instructional', 'image', { sourceClass: 'instructional', family: 'visual', foundThrough: page });
+  if (/\b(rope|shibari|kinbaku|hogtie|frog.?tie|cinch|harness|suspension|gag|collar)\b/i.test(technique + ' ' + topic)) {
+    add(technique + ' (shibari OR kinbaku OR "rope bondage" OR restraint) (tutorial OR diagram)', 'restraint/rope configuration instructional sources', 'instructional', 'web', { sourceClass: 'instructional', family: 'position' });
+  }
+  if (host && !isSearchEngineHost(host)) {
+    add((qSub ? qSub + ' ' : '') + technique + ' site:' + host.replace(/^www\./, ''), 'more from the selected source host, not a generic platform search', 'url', 'web', { sourceClass: 'related-sites', family: 'url', foundThrough: page });
+  }
+  if (topic && topic !== technique) {
+    add((qSub ? qSub + ' ' : '') + topic + ' (tutorial OR diagram OR technique)', 'investigation topic as instructional search', 'instructional', 'web', { family: 'instructional' });
+  }
+  return out.slice(0, 12);
 }
 
 export function detectImpersonator(item, subject) {
@@ -4393,19 +4471,28 @@ export function adaptiveLensesForFocus(focuses, classification) {
     out.push(
       { id: 'identity', label: 'Identity', context: 'profile' },
       { id: 'visual-evidence', label: 'Visual evidence', context: 'photos gallery video' },
-      { id: 'public-profiles', label: 'Public profiles', context: 'official profile' },
       { id: 'galleries', label: 'Galleries', context: 'gallery photoset' },
-      { id: 'relevant-context', label: 'Relevant context', context: (classification && (classification.context || classification.topic)) || '' },
+      { id: 'videos', label: 'Videos', context: 'video clip scene' },
     );
   } else if (person && tutorial) {
     out.push(
       { id: 'identity', label: 'Identity', context: 'profile' },
-      { id: 'tutorials', label: 'Instructional / reference', context: 'tutorial' },
+      { id: 'tutorials', label: 'Tutorials', context: 'tutorial' },
+      { id: 'instruction', label: 'Instruction', context: 'how to demonstration' },
+      { id: 'diagrams', label: 'Diagrams', context: 'diagram' },
+    );
+  } else if (person && f.has('career')) {
+    out.push(
+      { id: 'career', label: 'Career', context: 'career' },
+      { id: 'credits', label: 'Credits', context: 'credits filmography' },
+      { id: 'interviews', label: 'Interviews', context: 'interviews' },
+      { id: 'public-work', label: 'Public work', context: 'public work projects' },
     );
   } else if (person && topic) {
     out.push(
-      { id: 'identity', label: 'Identity', context: 'profile' },
       { id: 'intersection', label: 'Entity × topic', context: (classification && (classification.context || classification.topic)) || '' },
+      { id: 'specialist', label: 'Specialist sources', context: 'specialist' },
+      { id: 'discussions', label: 'Discussions', context: 'discussion forum reddit' },
       { id: 'visual-evidence', label: 'Visual evidence', context: 'photos gallery' },
     );
   } else if (person) {
@@ -4434,10 +4521,16 @@ export function adaptiveLensesForFocus(focuses, classification) {
   } else if (tutorial) {
     out.push(
       { id: 'tutorials', label: 'Tutorials', context: 'tutorial' },
+      { id: 'instruction', label: 'Instruction', context: 'how to demonstration' },
       { id: 'diagrams', label: 'Diagrams', context: 'diagram' },
-      { id: 'terminology', label: 'Terminology', context: 'terminology' },
-      { id: 'visuals', label: 'Visual references', context: 'photos diagram' },
-      { id: 'fundamentals', label: 'Fundamentals', context: 'fundamentals' },
+      { id: 'technique-references', label: 'Technique references', context: 'technique reference' },
+    );
+  } else if (f.has('topic') || topic) {
+    out.push(
+      { id: 'intersection', label: 'Entity × topic', context: (classification && (classification.context || classification.topic)) || '' },
+      { id: 'specialist', label: 'Specialist sources', context: 'specialist' },
+      { id: 'discussions', label: 'Discussions', context: 'discussion forum reddit' },
+      { id: 'visual-evidence', label: 'Visual evidence', context: 'photos gallery' },
     );
   } else if (url) {
     out.push(
@@ -4511,7 +4604,8 @@ export function researchFocusQueries(focuses, classification, attempted, opts = 
     add(qSub + ' (appearance OR convention OR event OR public)', 'PUBLIC APPEARANCES focus', 'entity-topic', 'web', { family: 'entity-topic' });
   }
   if (f.has('accounts') && qSub) {
-    add(qSub + ' (OnlyFans OR Fansly OR Instagram OR Twitter OR Reddit OR "official")', 'ACCOUNTS focus', 'accounts', 'web', { family: 'accounts' });
+    add(qSub + ' (OnlyFans OR Fansly OR LoyalFans OR ManyVids OR FanCentro OR Reddit OR Linktree OR "all my links")', 'ACCOUNTS / PREMIUM focus — creator platforms, not generic social', 'accounts', 'web', { family: 'accounts' });
+    add(qSub + ' (Fansly OR OnlyFans OR Fanvue OR "justfor.fans") (profile OR bio OR links)', 'ACCOUNTS / PREMIUM — additional creator platforms', 'premium', 'web', { family: 'premium' });
   }
   return out.slice(0, 16);
 }

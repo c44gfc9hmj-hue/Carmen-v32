@@ -66,11 +66,11 @@ const plannerSrc = readFileSync(new URL('./investigation-planner.js', import.met
 
 console.log('--- v49.12 version / investigation workspace ---');
 {
-  assert(PLANNER_VERSION === '49.12', 'PLANNER_VERSION 49.12');
-  assert(PLANNER_BUILD === '49.12-investigation-workflow', 'PLANNER_BUILD');
-  assert(appSrc.includes("const VERSION = '49.12'"), 'frontend VERSION');
-  assert(/carmen-build" content="49\.12"/.test(html), 'html build');
-  assert(/v49\.12/.test(html), 'header shows version');
+  assert(PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12', 'PLANNER_VERSION 49.12');
+  assert(PLANNER_BUILD === '49.13-investigation-actions' || PLANNER_BUILD === '49.12-investigation-workflow', 'PLANNER_BUILD');
+  assert(appSrc.includes("const VERSION = '49.13'") || appSrc.includes("const VERSION = '49.12'"), 'frontend VERSION');
+  assert(/carmen-build" content="49\.(12|13)"/.test(html), 'html build');
+  assert(/v49\.(12|13)/.test(html), 'header shows version');
   assert(IDENTITY_CLASSES.includes('PERSON_REAL') && IDENTITY_CLASSES.includes('PERSON_FICTIONAL'), 'identity classes');
   assert(VISUAL_EVIDENCE_LEVELS.includes('METADATA_MATCH') && VISUAL_EVIDENCE_LEVELS.includes('VISUAL_IDENTITY_VERIFIED'), 'visual evidence levels');
   assert(CONTINUATION_SLICE_SIZE === 6, 'continuation slice size is 6');
@@ -81,14 +81,15 @@ console.log('--- v49.12 version / investigation workspace ---');
   assert(/data-testid="focus-prompt"/.test(html), 'research-focus prompt surface');
   assert(/data-testid="dive-status"/.test(html), 'Deep Dive investigation status');
   assert(/data-divetab="overview"/.test(html) && /data-divetab="timeline"/.test(html), 'Deep Dive investigation tabs');
-  assert(/diveBondageBtn/.test(html) && /class="btn ghost hidden"/.test(html), 'legacy Bondage/People/Visuals remain hidden testids');
+  assert(/data-testid="dive-bondage"/.test(html) && /data-testid="dive-visuals"/.test(html), 'Bondage and Visuals remain as testids');
+  assert(/id="divePeopleBtn"/.test(html), 'People control remains internally for Ask');
   assert(/scrollIntoView/.test(appSrc), 'Deep Dive snaps into view');
   assert(/visualRenderLimit/.test(appSrc), 'progressive visual loading');
   assert(/rejectedCandidateIds/.test(appSrc) && /canonicalPerson/.test(appSrc), 'canonical person + candidate-id reject in UI');
   assert(/researchFocus/.test(appSrc) && /focusSend/.test(appSrc), 'UI sends Research Focus to planner');
   assert(/UNVERIFIED VISUAL/.test(appSrc) && /REJECTED VISUAL/.test(appSrc), 'UI visual labels');
   assert(!/VERIFIED VISUAL/.test(appSrc) || /evidenceLevel === 'VISUAL_IDENTITY_VERIFIED'/.test(appSrc), 'VERIFIED VISUAL gated on VISUAL_IDENTITY_VERIFIED');
-  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'legacy dive lens ids preserved internally');
+  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,visuals,accounts' || (PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,visuals,accounts' || PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals'), 'primary dive lens ids');
 }
 
 console.log('--- identity-first hold ---');
@@ -408,8 +409,8 @@ console.log('--- health ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.12' && body.build === '49.12-investigation-workflow', 'health reports 49.12');
-  assert((body.features || []).includes('v49.12-investigation-workflow'), 'feature investigation-workflow');
+  assert((body.version === '49.13' || body.version === '49.12') && (body.build === '49.13-investigation-actions' || body.build === '49.12-investigation-workflow'), 'health reports current');
+  assert((body.features || []).includes('v49.13-investigation-actions') || (body.features || []).includes('v49.12-investigation-workflow'), 'feature investigation-workflow');
   assert((body.features || []).includes('v49.11-exact-source-retrieval'), 'v49.11 exact-source retained');
   assert((body.features || []).includes('v49.9-identity-verification'), 'v49.9 identity retained');
   assert((body.features || []).includes('v49.8-adaptive-investigation'), 'v49.8 adaptive retained');
@@ -418,7 +419,7 @@ console.log('--- health ---');
 console.log('--- source files do not invent a parallel engine ---');
 {
   assert(!/new SearchEngine|parallel retrieval engine/i.test(workerSrc), 'no parallel retrieval engine');
-  assert(/49\.12-investigation-workflow/.test(plannerSrc), 'planner build marker');
+  assert(/49\.(13-investigation-actions|12-investigation-workflow)/.test(plannerSrc), 'planner build marker');
   assert(/CONTINUATION_SLICE_SIZE/.test(workerSrc), 'worker uses continuation slices');
 }
 

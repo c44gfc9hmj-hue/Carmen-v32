@@ -141,7 +141,7 @@ console.log('--- Sensi Pearl identity continuity ---');
 
 console.log('--- Bondage / People / Visuals remain the primary lenses; Find More is additive ---');
 {
-  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'exactly three primary Deep Dive lenses');
+  assert((PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,visuals,accounts' || PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals'), 'exactly three primary Deep Dive lenses');
   assert(/id="diveBondageBtn"/.test(html) && /id="divePeopleBtn"/.test(html) && /id="diveVisualsBtn"/.test(html), 'UI still has Bondage / People / Visuals');
   assert(!/id="diveClothingBtn"/.test(html), 'Clothing is not a top-level Deep Dive button');
   assert(/id="diveFindMoreBtn"/.test(html) || /find more/i.test(html), 'Find More remains');

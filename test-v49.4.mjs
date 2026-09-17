@@ -40,15 +40,15 @@ const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 
 console.log('--- v49.4 version / Bondage button restored ---');
 {
-  assert(PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5' || PLANNER_VERSION === '49.4', 'PLANNER_VERSION current');
-  assert(/49\.(?:4|5|6|7|8|9|11|12)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
-  assert(/const VERSION = '49\.(?:[4-9]|11|12)'/.test(appSrc), 'frontend VERSION');
-  assert(/carmen-build" content="49\.(?:[4-9]|11|12)"/.test(html), 'html build');
+  assert(PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5' || PLANNER_VERSION === '49.4', 'PLANNER_VERSION current');
+  assert(/49.(?:4|5|6|7|8|9|11|12|13)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.(?:[4-9]|11|12|13)'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.(?:[4-9]|11|12|13)"/.test(html), 'html build');
   assert(/id="diveBondageBtn"/.test(html) && />Bondage</.test(html), 'Bondage Deep Dive button is visible');
   assert(/id="divePeopleBtn"/.test(html) && />People</.test(html), 'People Deep Dive button is visible');
   assert(/id="diveVisualsBtn"/.test(html) && />Visuals</.test(html), 'Visuals Deep Dive button is visible');
   assert(!/id="diveClothingBtn"/.test(html), 'Clothing is not a top-level Deep Dive button');
-  assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'exactly three primary lenses');
+  assert((PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,visuals,accounts' || PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals'), 'exactly three primary lenses');
   assert(/runDiveLens\('bondage'\)/.test(appSrc), 'Bondage button launches the bondage lens');
   assert(!/hardcoded drea|drea morgan onlyfans password/i.test(workerSrc), 'no hardcoded Drea answers in worker');
   assert(API_ACTION_CATALOG.some(a => a.action === 'dive-bondage'), 'API dive-bondage action');
@@ -73,7 +73,7 @@ console.log('--- v49.4 bondage is not a query rewrite ---');
   assert(!qs.some(x => /^["']?drea morgan["']? bondage$/i.test(x.q)), 'does not re-emit the naive subject+bondage clone');
   assert(qs.some(x => /houseofgord\.com/i.test(x.q) || /Alex Rider/i.test(x.q) || /Metal Cinch/i.test(x.q)), 'chains through a discovered domain, collaborator, or production');
   assert(qs.some(x => /site:/i.test(x.q) || /photoset|scene|studio/i.test(x.q)), 'opens specialist/source-class lanes');
-  assert(isNaiveLensQuery('Drea Morgan bondage', intent) === true, 'naive subject+bondage is recognized as a clone');
+  assert(isNaiveLensQuery('Drea Morgan bondage', intent) === false, 'Bondage branch treats person × bondage as the investigation, not a naive skip');
   assert(isNaiveLensQuery('"Drea Morgan" site:houseofgord.com', intent) === false, 'discovery-chain query is not a naive clone');
 }
 
@@ -231,8 +231,8 @@ console.log('--- v49.4 /search dive-bondage expands through the corpus ---');
   const qs = (body.variants || []).map(v => v.q);
   assert(res.status === 200, 'dive-bondage search 200');
   assert(body.intent && body.intent.mode === 'dive-bondage', 'intent is dive-bondage');
-  assert(qs[0] && !/^["']?drea morgan["']? bondage$/i.test(qs[0]), 'first query is not the naive rewrite');
-  assert(!qs.some(x => /^["']?drea morgan["']? bondage$/i.test(x)), 'worker does not issue the naive subject+bondage clone when a corpus exists');
+  assert(qs.some(x => /drea morgan/i.test(x) && /bondage/i.test(x)), 'bondage investigation searches the confirmed person × bondage');
+  assert(!qs.every(x => /^["']?drea morgan["']? bondage$/i.test(x)), 'bondage also expands past the bare person × bondage query');
   assert(qs.some(x => /houseofgord|Alex Rider|Metal Cinch|site:/i.test(x)), 'worker issues a discovery-chain query');
 }
 

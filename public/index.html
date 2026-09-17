@@ -10,7 +10,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon.svg">
 <title>Carmen</title>
-<meta name="carmen-build" content="49.12">
+<meta name="carmen-build" content="49.13">
 <style>
 :root{
   color-scheme:dark;
@@ -151,9 +151,12 @@ details.adv summary::-webkit-details-marker{display:none}
 .dive-id h2{margin:0 0 4px;font-size:24px;letter-spacing:-.03em;font-weight:600}
 .dive-primary{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .dive-primary .flabel{margin-bottom:8px}
-.dive-primary .row .btn{flex:1 1 0;min-width:96px;text-transform:uppercase;letter-spacing:.06em;font-size:13px}
+.dive-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
+.dive-actions .btn{min-height:48px;text-transform:uppercase;letter-spacing:.06em;font-size:13px;font-weight:700}
+.dive-actions .btn.active{background:var(--fg);color:var(--bg);border-color:transparent}
 .dive-primary textarea{min-height:56px;font-size:16px;border-radius:var(--radius-lg)}
 .dive-primary .btn.active{background:var(--fg);color:var(--bg);border-color:transparent}
+.dive-secondary summary{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--subtle);font-weight:650}
 .expansion-note{margin:8px 0 0;font-size:12px;color:var(--muted)}
 .expansion-note b{color:var(--fg)}
 .person-rel{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:8px 0;background:var(--card2)}
@@ -277,7 +280,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <div id="carmenAgentStatus" class="carmen-agent-status" data-testid="carmen-status" aria-live="polite" data-status="idle" data-view="home" data-busy="false">idle · home</div>
 <header class="appbar">
   <div class="rowbits">
-    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.12</span></h1>
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.13</span></h1>
     <button class="btn ghost" id="newInvestigationBtn" type="button" data-testid="new-investigation">New investigation</button>
   </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
@@ -403,37 +406,41 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <div id="diveIdentity"><p class="muted">Search and confirm a person or thing first. Deep Dive is the investigation workspace.</p></div>
     <div id="diveStatus" data-testid="dive-status"></div>
     <div class="dive-primary" id="divePrimaryLenses">
-      <p class="flabel">Ask this investigation</p>
+      <p class="flabel">Investigate</p>
+      <div class="dive-actions" id="diveActionRow">
+        <button class="btn" id="diveBondageBtn" type="button" data-testid="dive-bondage">Bondage</button>
+        <button class="btn" id="diveVisualsBtn" type="button" data-testid="dive-visuals">Visuals</button>
+        <button class="btn" id="divePremiumBtn" type="button" data-testid="premium-accounts">Accounts / Premium</button>
+        <button class="btn" id="diveFindMoreBtn" type="button" data-testid="find-more">Find More</button>
+      </div>
+      <p class="flabel" style="margin-top:12px">Ask this investigation</p>
       <div class="searchbox stack" style="margin-top:6px">
-        <textarea id="diveCustom" data-testid="dive-nl-input" placeholder="Find more public visual sources, accounts connected to this source, tutorials for this technique…" rows="2"></textarea>
+        <textarea id="diveCustom" data-testid="dive-nl-input" placeholder="Find more public visual sources, accounts connected to this person, tutorials for this position, this person in bondage…" rows="2"></textarea>
         <input id="diveSearchQuery" data-testid="search-input-dive" class="hidden" hidden aria-hidden="true">
         <button class="btn primary" id="diveSearchBtn" type="button" data-testid="search-submit-dive">Ask</button>
       </div>
-      <div class="row" style="margin-top:8px">
-        <button class="btn ghost" id="diveFindMoreBtn" type="button" data-testid="find-more">Find More</button>
-        <button class="btn ghost" id="divePremiumBtn" type="button" data-testid="premium-accounts">Accounts</button>
-        <button class="btn ghost hidden" id="diveBondageBtn" type="button" data-testid="dive-bondage">Bondage</button>
-        <button class="btn ghost hidden" id="divePeopleBtn" type="button" data-testid="dive-people">People</button>
-        <button class="btn ghost hidden" id="diveVisualsBtn" type="button" data-testid="dive-visuals">Visuals</button>
-      </div>
+      <button class="btn ghost hidden" id="divePeopleBtn" type="button" data-testid="dive-people" hidden>People</button>
       <div id="diveVariationChips" class="chips" style="margin-top:8px"></div>
-      <p class="hint" id="diveLensHint">Questions stay inside this case. They do not start a new search.</p>
+      <p class="hint" id="diveLensHint">Every button advances this investigation. Bondage searches this person in bondage-related public sources.</p>
       <p class="hint" id="diveSearchHint" hidden>Type what you want. Carmen picks the search paths.</p>
       <p class="expansion-note hidden" id="diveExpansionNote"></p>
     </div>
     <div class="row" style="margin-top:8px">
       <button class="btn ghost" id="howGotHereBtn" type="button" data-testid="how-i-got-here">How I got here</button>
     </div>
-    <div class="ws-tabs" id="diveTabs" style="margin-top:12px">
-      <button class="chip active" type="button" data-divetab="overview">Overview</button>
-      <button class="chip" type="button" data-divetab="evidence">Evidence</button>
-      <button class="chip" type="button" data-divetab="images">Visuals</button>
-      <button class="chip" type="button" data-divetab="videos">Videos</button>
-      <button class="chip" type="button" data-divetab="sources">Sources</button>
-      <button class="chip" type="button" data-divetab="posts">People</button>
-      <button class="chip" type="button" data-divetab="accounts">Accounts</button>
-      <button class="chip" type="button" data-divetab="timeline">Timeline</button>
-    </div>
+    <details class="adv dive-secondary" id="diveMoreViews" style="margin-top:12px">
+      <summary>More views</summary>
+      <div class="ws-tabs" id="diveTabs" style="margin-top:10px">
+        <button class="chip active" type="button" data-divetab="overview">Overview</button>
+        <button class="chip" type="button" data-divetab="evidence">Evidence</button>
+        <button class="chip" type="button" data-divetab="images">Visuals</button>
+        <button class="chip" type="button" data-divetab="videos">Videos</button>
+        <button class="chip" type="button" data-divetab="sources">Sources</button>
+        <button class="chip" type="button" data-divetab="posts">Connected</button>
+        <button class="chip" type="button" data-divetab="accounts">Accounts</button>
+        <button class="chip" type="button" data-divetab="timeline">Timeline</button>
+      </div>
+    </details>
   </div>
   <div id="identityBanner"></div>
   <div id="howHerePanel" class="card hidden" data-testid="how-i-got-here-panel" hidden>
@@ -715,6 +722,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <button class="btn" id="lightboxInvestigate">Investigate</button>
     <button class="btn" id="lightboxSimilar">Find similar</button>
     <button class="btn" id="lightboxSearchVisual">Search this visual</button>
+    <button class="btn primary" id="lightboxRecreate" data-testid="recreate-position">Recreate this position</button>
     <button class="btn" id="lightboxTutorial">Make tutorial</button>
     <button class="btn" id="lightboxSave" data-testid="lightbox-save">Save</button>
     <button class="btn" id="lightboxNotImage">Not this image</button>
