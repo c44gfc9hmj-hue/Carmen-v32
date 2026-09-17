@@ -1,4 +1,4 @@
-// Carmen v49.11 — investigation / topic-map planner + ChatGPT-access helpers.
+// Carmen v49.12 — investigation / topic-map planner + ChatGPT-access helpers.
 // Query-centric retrieval is the fallback. The planner independently
 // establishes subject evidence, topic evidence, and intersection evidence,
 // then opens source-class lanes (especially adult) instead of stuffing
@@ -48,8 +48,8 @@
 // This module is self-contained: no import from worker.js (avoids cycles).
 // worker.js imports it. The machine-readable API uses these same functions.
 
-export const PLANNER_VERSION = '49.11';
-export const PLANNER_BUILD = '49.11-exact-source-retrieval';
+export const PLANNER_VERSION = '49.12';
+export const PLANNER_BUILD = '49.12-investigation-workflow';
 
 function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
@@ -266,6 +266,10 @@ export const ADAPTIVE_TIME_GUARD_MS = 24000;
 export const ADAPTIVE_MAX_ITERATIONS = 10;
 export const ADAPTIVE_NOVELTY_STOP_STREAK = 2;
 export const ADAPTIVE_BATCH_SIZE = 2;
+export const CONTINUATION_SLICE_SIZE = 6;
+
+export const IDENTITY_CLASSES = ['PERSON_REAL', 'PERSON_FICTIONAL', 'ANIMAL', 'OBJECT', 'LOCATION', 'ORGANIZATION', 'UNKNOWN'];
+export const VISUAL_EVIDENCE_LEVELS = ['METADATA_MATCH', 'SOURCE_ASSOCIATED', 'IDENTITY_CORROBORATED', 'VISUAL_IDENTITY_VERIFIED', 'REJECTED'];
 
 export const INVESTIGATION_PHASES = [
   'IDLE', 'SEARCHING', 'CANDIDATES_FOUND', 'IDENTITY_NEEDS_CONFIRMATION',
@@ -1806,20 +1810,34 @@ export function competingFullNameInText(blob, subject) {
 export function visualIdentityGrade(item, subject, opts = {}) {
   const name = String(subject || '').trim();
   const toks = tokens(name).filter(t => t.length > 1);
-  const blob = String((item && (item.title || '')) + ' ' + ((item && (item.snippet || item.caption || item.reason || '')) || '') + ' ' + ((item && (item.url || item.pageUrl || '')) || ''));
+  const blob = identityEvidenceText(item, opts);
   const nblob = norm(blob);
   const host = hostOf((item && (item.pageUrl || item.url)) || '');
   const feedback = opts.feedback || opts.identityFeedback || {};
   const confirmed = (feedback.confirmed || []).map(norm);
-  const rejectedPeople = (feedback.rejectedPeople || []).map(norm);
   const rejectedImages = new Set((feedback.rejectedImages || []).concat(feedback.rejectedUrls || []).map(u => canonicalizeUrl(u)).filter(Boolean));
   const key = canonicalizeUrl((item && (item.url || item.image || item.pageUrl)) || '');
+  const identityClass = classifyIdentityClass(item, name, { ...opts, type: (opts.classification && opts.classification.type) || opts.type });
 
   if (key && rejectedImages.has(key)) {
-    return { grade: 'unverified', reason: 'negatively confirmed visual', excludeFromPrimaryCorpus: true, identityConfidence: 'unverified' };
+    return { grade: 'unverified', reason: 'negatively confirmed visual', excludeFromPrimaryCorpus: true, identityConfidence: 'unverified', identityClass, evidenceLevel: 'REJECTED' };
   }
-  if (rejectedPeople.some(p => p && nblob.includes(p))) {
-    return { grade: 'unverified', reason: 'rejected identity', excludeFromPrimaryCorpus: true, identityConfidence: 'unverified' };
+  if (item && item.candidateId && candidateRejectionMatches('', item.candidateId, feedback)) {
+    return { grade: 'unverified', reason: 'rejected candidate visual', excludeFromPrimaryCorpus: true, identityConfidence: 'unverified', identityClass, evidenceLevel: 'REJECTED' };
+  }
+  if (identityClass === 'PERSON_FICTIONAL' || isFictionalCharacterHost(host)) {
+    const disney = fictionalNameCollision(blob, name, host) || { collision: 'fictional character', reason: 'fictional/character host is not the resolved person' };
+    return {
+      grade: 'unverified',
+      collision: disney.collision,
+      reason: disney.reason,
+      excludeFromPrimaryCorpus: true,
+      identityConfidence: 'unverified',
+      textRelevance: 'unrelated',
+      visualRelevance: 'unrelated',
+      identityClass: 'PERSON_FICTIONAL',
+      evidenceLevel: 'REJECTED',
+    };
   }
 
   const collision = competingFullNameInText(blob, name);
@@ -1833,6 +1851,8 @@ export function visualIdentityGrade(item, subject, opts = {}) {
       identityConfidence: 'unverified',
       textRelevance: 'possible',
       visualRelevance: 'unverified',
+      identityClass,
+      evidenceLevel: 'REJECTED',
     };
   }
 
@@ -1846,11 +1866,13 @@ export function visualIdentityGrade(item, subject, opts = {}) {
       identityConfidence: 'unverified',
       textRelevance: 'unrelated',
       visualRelevance: 'unrelated',
+      identityClass: 'PERSON_FICTIONAL',
+      evidenceLevel: 'REJECTED',
     };
   }
 
   if (toks.length < 2) {
-    return { grade: 'unverified', reason: 'incomplete subject name — first-name matches are not identity evidence', firstNameOnly: true, excludeFromPrimaryCorpus: true, identityConfidence: 'unverified' };
+    return { grade: 'unverified', reason: 'incomplete subject name — first-name matches are not identity evidence', firstNameOnly: true, excludeFromPrimaryCorpus: true, identityConfidence: 'unverified', identityClass, evidenceLevel: 'METADATA_MATCH' };
   }
 
   const first = toks[0];
@@ -1869,26 +1891,30 @@ export function visualIdentityGrade(item, subject, opts = {}) {
       identityConfidence: 'unverified',
       textRelevance: 'weak',
       visualRelevance: 'unverified',
+      identityClass,
+      evidenceLevel: 'METADATA_MATCH',
     };
   }
 
   if (fullHit) {
-    if (confirmed.some(c => c === norm(name) || nblob.includes(c))) {
-      return { grade: 'verified', reason: 'user-confirmed identity and full name present', identityConfidence: 'verified', textRelevance: 'supported', visualRelevance: 'possible' };
+    if (confirmed.some(c => c === norm(name)) && identityHost) {
+      return { grade: 'verified', reason: 'user-confirmed identity on a trusted identity host', identityConfidence: 'verified', textRelevance: 'supported', visualRelevance: 'possible', identityClass: 'PERSON_REAL', evidenceLevel: 'VISUAL_IDENTITY_VERIFIED' };
     }
     if (identityHost) {
-      return { grade: 'supported', reason: 'full name on an identity/source host — visual likeness is still not identity proof', identityConfidence: 'supported', textRelevance: 'supported', visualRelevance: 'possible' };
+      return { grade: 'supported', reason: 'full name on an identity/source host — visual likeness is still not identity proof', identityConfidence: 'supported', textRelevance: 'supported', visualRelevance: 'possible', identityClass: 'PERSON_REAL', evidenceLevel: 'SOURCE_ASSOCIATED' };
     }
-    return { grade: 'possible', reason: 'full name present — a page mentioning the name does not prove the image depicts them', identityConfidence: 'possible', textRelevance: 'supported', visualRelevance: 'possible' };
+    return { grade: 'possible', reason: 'full name present in page evidence — metadata is not visual identity proof', identityConfidence: 'possible', textRelevance: 'supported', visualRelevance: 'possible', identityClass: 'PERSON_REAL', evidenceLevel: 'METADATA_MATCH' };
   }
 
   return {
     grade: 'unverified',
-    reason: 'no full-name identity evidence on this visual',
+    reason: 'no full-name identity evidence on this visual (query text is not identity proof)',
     identityConfidence: 'unverified',
     textRelevance: firstHit ? 'weak' : 'none',
     visualRelevance: 'unverified',
     excludeFromPrimaryCorpus: !lastHit,
+    identityClass,
+    evidenceLevel: firstHit ? 'METADATA_MATCH' : 'REJECTED',
   };
 }
 
@@ -2338,6 +2364,7 @@ export function mergeIdentityFeedback(prior, patch) {
   return {
     confirmed: uniq([].concat(a.confirmed || [], b.confirmed || [])).slice(-8),
     rejectedPeople: uniq([].concat(a.rejectedPeople || [], b.rejectedPeople || [])).slice(-16),
+    rejectedCandidateIds: uniq([].concat(a.rejectedCandidateIds || [], b.rejectedCandidateIds || [])).slice(-16),
     rejectedImages: uniq([].concat(a.rejectedImages || [], b.rejectedImages || [])).slice(-24),
     rejectedHosts: uniq([].concat(a.rejectedHosts || [], b.rejectedHosts || [])).slice(-16),
     rejectedUrls: uniq([].concat(a.rejectedUrls || [], b.rejectedUrls || [])).slice(-24),
@@ -2356,7 +2383,7 @@ export function applyIdentityFeedback(results, feedback, classification) {
     const row = { ...r };
     const host = String(row.domain || hostOf(row.url) || '').replace(/^www\./, '').toLowerCase();
     const key = canonicalizeUrl(row.url || row.image || '');
-    const blob = norm((row.title || '') + ' ' + (row.snippet || '') + ' ' + (row.url || ''));
+    const blob = norm(identityEvidenceText(row));
     let weight = 0;
     let note = '';
     if (key && rejectedUrls.has(key)) {
@@ -2364,17 +2391,23 @@ export function applyIdentityFeedback(results, feedback, classification) {
       row.rejectionReason = 'negatively confirmed visual/url';
       continue;
     }
-    if (host && rejectedHosts.has(host)) {
+    if (host && rejectedHosts.has(host) && !/(iafd|babepedia|wikipedia|imdb|onlyfans)/i.test(host)) {
       row.suppressed = true;
       row.rejectionReason = 'rejected identity/host';
       continue;
     }
-    if (rejectedPeople.some(p => p && (blob.includes(p) || norm(row.title || '').includes(p)))) {
+    if (classifyIdentityClass(row, subject, { classification }) === 'PERSON_FICTIONAL') {
+      row.suppressed = true;
+      row.rejectionReason = 'fictional character is not the resolved person';
+      row.identityClass = 'PERSON_FICTIONAL';
+      continue;
+    }
+    if (candidateRejectionMatches(row.title, row.candidateId, fb)) {
       weight -= 40;
-      note = 'negatively weighted — rejected identity';
-      row.suppressed = weight <= -40;
+      note = 'negatively weighted — rejected candidate';
+      row.suppressed = true;
       row.rejectionReason = note;
-      if (row.suppressed) continue;
+      continue;
     }
     if (confirmed.length) {
       const hit = confirmed.some(c => c && (blob.includes(c) || (subject && c === norm(subject) && includesAll(blob, tokens(subject)))));
@@ -2527,7 +2560,8 @@ export function createInvestigationState(opts = {}) {
     foundThrough: opts.foundThrough || 'new',
     relatedTo: opts.relatedTo || null,
     retrievalRuns: 0,
-    identityFeedback: { confirmed: [], rejectedPeople: [], rejectedImages: [], rejectedHosts: [], rejectedUrls: [] },
+    identityFeedback: { confirmed: [], rejectedPeople: [], rejectedCandidateIds: [], rejectedImages: [], rejectedHosts: [], rejectedUrls: [] },
+    canonicalPerson: null,
     entityIdentity: null,
     accounts: [],
     concepts: [],
@@ -2586,29 +2620,37 @@ export function applyInvestigationAction(state, action, payload = {}) {
   }
   if (act === 'confirm-identity' || act === 'confirm') {
     const name = payload.name || payload.subject || s.subject;
+    const candidate = payload.candidate || payload.canonicalPerson || null;
     s.confirmed = [...new Set([...(s.confirmed || []), name])].slice(-8);
     s.confirmedIdentity = [...new Set([...(s.confirmedIdentity || []), name])].slice(-8);
     s.canonicalEntities = [...new Set([...(s.canonicalEntities || []), name])].slice(-8);
     s.identityFeedback = mergeIdentityFeedback(s.identityFeedback, { confirmed: [name] });
     s.subject = name || s.subject;
-    s.phase = 'RESEARCHING';
-    s.identityVerification = { ...(s.identityVerification || {}), userConfirmed: true, canonical: name };
-    pushTrail('confirm-identity', 'That’s the one · ' + name);
+    s.phase = 'IDENTITY_CONFIRMED';
+    s.canonicalPerson = buildCanonicalPerson(candidate || { name, candidateId: payload.candidateId }, {
+      name,
+      candidateId: payload.candidateId,
+      identityClass: payload.identityClass || 'PERSON_REAL',
+    });
+    s.identityVerification = { ...(s.identityVerification || {}), userConfirmed: true, canonical: name, needed: false, phase: 'RESEARCH' };
+    pushTrail('confirm-identity', 'YES — THIS PERSON · ' + name);
   }
   if (act === 'reject-identity' || act === 'reject-person') {
-    const name = payload.name || payload.title || payload.url || '';
-    s.rejected = s.rejected || { urls: [], hosts: [], images: [], people: [] };
-    if (name) s.rejected.people = [...new Set([...(s.rejected.people || []), name])].slice(-16);
+    const name = payload.name || payload.title || '';
+    const candidateId = payload.candidateId || '';
+    s.rejected = s.rejected || { urls: [], hosts: [], images: [], people: [], candidateIds: [] };
+    if (candidateId) s.rejected.candidateIds = [...new Set([...(s.rejected.candidateIds || []), candidateId])].slice(-16);
+    if (name && tokens(name).length >= 2) s.rejected.people = [...new Set([...(s.rejected.people || []), name])].slice(-16);
     if (payload.host) s.rejected.hosts = [...new Set([...(s.rejected.hosts || []), payload.host])].slice(-16);
     if (payload.url) s.rejected.urls = [...new Set([...(s.rejected.urls || []), payload.url])].slice(-24);
-    if (payload.candidateId) s.rejected.candidateIds = [...new Set([...(s.rejected.candidateIds || []), payload.candidateId])].slice(-16);
     s.identityFeedback = mergeIdentityFeedback(s.identityFeedback, {
-      rejectedPeople: name ? [name] : [],
+      rejectedPeople: name && tokens(name).length >= 2 ? [name] : [],
+      rejectedCandidateIds: candidateId ? [candidateId] : [],
       rejectedHosts: payload.host ? [payload.host] : [],
       rejectedUrls: payload.url ? [payload.url] : [],
     });
     s.phase = 'IDENTITY_RESOLUTION';
-    pushTrail('reject-identity', 'Not this person · ' + name);
+    pushTrail('reject-identity', 'NOT THIS PERSON · ' + (candidateId || name));
   }
   if (act === 'reject-image') {
     const url = payload.imageUrl || payload.url || '';
@@ -2759,6 +2801,15 @@ export const DETERMINISTIC_FIXTURES = {
       { title: 'Disney Princess Belle cartoon', url: 'https://www.rule34.xxx/index.php?page=post&s=list&tags=belle', snippet: 'cartoon princess belle anime', source: 'Rule34' },
     ],
     diagnostics: { DuckDuckGo: { ok: true, added: 3 }, Bing: { ok: true, added: 2 } },
+  },
+  'drea-morgan': {
+    items: [
+      { title: 'Drea Morgan - IAFD', url: 'https://www.iafd.com/person.rme/perfid=dreamorgan', snippet: 'Drea Morgan performer biography and filmography', source: 'IAFD' },
+      { title: "Drea Morgan's Official Site", url: 'https://dreamorgan.com/models/DreaMorgan.html', snippet: "Drea Morgan's Official Site! Offering full-length videos", source: 'Bing', domain: 'dreamorgan.com' },
+      { title: 'Drea | Free Listening on SoundCloud', url: 'https://soundcloud.com/drea-music', snippet: 'Stream Drea music. Unrelated first-name match.', source: 'SoundCloud' },
+      { title: 'Drea Smith jazz vocalist', url: 'https://example.com/drea-smith', snippet: 'Jazz vocalist Drea Smith is not Drea Morgan', source: 'Bing' },
+    ],
+    diagnostics: { DuckDuckGo: { ok: true, added: 2 }, Bing: { ok: true, added: 2 } },
   },
   'riley-reid': {
     items: [
@@ -2943,6 +2994,124 @@ export function parseRetrievalIntents(query, opts = {}) {
   return out;
 }
 
+export function isSearchEngineHost(host) {
+  const h = String(host || '').replace(/^www\./, '').toLowerCase();
+  return /^(bing|google|yahoo|duckduckgo|startpage|yandex|ecosia|baidu)(\.|$)/i.test(h)
+    || /(bing\.com|google\.[a-z.]+|yahoo\.com|duckduckgo\.com|startpage\.com)$/i.test(h);
+}
+
+export function isFictionalCharacterHost(host) {
+  const h = String(host || '').replace(/^www\./, '').toLowerCase();
+  return /(disney|fandom\.com|wikia|disneyplus|disney\.com|princess)/i.test(h);
+}
+
+export function identityEvidenceText(item, opts = {}) {
+  const title = String((item && (item.title || item.caption || '')) || '');
+  const snippet = String((item && (item.snippet || item.description || '')) || '');
+  const imageUrl = String((item && (item.image || item.src || (/\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(String((item && item.url) || '')) ? item.url : ''))) || '');
+  const pageUrl = String((item && (item.pageUrl || item.sourceUrl || '')) || '');
+  const resultUrl = String((item && item.url) || '');
+  const parts = [title, snippet];
+  if (imageUrl && !isSearchEngineHost(hostOf(imageUrl))) parts.push(imageUrl.split('?')[0]);
+  if (pageUrl && !isSearchEngineHost(hostOf(pageUrl))) parts.push(pageUrl.split('?')[0]);
+  if (resultUrl && !isSearchEngineHost(hostOf(resultUrl))) parts.push(resultUrl.split('?')[0]);
+  let blob = parts.filter(Boolean).join(' ');
+  const queryEcho = String((item && (item.queryVariant || item.query)) || (opts && opts.query) || '');
+  if (queryEcho) {
+    const qn = norm(queryEcho);
+    const bn = norm(blob);
+    if (qn && bn === qn) blob = title;
+  }
+  return blob;
+}
+
+export function classifyIdentityClass(item, subject, opts = {}) {
+  const host = hostOf((item && (item.pageUrl || item.url)) || '');
+  const blob = identityEvidenceText(item, opts);
+  const type = (opts && opts.type) || (opts && opts.classification && opts.classification.type) || '';
+  const collision = fictionalNameCollision(blob, subject, host);
+  if (collision) return 'PERSON_FICTIONAL';
+  if (isFictionalCharacterHost(host)) return 'PERSON_FICTIONAL';
+  if (/\b(fictional character|disney princess|beauty and the beast|cartoon character)\b/i.test(blob)) return 'PERSON_FICTIONAL';
+  if ((type === 'technique' || type === 'object' || type === 'skill') || (opts && opts.classification && opts.classification.intentClass === 'OBJECT')) {
+    if (/\b(amphibian|tree frog|bullfrog|wildlife|red-eyed tree frog)\b/i.test(blob) && isRestraintTechnique(subject || '')) return 'ANIMAL';
+    return 'OBJECT';
+  }
+  if (type === 'place' || type === 'location') return 'LOCATION';
+  if (type === 'org' || type === 'organization' || type === 'company') return 'ORGANIZATION';
+  if (type === 'person' || type === 'social') return 'PERSON_REAL';
+  return 'UNKNOWN';
+}
+
+export function candidateRejectionMatches(name, candidateId, identityFeedback) {
+  const f = identityFeedback || {};
+  const rejectedIds = (f.rejectedCandidateIds || []).map(String);
+  if (candidateId && rejectedIds.includes(String(candidateId))) return true;
+  const n = norm(name);
+  const nToks = tokens(name).filter(t => t.length > 1);
+  for (const p of (f.rejectedPeople || [])) {
+    const pn = norm(p);
+    if (!pn || pn.length < 3) continue;
+    if (n === pn) return true;
+    const pToks = tokens(p).filter(t => t.length > 1);
+    if (pToks.length >= 2 && nToks.length >= 2 && pToks.length === nToks.length && pToks.every(t => nToks.includes(t))) return true;
+  }
+  return false;
+}
+
+const ALIAS_STOP = new Set(['the','and','for','with','from','this','that','http','https','www','com','html','php','index','search','query','utm','ref','src','img','image','photo','video','page','home','user','users','profile','post','posts','comment','id','uuid']);
+
+export function isPlausibleAlias(value) {
+  const s = String(value || '').trim();
+  if (!s || s.length < 2 || s.length > 64) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return false;
+  if (/^[0-9a-f]{16,}$/i.test(s) && !/[a-z]{3,}/i.test(s.replace(/[0-9a-f]/gi, ''))) return false;
+  if (/^(utm_|fbclid|gclid|ref=|rdt=)/i.test(s)) return false;
+  if (/^https?:/i.test(s) || /[/?&=]/.test(s)) return false;
+  if (/^\d+$/.test(s)) return false;
+  const n = norm(s);
+  if (!n || ALIAS_STOP.has(n)) return false;
+  const parts = n.split(/\s+/);
+  if (parts.every(p => ALIAS_STOP.has(p) || p.length < 2)) return false;
+  if (parts.length === 1 && parts[0].length < 3) return false;
+  return true;
+}
+
+export function filterAliases(list) {
+  const out = [];
+  const seen = new Set();
+  for (const a of list || []) {
+    const label = typeof a === 'string' ? a : (a && (a.label || a.name || a.handle));
+    if (!isPlausibleAlias(label)) continue;
+    const k = norm(label);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(typeof a === 'string' ? label : { ...a, label });
+  }
+  return out;
+}
+
+export function buildCanonicalPerson(candidate, extras = {}) {
+  const name = String((candidate && (candidate.name || candidate.canonicalName)) || extras.name || '').trim();
+  const aliases = filterAliases([].concat((candidate && (candidate.knownAliases || candidate.aliases)) || [], extras.aliases || []));
+  const handles = [...new Set([].concat((candidate && (candidate.usernames || candidate.handles)) || [], extras.handles || []).map(h => String(h || '').replace(/^@/, '')).filter(Boolean))];
+  const sources = [...new Set([].concat((candidate && (candidate.sources || candidate.sourceDomains)) || [], extras.sources || []).filter(Boolean))];
+  const accounts = [].concat((candidate && candidate.accounts) || [], extras.accounts || []).slice(0, 12);
+  return {
+    canonicalName: name,
+    aliases: aliases.slice(0, 12),
+    handles: handles.slice(0, 8),
+    sourceIdentifiers: sources.slice(0, 12),
+    accountIdentifiers: accounts,
+    trustedSourceDomains: sources.filter(h => /(iafd|babepedia|adultfilmdatabase|wikipedia|imdb|onlyfans|loyalfans|indexxx|freeones)/i.test(String(h))).slice(0, 8),
+    identityEvidence: (candidate && (candidate.additionalSources || candidate.evidence)) || extras.identityEvidence || [],
+    representativeImages: ((candidate && candidate.representativeImages) || extras.images || []).slice(0, 6),
+    candidateId: (candidate && candidate.candidateId) || extras.candidateId || '',
+    identityClass: extras.identityClass || 'PERSON_REAL',
+    confirmedAt: extras.confirmedAt || new Date().toISOString(),
+  };
+}
+
 export function fictionalNameCollision(blob, subject, host) {
   const name = String(subject || '').trim();
   const toks = tokens(name);
@@ -2951,16 +3120,25 @@ export function fictionalNameCollision(blob, subject, host) {
   if (!toks.length) return null;
   const first = toks[0];
   const last = toks.length > 1 ? toks[toks.length - 1] : '';
+  const disneyHost = isFictionalCharacterHost(h);
   const disneyish = /\b(disney|princess|beauty and the beast|belle from|enchanted rose|beast'?s castle|animated|cartoon princess|disney wiki|disney fandom)\b/i.test(String(blob || ''))
-    || /(disney|fandom\.com|wikia|princess)/i.test(h);
-  if (disneyish && first === 'belle' && (!last || last !== 'delphine' || !nblob.includes('delphine'))) {
-    return { collision: 'Disney Princess Belle', reason: 'identity collision — Disney Princess Belle is not Belle Delphine' };
+    || disneyHost;
+  if (first === 'belle' && (last === 'delphine' || !last)) {
+    if (disneyHost) {
+      return { collision: 'Disney Princess Belle', reason: 'identity collision — Disney/Fandom Belle is not Belle Delphine', identityClass: 'PERSON_FICTIONAL' };
+    }
+    if (disneyish && !nblob.includes('delphine')) {
+      return { collision: 'Disney Princess Belle', reason: 'identity collision — Disney Princess Belle is not Belle Delphine', identityClass: 'PERSON_FICTIONAL' };
+    }
+    if (disneyish && nblob.includes('delphine') && /\b(beauty and the beast|disney princess|enchanted rose|beast'?s castle)\b/i.test(String(blob || ''))) {
+      return { collision: 'Disney Princess Belle', reason: 'identity collision — Disney Princess Belle is not Belle Delphine even if the query text is echoed', identityClass: 'PERSON_FICTIONAL' };
+    }
   }
-  if (first === 'belle' && last === 'delphine' && disneyish && !nblob.includes('delphine')) {
-    return { collision: 'Disney Princess Belle', reason: 'identity collision — Disney Princess Belle is not Belle Delphine' };
+  if (disneyish && first === 'belle' && last !== 'delphine') {
+    return { collision: 'Disney Princess Belle', reason: 'identity collision — Disney Princess Belle is not Belle Delphine', identityClass: 'PERSON_FICTIONAL' };
   }
   if (/\b(fictional character|cartoon|anime character|video game character)\b/i.test(String(blob || '')) && toks.length >= 2 && !toks.every(t => nblob.includes(t))) {
-    return { collision: 'fictional character', reason: 'fictional/cartoon character is not the resolved person' };
+    return { collision: 'fictional character', reason: 'fictional/cartoon character is not the resolved person', identityClass: 'PERSON_FICTIONAL' };
   }
   return null;
 }
@@ -2976,6 +3154,18 @@ export function identityDisambiguation(subject) {
       mustNot: ['disney princess', 'beauty and the beast', 'enchanted rose', 'beast castle'],
       negatives: ['-disney', '-princess', '-"beauty and the beast"', '-"disney princess"'],
       collisionLabel: 'Disney Princess Belle',
+      identityClass: 'PERSON_REAL',
+    };
+  }
+  if (first === 'drea' && last === 'morgan') {
+    return {
+      canonical: 'Drea Morgan',
+      must: ['morgan'],
+      mustNot: ['soundcloud drea', 'drea only'],
+      negatives: ['-soundcloud'],
+      collisionLabel: '',
+      identityClass: 'PERSON_REAL',
+      requireFullName: true,
     };
   }
   return {
@@ -3022,7 +3212,7 @@ export function semanticVariations(topic, evidence, opts = {}) {
 export function classifyVisualRelevance(item, classification) {
   const url = String((item && (item.url || item.image || item.pageUrl)) || '');
   const host = hostOf(url).replace(/^www\./, '');
-  const blob = String((item && (item.title || '')) + ' ' + ((item && (item.snippet || item.caption || item.reason || '')) || '') + ' ' + url);
+  const blob = identityEvidenceText(item);
   const nblob = norm(blob);
   const type = (classification && classification.type) || '';
   if (ANIME_CARTOON_HOSTS.some(h => host === h || host.endsWith('.' + h))) {
@@ -3949,11 +4139,18 @@ export function decideInvestigationContinuation(controller, guards = {}) {
   const accessOnly = !!guards.accessBoundary && controller.pending.every(p => p.family === 'premium' || p.accessBound);
   const remaining = controller.pathsRemaining || [];
   const pending = controller.pending || [];
+  const sliceRan = Number(guards.sliceRan || 0);
+  const sliceLimit = Number(guards.sliceLimit != null ? guards.sliceLimit : CONTINUATION_SLICE_SIZE);
 
   if (providerDown) {
     controller.stopKind = 'D';
     controller.headline = 'Search providers were unavailable, so remaining public paths could not be retrieved.';
     return { continue: false, stopKind: 'D', stopClass: 'provider_unavailable', reason: controller.headline, remaining: remaining.length };
+  }
+  if (sliceRan >= sliceLimit && pending.length) {
+    controller.stopKind = 'E';
+    controller.headline = 'Additional public investigation paths remain, but this run reached its execution limit.';
+    return { continue: false, stopKind: 'E', stopClass: 'resource_guard', reason: controller.headline, remaining: pending.length };
   }
   if (accessOnly && pending.length && !pending.some(p => p.family !== 'premium')) {
     controller.stopKind = 'F';
@@ -4096,9 +4293,9 @@ export function adaptiveTrace(controller) {
 // Extends the v49.8 adaptive controller. Does not replace retrieval.
 // ---------------------------------------------------------------------------
 
-export const RESEARCH_FOCUS_IDS = ['person', 'visuals', 'tutorial', 'clothing', 'position', 'url', 'topic'];
-export const IDENTITY_VERIFY_MAX = 6;
-export const IDENTITY_VERIFY_PREFERRED = 4;
+export const RESEARCH_FOCUS_IDS = ['person', 'visuals', 'tutorial', 'clothing', 'position', 'url', 'topic', 'accounts', 'career', 'interviews', 'projects', 'collaborations', 'appearances'];
+export const IDENTITY_VERIFY_MAX = 5;
+export const IDENTITY_VERIFY_PREFERRED = 3;
 export const VISUAL_GATE_VERDICTS = ['verified', 'unverified', 'rejected'];
 export const SOURCE_LIFECYCLE = ['discovered', 'verified', 'opened', 'analyzed'];
 export const INVESTIGATION_PHASES_V49_9 = [
@@ -4134,6 +4331,12 @@ export function normalizeResearchFocusToken(raw) {
   if (n === 'position' || n === 'technique' || n === 'object') return 'position';
   if (n === 'url' || n === 'website' || n === 'site') return 'url';
   if (n === 'topic' || n === 'subject') return 'topic';
+  if (n === 'accounts' || n === 'account' || n === 'profiles' || n === 'premium') return 'accounts';
+  if (n === 'career' || n === 'work' || n === 'credits' || n === 'filmography') return 'career';
+  if (n === 'interviews' || n === 'interview') return 'interviews';
+  if (n === 'projects' || n === 'project') return 'projects';
+  if (n === 'collaborations' || n === 'collaboration' || n === 'collaborators') return 'collaborations';
+  if (n === 'appearances' || n === 'public appearances' || n === 'appearance') return 'appearances';
   return '';
 }
 
@@ -4167,6 +4370,10 @@ export function researchFocusFamilies(focuses, classification) {
   if (f.has('position')) families.push('position');
   if (f.has('url')) families.push('url', 'link-chain');
   if (person || f.has('person')) families.push('accounts', 'premium');
+  if (f.has('career') || f.has('interviews') || f.has('projects') || f.has('collaborations') || f.has('appearances')) {
+    families.push('entity-topic', 'corroboration');
+  }
+  if (f.has('accounts')) families.push('accounts', 'premium');
   if (!f.size) return INVESTIGATION_PATH_FAMILIES.slice();
   families.push('source-classes', 'link-chain', 'corroboration');
   return [...new Set(families)];
@@ -4204,6 +4411,8 @@ export function adaptiveLensesForFocus(focuses, classification) {
   } else if (person) {
     out.push(
       { id: 'identity', label: 'Identity', context: 'profile' },
+      { id: 'aliases', label: 'Aliases', context: 'aka alias' },
+      { id: 'accounts', label: 'Accounts', context: 'profile official' },
       { id: 'credits', label: 'Credits and public work', context: 'credits filmography' },
       { id: 'career', label: 'Career', context: 'career' },
       { id: 'interviews', label: 'Interviews', context: 'interviews' },
@@ -4213,13 +4422,20 @@ export function adaptiveLensesForFocus(focuses, classification) {
     );
   } else if (visuals || clothing || position) {
     out.push(
-      { id: 'visuals', label: 'Visual references', context: 'photos gallery video' },
+      { id: 'visuals', label: 'Images', context: 'photos' },
+      { id: 'videos', label: 'Videos', context: 'video clip' },
+      { id: 'galleries', label: 'Galleries', context: 'gallery photoset' },
+      { id: 'original-sources', label: 'Original sources', context: 'original source' },
+      { id: 'duplicates', label: 'Duplicates', context: 'repost mirror' },
+      { id: 'visual-corroboration', label: 'Visual corroboration', context: 'same photoset' },
       { id: 'tutorials', label: 'Instructional / reference', context: 'tutorial' },
       { id: 'variations', label: 'Variations', context: 'variations' },
     );
   } else if (tutorial) {
     out.push(
       { id: 'tutorials', label: 'Tutorials', context: 'tutorial' },
+      { id: 'diagrams', label: 'Diagrams', context: 'diagram' },
+      { id: 'terminology', label: 'Terminology', context: 'terminology' },
       { id: 'visuals', label: 'Visual references', context: 'photos diagram' },
       { id: 'fundamentals', label: 'Fundamentals', context: 'fundamentals' },
     );
@@ -4279,6 +4495,24 @@ export function researchFocusQueries(focuses, classification, attempted, opts = 
       add(qSub + ' "' + v.label + '"', 'TOPIC focus — semantic variant of “' + topic + '”', 'topic-variants', 'web', { family: 'topic-variants' });
     }
   }
+  if (f.has('career') && qSub) {
+    add(qSub + ' (career OR credits OR filmography OR "known for")', 'CAREER focus', 'entity-topic', 'web', { family: 'entity-topic' });
+  }
+  if (f.has('interviews') && qSub) {
+    add(qSub + ' (interview OR "talks about" OR podcast OR q&a)', 'INTERVIEWS focus', 'entity-topic', 'web', { family: 'entity-topic' });
+  }
+  if (f.has('projects') && qSub) {
+    add(qSub + ' (project OR production OR photoset OR feature)', 'PROJECTS focus', 'entity-topic', 'web', { family: 'entity-topic' });
+  }
+  if (f.has('collaborations') && qSub) {
+    add(qSub + ' (collaboration OR featuring OR "with" OR costar)', 'COLLABORATIONS focus', 'entity-topic', 'web', { family: 'entity-topic' });
+  }
+  if (f.has('appearances') && qSub) {
+    add(qSub + ' (appearance OR convention OR event OR public)', 'PUBLIC APPEARANCES focus', 'entity-topic', 'web', { family: 'entity-topic' });
+  }
+  if (f.has('accounts') && qSub) {
+    add(qSub + ' (OnlyFans OR Fansly OR Instagram OR Twitter OR Reddit OR "official")', 'ACCOUNTS focus', 'accounts', 'web', { family: 'accounts' });
+  }
   return out.slice(0, 16);
 }
 
@@ -4314,9 +4548,12 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
     const host = String(c.host || (sample && (sample.domain || hostOf(sample.url))) || '').replace(/^www\./, '');
     const urls = (c.urls || (sample && sample.url ? [sample.url] : [])).filter(Boolean);
     if (urls.some(u => rejectedUrls.has(canonicalizeUrl(u)))) continue;
-    if (host && rejectedHosts.has(host)) continue;
+    if (host && rejectedHosts.has(host) && !/(iafd|babepedia|wikipedia|imdb|onlyfans)/i.test(host)) continue;
     const name = candidateDisplayName(sample, c.name || subject);
-    if (rejectedPeople.some(p => p && (norm(name).includes(p) || p.includes(norm(name))))) continue;
+    const candidateId = c.candidateId || ('cand_' + (candidates.length + 1) + '_' + (host || 'unk').replace(/[^a-z0-9]+/g, '').slice(0, 16));
+    if (candidateRejectionMatches(name, candidateId, feedback)) continue;
+    const idClass = classifyIdentityClass(sample, subject, { classification, type });
+    if (idClass === 'PERSON_FICTIONAL') continue;
     const images = [...new Set((c.images || []).concat(sample && sample.image ? [sample.image] : []).concat(sample && sample.images ? sample.images : []))].filter(Boolean).slice(0, 6);
     const sources = [...new Set((c.sourceDomains || []).concat(host ? [host] : []))].slice(0, 8);
     const corroborating = (c.evidence || []).slice(0, 6).map(e => ({
@@ -4325,23 +4562,24 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
       sourceClass: e.sourceClass || '',
       subjectEvidence: e.subjectEvidence || 'UNKNOWN',
     }));
-    const aliases = [...new Set((sample.aliases || []).concat(c.aliases || []))].filter(a => a && norm(a) !== norm(name)).slice(0, 6);
+    const aliases = filterAliases([...new Set((sample.aliases || []).concat(c.aliases || []))].filter(a => a && norm(a) !== norm(name))).slice(0, 6);
     const handles = [...new Set((sample.knownHandles || sample.handles || []).concat(c.handles || []).concat(sample.accountHandle ? [sample.accountHandle] : []))].slice(0, 6);
     const reasonsFor = [];
     const reasonsAgainst = [];
     const identityHost = /(iafd|adultfilmdatabase|babepedia|wikipedia|imdb|indexxx|freeones|loyalfans|onlyfans)/i.test(sources.join(' '));
-    const fullName = tokens(subject).length >= 2 && includesAll((sample.title || '') + ' ' + (sample.url || ''), tokens(subject));
+    const fullName = tokens(subject).length >= 2 && includesAll(identityEvidenceText(sample), tokens(subject));
     if (identityHost) reasonsFor.push('Appears on an identity/profile source');
     if (fullName) reasonsFor.push('Full name present on the source');
     if (images.length) reasonsFor.push('Representative public image available');
     if (corroborating.length >= 2) reasonsFor.push('Corroborated across ' + corroborating.length + ' sources');
     if (handles.length) reasonsFor.push('Public username/handle: ' + handles[0]);
-    const collision = fictionalNameCollision((sample.title || '') + ' ' + (sample.snippet || ''), subject, host);
+    const collision = fictionalNameCollision(identityEvidenceText(sample), subject, host);
     if (collision) reasonsAgainst.push(collision.reason || 'Possible identity collision');
-    const competing = competingFullNameInText((sample.title || '') + ' ' + (sample.snippet || ''), subject);
+    const competing = competingFullNameInText(identityEvidenceText(sample), subject);
     if (competing) reasonsAgainst.push('Competing full name in evidence (“' + competing + '”)');
     if (!fullName && tokens(subject).length >= 2) reasonsAgainst.push('Full requested name is not on this source');
     if (STOCK_NOISE_HOSTS.some(h => host === h || host.endsWith('.' + h))) reasonsAgainst.push('Generic image-index host — not identity evidence');
+    if (/soundcloud|spotify|bandcamp/i.test(host) && tokens(subject).length >= 2 && !fullName) reasonsAgainst.push('Unrelated first-name match on a music host is not this person');
     let confidence = 'low';
     if (confirmed.some(x => x === norm(name) || x === norm(subject))) confidence = 'verified';
     else if (identityHost && fullName && !reasonsAgainst.length) confidence = 'high';
@@ -4349,8 +4587,8 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
     else if (fullName) confidence = 'low';
     const userConfirmed = confirmed.some(x => x === norm(name) || x === norm(subject));
     candidates.push({
-      candidateId: c.candidateId || ('cand_' + (candidates.length + 1) + '_' + (host || 'unk').replace(/[^a-z0-9]+/g, '').slice(0, 16)),
-      name,
+      candidateId,
+      name: fullName ? subject : name,
       knownAliases: aliases,
       usernames: handles,
       profileSource: sources[0] || host || '',
@@ -4366,6 +4604,7 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
       sample,
       userConfirmed,
       userRejected: false,
+      identityClass: idClass === 'UNKNOWN' ? (fullName ? 'PERSON_REAL' : 'UNKNOWN') : idClass,
     });
   }
 
@@ -4393,19 +4632,23 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
 export function visualEvidenceGate(item, classification, opts = {}) {
   const url = String((item && (item.url || item.image || item.pageUrl)) || '');
   const imageUrl = String((item && (item.image || item.src || item.url)) || '');
-  const host = hostOf(url || imageUrl).replace(/^www\./, '');
-  const blob = String((item && (item.title || '')) + ' ' + ((item && (item.snippet || item.caption || item.reason || '')) || '') + ' ' + url);
-  const nblob = norm(blob);
+  const host = hostOf((item && (item.pageUrl || item.sourceUrl)) || url || imageUrl).replace(/^www\./, '');
+  const evidenceBlob = identityEvidenceText(item, { query: opts.query || (item && item.queryVariant) });
+  const nblob = norm(evidenceBlob);
   const type = (classification && classification.type) || '';
   const subject = String((classification && classification.subject) || opts.subject || '').trim();
   const topic = String((opts.topic != null ? opts.topic : (classification && (classification.context || classification.topic))) || '').replace(/adult content/ig, '').trim();
   const subjToks = tokens(subject).filter(t => t.length > 1);
   const topicToks = tokens(topic).filter(t => t.length > 2 && !/^(the|and|with|from)$/.test(t));
   const vis = classifyVisualRelevance(item, classification);
-  const grade = visualIdentityGrade(item, subject, opts);
+  const grade = visualIdentityGrade(item, subject, { ...opts, classification });
   const feedback = opts.identityFeedback || opts.feedback || {};
   const rejectedImages = new Set((feedback.rejectedImages || []).concat(feedback.rejectedUrls || []).map(u => canonicalizeUrl(u)).filter(Boolean));
   const key = canonicalizeUrl(url || imageUrl);
+  const identityClass = grade.identityClass || classifyIdentityClass(item, subject, { classification, type });
+  const confirmed = ((feedback.confirmed || []).map(norm));
+  const userConfirmed = confirmed.some(c => c === norm(subject));
+  const identityHost = /(iafd|babepedia|adultfilmdatabase|wikipedia|imdb|loyalfans|onlyfans|houseofgord|clips4sale|indexxx)\./i.test(host);
 
   let entityMatch = 'none';
   if (subjToks.length >= 2 && subjToks.every(t => nblob.includes(t))) entityMatch = 'full';
@@ -4424,63 +4667,68 @@ export function visualEvidenceGate(item, classification, opts = {}) {
 
   const stock = STOCK_NOISE_HOSTS.some(h => host === h || host.endsWith('.' + h));
   const wildlife = WILDLIFE_HOSTS.some(h => host === h || host.endsWith('.' + h)) || /\b(pixabay|pxhere)\b/i.test(host);
-  const animalLang = /\b(amphibian|tree frog|bullfrog|wildlife|red-eyed tree frog|common frog|kitten|puppy)\b/i.test(blob);
-  const sculpture = /\b(sculpture|statue|bronze|marble bust|artwork|oil painting)\b/i.test(blob) && !/\b(photoset|photograph|photos? of)\b/i.test(blob);
-  const boat = /\b(sailboat|yacht|boat hull|marina)\b/i.test(blob);
+  const animalLang = /\b(amphibian|tree frog|bullfrog|wildlife|red-eyed tree frog|common frog|kitten|puppy)\b/i.test(evidenceBlob);
+  const sculpture = /\b(sculpture|statue|bronze|marble bust|artwork|oil painting)\b/i.test(evidenceBlob) && !/\b(photoset|photograph|photos? of)\b/i.test(evidenceBlob);
+  const boat = /\b(sailboat|yacht|boat hull|marina)\b/i.test(evidenceBlob);
 
-  const reasons = [];
-  let verdict = 'unverified';
-  let label = 'UNVERIFIED VISUAL';
+  const base = { entityMatch, topicMatch, identityClass, visualRelevance: vis.visualClass || 'unknown' };
 
   if (key && rejectedImages.has(key)) {
-    return { verdict: 'rejected', label: 'REJECTED VISUAL', entityMatch, topicMatch, visualRelevance: 'rejected', reason: 'user-rejected visual', demote: true, gate: 'user-rejected' };
+    return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: 'REJECTED', reason: 'user-rejected visual', demote: true, gate: 'user-rejected' };
   }
-  if (vis.demote && vis.visualClass === 'unrelated') {
-    return { verdict: 'rejected', label: 'REJECTED VISUAL', entityMatch, topicMatch, visualRelevance: vis.visualClass, reason: vis.reason, demote: true, gate: 'unrelated-class' };
+  if (identityClass === 'PERSON_FICTIONAL' || vis.visualClass === 'unrelated' && vis.demote) {
+    return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: 'REJECTED', visualRelevance: vis.visualClass || 'unrelated', reason: vis.reason || grade.reason || 'fictional/character collision with the resolved identity', demote: true, gate: 'identity-collision' };
   }
-  if (grade.excludeFromPrimaryCorpus && (grade.collision || grade.firstNameOnly)) {
-    return { verdict: 'rejected', label: 'REJECTED VISUAL', entityMatch, topicMatch, visualRelevance: 'unrelated', reason: grade.reason, demote: true, gate: 'identity-collision' };
-  }
-  if (grade.grade === 'verified' || grade.grade === 'supported' || grade.grade === 'possible') {
-    if (entityMatch !== 'full') entityMatch = 'full';
+  if (grade.excludeFromPrimaryCorpus && (grade.collision || grade.firstNameOnly || grade.evidenceLevel === 'REJECTED')) {
+    return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: 'REJECTED', visualRelevance: 'unrelated', reason: grade.reason, demote: true, gate: 'identity-collision' };
   }
   if ((type === 'person' || (classification && classification.intentClass === 'PERSON')) && entityMatch !== 'full') {
-    reasons.push(entityMatch === 'partial' ? 'first-name or partial name is not identity evidence' : 'no entity match on this visual');
-    return { verdict: 'rejected', label: 'REJECTED VISUAL', entityMatch, topicMatch, visualRelevance: vis.visualClass || 'unverified', reason: reasons.join('; '), demote: true, gate: 'entity-mismatch' };
+    const reason = entityMatch === 'partial' ? 'first-name or partial name is not identity evidence' : 'no entity match on page evidence (query text is not identity proof)';
+    return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: entityMatch === 'partial' ? 'METADATA_MATCH' : 'REJECTED', reason, demote: true, gate: 'entity-mismatch' };
   }
   if ((wildlife || animalLang) && isRestraintTechnique(subject || topic)) {
-    return { verdict: 'rejected', label: 'REJECTED VISUAL', entityMatch, topicMatch, visualRelevance: 'unrelated', reason: 'wildlife/animal image is not the classified technique', demote: true, gate: 'wildlife' };
+    return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: 'REJECTED', visualRelevance: 'unrelated', identityClass: 'ANIMAL', reason: 'wildlife/animal image is not the classified technique', demote: true, gate: 'wildlife' };
   }
   if (stock && (type === 'person' || topicToks.length)) {
-    reasons.push('generic stock/image-index host is not entity-specific visual evidence');
-    verdict = 'rejected';
-    label = 'REJECTED VISUAL';
-    return { verdict, label, entityMatch, topicMatch, visualRelevance: 'stock', reason: reasons.join('; '), demote: true, gate: 'stock' };
+    return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: 'REJECTED', visualRelevance: 'stock', reason: 'generic stock/image-index host is not entity-specific visual evidence', demote: true, gate: 'stock' };
   }
   if ((sculpture || boat) && type === 'person') {
-    return { verdict: 'rejected', label: 'REJECTED VISUAL', entityMatch, topicMatch, visualRelevance: 'unrelated', reason: 'unrelated art/object is not entity-specific visual evidence', demote: true, gate: 'unrelated-object' };
+    return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: 'REJECTED', visualRelevance: 'unrelated', reason: 'unrelated art/object is not entity-specific visual evidence', demote: true, gate: 'unrelated-object' };
   }
 
   const visualOk = vis.visualClass === 'real-person' || vis.visualClass === 'real-world-technique' || vis.visualClass === 'unknown';
-  if (type === 'person' && topicToks.length && entityMatch === 'full' && (topicMatch === 'none')) {
-    reasons.push('image of the person is not automatically evidence of “' + topic + '”');
-    return { verdict: 'unverified', label: 'UNVERIFIED VISUAL', entityMatch, topicMatch, visualRelevance: vis.visualClass || 'unknown', reason: reasons.join('; '), demote: false, gate: 'topic-missing' };
+
+  if (type === 'person' && topicToks.length && entityMatch === 'full' && topicMatch === 'none') {
+    return { ...base, verdict: 'unverified', label: 'UNVERIFIED VISUAL', evidenceLevel: identityHost ? 'SOURCE_ASSOCIATED' : 'METADATA_MATCH', reason: 'image of the person is not automatically evidence of “' + topic + '”', demote: false, gate: 'topic-missing' };
   }
   if (topicToks.length && topicMatch !== 'none' && entityMatch !== 'full' && type === 'person') {
-    reasons.push('topic imagery without the resolved person is not entity-specific evidence');
-    return { verdict: 'unverified', label: 'UNVERIFIED VISUAL', entityMatch, topicMatch, visualRelevance: vis.visualClass || 'unknown', reason: reasons.join('; '), demote: true, gate: 'entity-missing' };
+    return { ...base, verdict: 'unverified', label: 'UNVERIFIED VISUAL', evidenceLevel: 'METADATA_MATCH', reason: 'topic imagery without the resolved person is not entity-specific evidence', demote: true, gate: 'entity-missing' };
   }
-  if (entityMatch === 'full' && (topicMatch === 'full' || topicMatch === 'related' || topicMatch === 'n/a') && visualOk) {
-    return { verdict: 'verified', label: 'VERIFIED VISUAL', entityMatch, topicMatch, visualRelevance: vis.visualClass, reason: 'entity match + query/topic match + visual relevance', demote: false, gate: 'pass' };
+
+  if ((type === 'technique' || type === 'object' || type === 'skill') && visualOk && (topicMatch === 'full' || topicMatch === 'related' || entityMatch === 'full') && identityClass !== 'ANIMAL') {
+    const level = (topicMatch === 'full' || entityMatch === 'full') ? 'SOURCE_ASSOCIATED' : 'METADATA_MATCH';
+    const verified = level !== 'METADATA_MATCH';
+    return { ...base, verdict: verified ? 'verified' : 'unverified', label: verified ? 'VERIFIED VISUAL' : 'UNVERIFIED VISUAL', evidenceLevel: verified ? 'VISUAL_IDENTITY_VERIFIED' : 'METADATA_MATCH', visualRelevance: vis.visualClass, reason: vis.reason || 'technique visual reference', demote: false, gate: 'technique' };
   }
-  if (entityMatch === 'full' && visualOk && !topicToks.length) {
-    return { verdict: 'verified', label: 'VERIFIED VISUAL', entityMatch, topicMatch, visualRelevance: vis.visualClass, reason: 'entity-associated visual (no topic requested)', demote: false, gate: 'entity-only' };
+
+  // Metadata (title/url/query containing the name) is never VERIFIED VISUAL.
+  if (entityMatch === 'full' && visualOk && !identityHost && !userConfirmed) {
+    return { ...base, verdict: 'unverified', label: 'UNVERIFIED VISUAL', evidenceLevel: 'METADATA_MATCH', visualRelevance: vis.visualClass, reason: 'name in title/snippet/URL is metadata, not visual identity proof', demote: false, gate: 'metadata-only' };
   }
-  if ((type === 'technique' || type === 'object' || type === 'skill') && visualOk && (topicMatch === 'full' || topicMatch === 'related' || entityMatch === 'full')) {
-    return { verdict: 'verified', label: 'VERIFIED VISUAL', entityMatch, topicMatch, visualRelevance: vis.visualClass, reason: vis.reason || 'technique visual reference', demote: false, gate: 'technique' };
+  if (entityMatch === 'full' && visualOk && identityHost && !userConfirmed) {
+    return { ...base, verdict: 'unverified', label: 'UNVERIFIED VISUAL', evidenceLevel: 'SOURCE_ASSOCIATED', visualRelevance: vis.visualClass, reason: 'associated with an identity source — not yet visually verified', demote: false, gate: 'source-associated' };
   }
-  reasons.push(vis.reason || grade.reason || 'Carmen cannot verify that this visual depicts the requested entity/topic intersection');
-  return { verdict: 'unverified', label: 'UNVERIFIED VISUAL', entityMatch, topicMatch, visualRelevance: vis.visualClass || 'unknown', reason: reasons.join('; '), demote: false, gate: 'unverified' };
+  if (entityMatch === 'full' && visualOk && identityHost && userConfirmed && (topicMatch === 'full' || topicMatch === 'related' || topicMatch === 'n/a')) {
+    return { ...base, verdict: 'verified', label: 'VERIFIED VISUAL', evidenceLevel: 'VISUAL_IDENTITY_VERIFIED', visualRelevance: vis.visualClass, reason: 'confirmed identity + trusted source association', demote: false, gate: 'visual-identity-verified' };
+  }
+  if (entityMatch === 'full' && visualOk && userConfirmed && grade.evidenceLevel === 'VISUAL_IDENTITY_VERIFIED') {
+    return { ...base, verdict: 'verified', label: 'VERIFIED VISUAL', evidenceLevel: 'VISUAL_IDENTITY_VERIFIED', visualRelevance: vis.visualClass, reason: 'confirmed identity with corroborating source evidence', demote: false, gate: 'visual-identity-verified' };
+  }
+  if (entityMatch === 'full' && visualOk && userConfirmed) {
+    return { ...base, verdict: 'unverified', label: 'UNVERIFIED VISUAL', evidenceLevel: 'IDENTITY_CORROBORATED', visualRelevance: vis.visualClass, reason: 'confirmed identity, but this visual is not independently source-associated', demote: false, gate: 'identity-corroborated' };
+  }
+
+  return { ...base, verdict: 'unverified', label: 'UNVERIFIED VISUAL', evidenceLevel: grade.evidenceLevel || 'METADATA_MATCH', visualRelevance: vis.visualClass || 'unknown', reason: vis.reason || grade.reason || 'Carmen cannot verify that this visual depicts the requested identity', demote: false, gate: 'unverified' };
 }
 
 export function applyVisualEvidenceGate(visuals, classification, opts = {}) {
@@ -4489,8 +4737,9 @@ export function applyVisualEvidenceGate(visuals, classification, opts = {}) {
   const rejected = [];
   for (const im of visuals || []) {
     const gate = visualEvidenceGate(im, classification, opts);
-    const row = { ...im, visualGate: gate.verdict, visualGateLabel: gate.label, visualGateReason: gate.reason, entityMatch: gate.entityMatch, topicMatch: gate.topicMatch, visualRelevance: gate.visualRelevance };
-    if (gate.verdict === 'verified') { row.primaryCorpus = true; kept.push(row); }
+    const row = { ...im, visualGate: gate.verdict, visualGateLabel: gate.label, visualGateReason: gate.reason, entityMatch: gate.entityMatch, topicMatch: gate.topicMatch, visualRelevance: gate.visualRelevance, evidenceLevel: gate.evidenceLevel || '', identityClass: gate.identityClass || '' };
+    if (gate.verdict === 'verified' && gate.evidenceLevel === 'VISUAL_IDENTITY_VERIFIED') { row.primaryCorpus = true; kept.push(row); }
+    else if (gate.verdict === 'verified') { row.primaryCorpus = false; row.unverifiedVisual = true; row.visualGate = 'unverified'; row.visualGateLabel = 'UNVERIFIED VISUAL'; unverified.push(row); }
     else if (gate.verdict === 'rejected') { row.primaryCorpus = false; rejected.push(row); }
     else { row.primaryCorpus = false; row.unverifiedVisual = true; unverified.push(row); }
   }
@@ -4636,27 +4885,30 @@ export function resumeInvestigationQueue(state, opts = {}) {
 }
 
 export function identityPhaseShouldHoldExpansion(classification, identityFeedback, opts = {}) {
-  if (opts.identityPhase !== true && opts.phase !== 'IDENTITY_RESOLUTION') return false;
   const type = (classification && classification.type) || '';
   const person = type === 'person' || type === 'social' || (classification && classification.intentClass === 'PERSON');
   if (!person) return false;
+  if (opts.identityPhase === false) return false;
   if (opts.forceFullInvestigation) return false;
   if (opts.confirmIdentity || (opts.mode && String(opts.mode).indexOf('confirm') >= 0)) return false;
   if (opts.findMore || opts.diveLens || opts.premiumAccounts) return false;
   const confirmed = (identityFeedback && identityFeedback.confirmed) || [];
   if (confirmed.length) return false;
+  if (opts.canonicalPerson && opts.canonicalPerson.canonicalName) return false;
   return true;
 }
 
 export function suppressionFromRejection(identityFeedback) {
   const f = identityFeedback || {};
+  const people = [...new Set((f.rejectedPeople || []).filter(n => tokens(n).length >= 2))];
   return {
-    people: [...new Set(f.rejectedPeople || [])],
+    people,
+    candidateIds: [...new Set(f.rejectedCandidateIds || [])],
     hosts: [...new Set(f.rejectedHosts || [])],
     urls: [...new Set((f.rejectedUrls || []).concat(f.rejectedImages || []))],
-    queryNegatives: [...new Set((f.rejectedPeople || []).slice(0, 6).map(n => {
+    queryNegatives: [...new Set(people.slice(0, 6).map(n => {
       const t = String(n || '').replace(/"/g, '').trim();
-      return t ? '-"' + t + '"' : '';
+      return t && tokens(t).length >= 2 ? '-"' + t + '"' : '';
     }).filter(Boolean))],
   };
 }

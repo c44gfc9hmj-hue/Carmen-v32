@@ -93,6 +93,7 @@ jobs:
           node test-v49.8.mjs
           node test-v49.9.mjs
           node test-v49.11.mjs
+          node test-v49.12.mjs
           node test-browser-test.mjs
 
       - name: Install Wrangler

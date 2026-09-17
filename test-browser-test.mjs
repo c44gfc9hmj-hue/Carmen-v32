@@ -109,7 +109,7 @@ console.log('--- browser-test surface ---');
 {
   const asset = await worker.fetch(new Request('https://carmen.test/test/app.js'), env);
   const js = await asset.text();
-  assert(asset.status === 200 && /const VERSION = '49\.(?:[4-9]|11)'/.test(js), '/test/app.js is the real frontend');
+  assert(asset.status === 200 && /const VERSION = '49\.(?:[4-9]|11|12)'/.test(js), '/test/app.js is the real frontend');
   assert(js.includes('function setAgentState'), 'frontend exposes agent-observable state');
   assert(js.includes("data-testid=\"result-card\""), 'result cards carry stable testids');
 }

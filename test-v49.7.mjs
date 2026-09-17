@@ -59,17 +59,17 @@ const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 
 console.log('--- v49.7 version / hierarchy preserved ---');
 {
-  assert(PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7', 'PLANNER_VERSION current');
-  assert(PLANNER_BUILD === '49.11-exact-source-retrieval' || PLANNER_BUILD === '49.9-identity-queue-visual' || PLANNER_BUILD === '49.8-adaptive-investigation' || PLANNER_BUILD === '49.7-retrieval-engine', 'PLANNER_BUILD');
-  assert(/const VERSION = '49\.(?:[7-9]|11)'/.test(appSrc), 'frontend VERSION');
-  assert(/carmen-build" content="49\.(?:[7-9]|11)"/.test(html), 'html build');
-  assert(/v49\.(?:[7-9]|11)/.test(html), 'header shows current version');
+  assert(PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7', 'PLANNER_VERSION current');
+  assert(PLANNER_BUILD === '49.12-investigation-workflow' || PLANNER_BUILD === '49.11-exact-source-retrieval' || PLANNER_BUILD === '49.9-identity-queue-visual' || PLANNER_BUILD === '49.8-adaptive-investigation' || PLANNER_BUILD === '49.7-retrieval-engine', 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.(?:[7-9]|11|12)'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.(?:[7-9]|11|12)"/.test(html), 'html build');
+  assert(/v49\.(?:[7-9]|11|12)/.test(html), 'header shows current version');
   assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'Deep Dive hierarchy unchanged');
   assert(/data-testid="premium-accounts"/.test(html) && /id="divePremiumBtn"/.test(html), 'Account/Premium button present');
   assert(/premiumAccounts:\s*true/.test(appSrc) && /mode:\s*'premium-accounts'/.test(appSrc), 'Account/Premium is a real retrieval branch');
   assert(/data-testid="what-carmen-checked"/.test(html) && /data-testid="why-did-you-stop"/.test(html), 'What Carmen checked / Why did you stop UI');
   assert(/data-testid="variation-chips"/.test(html), 'variation chips container');
-  assert(/Ask Carmen anything/.test(html), 'NL box kept');
+  assert(/Ask Carmen anything|Ask this investigation/.test(html), 'NL box kept');
   assert(/data-testid="find-more"/.test(html), 'Find More kept');
 }
 
@@ -348,7 +348,7 @@ console.log('--- health features ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert((body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7') && /49\.(11-exact-source-retrieval|9-identity-queue-visual|8-adaptive-investigation|7-retrieval-engine)/.test(body.build || ''), 'health reports current');
+  assert((body.version === '49.12' || body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7') && /49\.(12-investigation-workflow|11-exact-source-retrieval|9-identity-queue-visual|8-adaptive-investigation|7-retrieval-engine)/.test(body.build || ''), 'health reports current');
   assert((body.features || []).includes('v49.7-retrieval-engine'), 'feature flag retrieval-engine');
   assert((body.features || []).includes('v49.7-what-carmen-checked'), 'feature flag what-carmen-checked');
   assert((body.features || []).includes('v49.6-state-isolation'), 'v49.6 flags retained');

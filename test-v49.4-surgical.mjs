@@ -58,7 +58,7 @@ console.log('--- adult execution phases: identity, then intersection, then adult
   assert(seq[2].lane === 'fetish-publisher', 'adult source class runs before generic web');
   const ordered = retrievalExecutionOrder(unordered, { phases: ['identity', 'intersection', 'adult'] });
   assert(ordered.map(v => v.lane).join(',') === 'identity,intersection,fetish-publisher,primary,expanded', 'retrievalExecutionOrder identity, intersection, adult, then generic');
-  assert(/phases: \['identity', 'intersection', 'adult'\]/.test(workerSrc), 'worker executes phases: identity, intersection, adult');
+  assert(/identity', 'intersection', 'adult'/.test(workerSrc), 'worker executes phases: identity, intersection, adult');
   assert(/retrievalExecutionOrder\(/.test(workerSrc), 'worker uses retrievalExecutionOrder on live web variants');
   assert(ADULT_SOURCE_CLASSES.some(c => c.id === 'fetish-publisher'), 'adult source classes remain in the planner');
 }

@@ -40,7 +40,7 @@ console.log('--- That’s the one confirms identity, not a source universe ---')
   assert((state.identityFeedback.confirmed || []).includes('Sensi Pearl'), 'confirmed name is Sensi Pearl');
   assert(!(state.identityFeedback.rejectedHosts || []).includes('houseofgord.com'), 'confirm does not reject other hosts');
   assert(!(state.identityFeedback.confirmed || []).some(x => /houseofgord/i.test(x)), 'domain is not stored as the identity');
-  assert(/That’s the one/.test((state.trail || []).map(t => t.label).join(' ')), 'trail records That’s the one');
+  assert(/That’s the one|YES — THIS PERSON/.test((state.trail || []).map(t => t.label).join(' ')), 'trail records That’s the one');
 
   const rows = [
     { title: 'Sensi Pearl - IAFD', url: 'https://www.iafd.com/person.rme/perfid=sensipearl', snippet: 'Sensi Pearl performer bio', domain: 'iafd.com', score: 10 },

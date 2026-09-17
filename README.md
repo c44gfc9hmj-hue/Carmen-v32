@@ -9,6 +9,37 @@ This is the single canonical Carmen application. There are no separate V25/V32/
 V33/V34/V35 builds — those accumulated during earlier development and have been
 consolidated into this one project.
 
+## Investigation workspace (v49.12)
+
+v49.12 is an incremental production fix on live v49.11. It does not rebuild
+Carmen or replace the planner/worker retrieval architecture.
+
+- **Identity-first person workflow.** PERSON searches hold expansion until the
+  user confirms who they mean. The selector is Tinder-style: 2–5 candidates,
+  **YES — THIS PERSON** / **NOT THIS PERSON**. Rejection is candidate-id
+  specific and never substring-kills “Belle Delphine” because “Belle” was
+  rejected.
+- **canonicalPerson** is the investigation anchor after confirmation. Visuals,
+  Find More, Deep Dive, and new queries use that identity.
+- **Visual evidence levels.** METADATA_MATCH, SOURCE_ASSOCIATED,
+  IDENTITY_CORROBORATED, VISUAL_IDENTITY_VERIFIED, REJECTED. Only
+  VISUAL_IDENTITY_VERIFIED may appear as **VERIFIED VISUAL**. Query text,
+  titles, and search-engine URLs are not identity proof. Disney/Fandom Belle
+  is PERSON_FICTIONAL and cannot be a verified Belle Delphine visual.
+- **Research Focus actually changes planner queries.** PERSON+VISUALS is not
+  PERSON+CAREER. Adaptive Lens options follow the selected focus.
+- **Deep Dive is the investigation workspace** (identity, focus, evidence,
+  visuals, sources, accounts, timeline). Legacy Bondage/People/Visuals remain
+  as hidden testids.
+- **Continuation slices.** Each Worker run processes a bounded queue slice
+  (6, or 4 during identity hold). STOP KIND E means more public paths remain —
+  it is not “Research complete.” Resume continues the queue.
+- **v49.11 exact-source retrieval is preserved.** Analyze uses the canonical
+  URL. Reddit post ID + subreddit stay authoritative. OnlyFans reports
+  AUTHENTICATION_REQUIRED rather than claiming subscriber content.
+
+Build identifier: **49.12-investigation-workflow**.
+
 ## Investigation workspace (v49.9)
 
 v49.9 is an incremental production fix on live v49.8. It does not rebuild

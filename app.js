@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.11';
+const VERSION = '49.12';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -86,6 +86,11 @@ let lastExpansion = null;
 let lastRelatedPeople = [];
 let lastClothingEvidence = [];
 let pendingPhoto = null;
+let identityCursor = 0;
+let rejectedCandidateIds = [];
+let canonicalPerson = null;
+let awaitingFocus = false;
+let visualRenderLimit = 12;
 
 /* Browser-agent observability. Does not change retrieval, ranking, or Deep Dive. */
 function carmenNewInvestigationId() {
@@ -220,6 +225,7 @@ function normalizeUrl(s) {
   return s;
 }
 function hostOf(u) { try { return new URL(normalizeUrl(u)).hostname.replace(/^www\./, ''); } catch { return ''; } }
+function tokensForReject(name) { return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(t => t.length > 1); }
 async function sha(s) {
   const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
   return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
@@ -529,6 +535,12 @@ function focusToken(raw) {
   if (n === 'position' || n === 'technique' || n === 'object') return 'position';
   if (n === 'url' || n === 'website' || n === 'site') return 'url';
   if (n === 'topic' || n === 'subject') return 'topic';
+  if (n === 'accounts' || n === 'account') return 'accounts';
+  if (n === 'career' || n === 'work' || n === 'credits') return 'career';
+  if (n === 'interviews' || n === 'interview') return 'interviews';
+  if (n === 'projects' || n === 'project') return 'projects';
+  if (n === 'collaborations' || n === 'collaboration') return 'collaborations';
+  if (n === 'appearances' || n === 'appearance') return 'appearances';
   return '';
 }
 function activeTypeHint() {
@@ -1123,7 +1135,8 @@ async function discover(opts = {}) {
       params.set('pendingQueue', lastInvestigationQueue.pending.map(p => p.q || p).filter(Boolean).slice(0, 24).join('\n'));
     }
     if (opts.confirmIdentity) params.set('confirmIdentity', '1');
-    if (opts.identityPhase) params.set('identityPhase', '1');
+    if (opts.identityPhase || (lastClassification?.type === 'person' && !confirmedIdentity.length && !opts.confirmIdentity && !opts.findMore && !opts.diveLens && !opts.resume)) params.set('identityPhase', '1');
+    if (rejectedCandidateIds.length) params.set('rejectedCandidateIds', rejectedCandidateIds.slice(0, 12).join(','));
     if (expanded) params.set('expanded', '1');
     if (visualMore || visualMode === 'more') params.set('visualMore', '1');
     if (visualMode) params.set('visualMode', visualMode);
@@ -1227,6 +1240,7 @@ async function discover(opts = {}) {
     lastIdentityVerification = data.identityVerification || lastIdentityVerification;
     lastInvestigationQueue = data.investigationQueue || lastInvestigationQueue;
     lastInvestigationState = data.investigationState || lastInvestigationState;
+    if (data.investigationState && data.investigationState.canonicalPerson) canonicalPerson = data.investigationState.canonicalPerson;
     originalQuery = data.query || q;
 
     if (data.classification && data.classification.subject && !keepSubject) researchSubject = data.classification.subject;
@@ -1239,11 +1253,22 @@ async function discover(opts = {}) {
     renderClassification(data);
     renderLensStack(data);
     renderPathChips(lastPaths, 'divePaths');
-    renderResults(lastResults, data.providers || {});
+    const holdIdentity = !!(data.identityPhase || (lastIdentityVerification && lastIdentityVerification.needed && !lastIdentityVerification.userConfirmed));
     renderIdentityVerification(data);
-    renderTopicMap(lastTopicMap);
-    renderVisualCorpus();
-    renderVideoCorpus();
+    if (holdIdentity) {
+      if ($('results')) $('results').innerHTML = '';
+      if ($('visualCorpus')) $('visualCorpus').innerHTML = '';
+      if ($('videoCorpus')) $('videoCorpus').innerHTML = '';
+      if ($('personRail')) $('personRail').innerHTML = '';
+      if ($('topicMap')) $('topicMap').innerHTML = '';
+      if ($('identifyHint')) $('identifyHint').textContent = 'Is this the person you mean? Confirm before Carmen investigates.';
+    } else {
+      renderResults(lastResults, data.providers || {});
+      renderTopicMap(lastTopicMap);
+      renderVisualCorpus();
+      renderVideoCorpus();
+      renderPersonRail();
+    }
     renderGraphTrail(data);
     renderExpandedCard(data);
     renderResumeQueue(data);
@@ -1541,44 +1566,76 @@ function renderIdentityVerification(data) {
   if (!el) return;
   const pack = (data && data.identityVerification) || lastIdentityVerification;
   const isPerson = (lastClassification?.type || currentSubject || activeTypeHint()) === 'person' || (researchFocus.includes('person'));
+  if (pack && pack.userConfirmed) {
+    const name = (canonicalPerson && canonicalPerson.canonicalName) || (pack.candidates && pack.candidates[0] && pack.candidates[0].name) || confirmedIdentity[0] || lastClassification?.subject || '';
+    if ($('identityVerify')) $('identityVerify').innerHTML = `<div class="card" data-testid="identity-confirmed">
+      <p class="flabel">Identity</p>
+      <p><b>${esc(name)}</b> confirmed. This is the investigation anchor.</p>
+    </div>`;
+    renderFocusPrompt();
+    if (el.id !== 'personRail') return;
+  }
   if (!isPerson || !pack || !pack.needed || !(pack.candidates || []).length) {
-    if ($('identityVerify')) $('identityVerify').innerHTML = pack && pack.userConfirmed
-      ? `<div class="card" data-testid="identity-confirmed"><p class="flabel">Identity</p><p><b>${esc((pack.candidates && pack.candidates[0] && pack.candidates[0].name) || confirmedIdentity[0] || lastClassification?.subject || '')}</b> confirmed. Investigation continues under this identity.</p></div>`
-      : ($('identityVerify') ? '' : '');
+    if ($('identityVerify') && !(pack && pack.userConfirmed)) $('identityVerify').innerHTML = '';
     if (el.id !== 'personRail') return;
   }
   if (!isPerson) return;
-  const cands = (pack && pack.candidates) || [];
+  const cands = (pack.candidates || []).slice(0, 5);
   if (!cands.length) return;
-  if ($('identifyHint')) $('identifyHint').textContent = pack.ambiguous
-    ? 'Which person is this? Confirm one or more strong matches. “Not this person” is negative evidence, not a visual dismiss.'
-    : 'Confirm the person before treating later results as this identity. Visual resemblance is not identity proof.';
-  const html = `<div class="id-verify" data-testid="identity-verify">
-    <p class="flabel">Which person is this?</p>
-    <p class="hint">${esc(pack.reason || 'Small high-quality identity set. You can confirm more than one when the evidence supports it.')}</p>
-    <div class="person-rail">` + cands.map((c, i) => {
-      const imgs = (c.representativeImages || []).filter(Boolean);
-      const hero = imgs[0];
-      const confirmed = c.userConfirmed || confirmedIdentity.some(n => String(n).toLowerCase() === String(c.name || '').toLowerCase());
-      return `<article class="person-tile id-card${confirmed ? ' selected' : ''}" data-testid="identity-card" data-cand="${i}">
-        ${hero ? `<img class="hero" src="${esc(imgSrc(hero))}" alt="${esc(c.name || '')}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
-        <div class="rbody">
-          <p class="pname">${esc(c.name || 'Unknown candidate')}</p>
-          <div class="subtle">${esc(c.profileSource || (c.sources || []).slice(0, 3).join(' · '))}${c.usernames && c.usernames[0] ? ' · @' + esc(c.usernames[0]) : ''}</div>
-          <div class="rmeta"><span class="badge confidence ${esc(c.confidence || 'low')}">${esc(c.confidence || 'low')}</span>${confirmed ? ' <span class="badge access-ok">Yes, this is the person</span>' : ''}</div>
-          ${c.identityContext ? `<p class="hint" style="margin:8px 0 0">${esc(String(c.identityContext).slice(0, 160))}</p>` : ''}
-          ${c.reasonsFor && c.reasonsFor.length ? `<p class="rwhy">${esc(c.reasonsFor.slice(0, 2).join(' · '))}</p>` : ''}
-          ${c.reasonsAgainst && c.reasonsAgainst.length ? `<p class="warning">${esc(c.reasonsAgainst[0])}</p>` : ''}
-          <p class="hint" style="margin:8px 0 0">A picture is not proof of identity.</p>
-          <div class="racts">
-            <button class="primary" data-idact="yes" data-testid="identity-confirm" data-cand="${i}">Yes, this is the person</button>
-            <button data-idact="no" data-testid="identity-reject" data-cand="${i}">Not this person</button>
-          </div>
+  if (identityCursor >= cands.length) identityCursor = 0;
+  const i = identityCursor;
+  const c = cands[i];
+  const imgs = (c.representativeImages || []).filter(Boolean);
+  const hero = imgs[0];
+  if ($('identifyHint')) $('identifyHint').textContent = 'Is this the person you mean?';
+  const html = `<div class="tinder-wrap id-verify" data-testid="identity-verify">
+    <p class="flabel">Who is this?</p>
+    <p class="hint">${esc(pack.reason || 'Confirm the person. Rejection applies only to this candidate.')}</p>
+    <article class="tinder-card id-card" data-testid="identity-card" data-cand="${i}" data-candidate-id="${esc(c.candidateId || '')}">
+      ${hero ? `<img class="hero" src="${esc(imgSrc(hero))}" alt="${esc(c.name || '')}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
+      <div class="rbody">
+        <p class="pname">${esc(c.name || 'Unknown candidate')}</p>
+        <div class="subtle">${esc(c.profileSource || (c.sources || []).slice(0, 3).join(' · '))}${c.usernames && c.usernames[0] ? ' · @' + esc(c.usernames[0]) : ''}</div>
+        ${(c.knownAliases || []).length ? `<div class="aliases">${c.knownAliases.slice(0, 4).map(a => '<span>' + esc(a.label || a) + '</span>').join('')}</div>` : ''}
+        <div class="rmeta"><span class="badge confidence ${esc(c.confidence || 'low')}">${esc(c.confidence || 'low')}</span>${c.identityClass ? ' <span class="badge">' + esc(c.identityClass.replace(/_/g, ' ')) + '</span>' : ''}</div>
+        ${c.identityContext ? `<p class="hint" style="margin:8px 0 0">${esc(String(c.identityContext).slice(0, 180))}</p>` : ''}
+        ${c.reasonsFor && c.reasonsFor.length ? `<p class="rwhy">${esc(c.reasonsFor.slice(0, 2).join(' · '))}</p>` : ''}
+        ${c.reasonsAgainst && c.reasonsAgainst.length ? `<p class="warning">${esc(c.reasonsAgainst[0])}</p>` : ''}
+        <p class="hint" style="margin:8px 0 0">A picture is not proof of identity. Query text is not identity proof.</p>
+        <div class="racts" style="flex-direction:column">
+          <button class="btn primary tinder-yes" data-idact="yes" data-testid="identity-confirm" data-cand="${i}">YES — THIS PERSON</button>
+          <button class="btn tinder-no" data-idact="no" data-testid="identity-reject" data-cand="${i}">NOT THIS PERSON</button>
         </div>
-      </article>`;
-    }).join('') + `</div></div>`;
+        ${cands.length > 1 ? `<div class="tinder-dots">${cands.map((_, d) => '<span' + (d === i ? ' class="on"' : '') + '></span>').join('')}</div><p class="hint" style="text-align:center">${i + 1} of ${cands.length}</p>` : ''}
+      </div>
+    </article>
+  </div>`;
   if ($('identityVerify')) $('identityVerify').innerHTML = html;
   else if ($('personRail')) $('personRail').innerHTML = html;
+}
+function renderFocusPrompt() {
+  const el = $('focusPrompt');
+  if (!el) return;
+  if (!confirmedIdentity.length && !canonicalPerson) { el.innerHTML = ''; el.classList.add('hidden'); return; }
+  if (!awaitingFocus) { el.innerHTML = ''; el.classList.add('hidden'); return; }
+  const name = (canonicalPerson && canonicalPerson.canonicalName) || confirmedIdentity[0] || lastClassification?.subject || '';
+  el.classList.remove('hidden');
+  el.innerHTML = `<div class="focus-prompt" data-testid="focus-prompt">
+    <p class="flabel">Research Focus</p>
+    <h3>What do you want to investigate about ${esc(name)}?</h3>
+    <p class="hint">PERSON + VISUALS searches images, videos, and galleries. PERSON + CAREER searches work and credits. The lens below changes with your selection.</p>
+    <div class="row" style="margin-top:10px">
+      <button class="btn primary" type="button" id="focusInvestigateBtn" data-testid="focus-investigate">Investigate</button>
+    </div>
+  </div>`;
+  const btn = $('focusInvestigateBtn');
+  if (btn) btn.onclick = () => {
+    awaitingFocus = false;
+    el.innerHTML = '';
+    el.classList.add('hidden');
+    const entity = (canonicalPerson && canonicalPerson.canonicalName) || confirmedIdentity[0] || lastClassification?.subject || '';
+    discover({ keepSubject: true, entity, topic: diveTopic, append: true, confirmIdentity: true });
+  };
 }
 function renderResumeQueue(data) {
   const el = $('resumeQueue');
@@ -1625,15 +1682,17 @@ function renderVisualCorpus() {
   el.innerHTML = `<div class="card" style="padding-top:12px">
     <h3 style="margin:0 0 6px">Visuals <span class="badge">${visuals.length}</span></h3>
     <p class="corpus-scale">${esc(scale)}${moreHint && !/more available/i.test(scale) ? esc(moreHint) : ''}</p>
-    <p class="hint">Research objects, not decoration. Visual likeness is not identity proof. UNVERIFIED VISUAL means Carmen could not confirm entity × topic relevance. Nothing is saved unless you choose Save.</p>
-    <div class="gallery dense">${visuals.slice(0, 48).map((im, i) => {
+    <p class="hint">Research objects, not decoration. Only VISUAL IDENTITY VERIFIED may appear as VERIFIED VISUAL. Name-in-title is metadata, not proof.</p>
+    <div class="gallery dense">${visuals.slice(0, visualRenderLimit).map((im, i) => {
       const sel = selectedVisual && visualDedupeKey(selectedVisual.url) === visualDedupeKey(im.url);
-      const gate = im.visualGateLabel || (im.unverifiedVisual ? 'UNVERIFIED VISUAL' : (im.visualGate === 'verified' ? 'VERIFIED VISUAL' : (im.visualGate === 'rejected' ? 'REJECTED VISUAL' : '')));
+      const gate = im.visualGateLabel || (im.evidenceLevel === 'VISUAL_IDENTITY_VERIFIED' ? 'VERIFIED VISUAL' : (im.unverifiedVisual ? 'UNVERIFIED VISUAL' : (im.visualGate === 'verified' && im.evidenceLevel === 'VISUAL_IDENTITY_VERIFIED' ? 'VERIFIED VISUAL' : (im.visualGate === 'rejected' ? 'REJECTED VISUAL' : (im.evidenceLevel === 'METADATA_MATCH' ? 'METADATA MATCH' : (im.evidenceLevel === 'SOURCE_ASSOCIATED' ? 'SOURCE ASSOCIATED' : (im.evidenceLevel === 'IDENTITY_CORROBORATED' ? 'IDENTITY CORROBORATED' : 'UNVERIFIED VISUAL')))))));
+      const gateClass = /VERIFIED VISUAL/.test(gate) ? 'gate-verified' : (/REJECTED/.test(gate) ? 'gate-rejected' : 'gate-unverified');
       return `<button type="button" class="visual-tile${sel ? ' selected' : ''}${im.unverifiedVisual ? ' unverified' : ''}" data-visual="${i}" style="padding:0;border:${sel ? '1px solid var(--accent)' : '1px solid var(--line)'};background:transparent;text-align:left">
-        <img src="${esc(imgSrc(im.url))}" alt="${esc(im.title || '')}" referrerpolicy="no-referrer" onerror="this.style.display='none'">
-        <div class="vcap">${esc((gate ? gate + ' · ' : '') + (im.domain || '') + (im.visualClass ? ' · ' + im.visualClass : '') + (im.title ? ' · ' + String(im.title).slice(0, 48) : ''))}</div>
+        <img src="${esc(imgSrc(im.url))}" alt="${esc(im.title || '')}" referrerpolicy="no-referrer" loading="lazy" onerror="this.style.display='none'">
+        <div class="vcap"><span class="${gateClass}">${esc(gate)}</span>${esc((im.domain ? ' · ' + im.domain : '') + (im.visualClass ? ' · ' + im.visualClass : ''))}</div>
       </button>`;
     }).join('')}</div>
+    ${visuals.length > visualRenderLimit ? `<div class="row" style="margin-top:8px"><button class="btn" type="button" id="loadMoreVisualsBtn">Show more images</button></div>` : ''}
     ${failures.length ? failures.slice(0, 8).map(f => {
       const url = f.url || f.pageUrl || '';
       const domain = f.domain || '';
@@ -1653,6 +1712,8 @@ function renderVisualCorpus() {
     </div>
   </div>`;
   el._gallery = gallery;
+  const moreBtn = $('loadMoreVisualsBtn');
+  if (moreBtn) moreBtn.onclick = () => { visualRenderLimit += 12; renderVisualCorpus(); };
 }
 function renderVideoCorpus() {
   const el = $('videoCorpus');
@@ -1730,29 +1791,49 @@ function renderDiveIdentity() {
   const el = $('diveIdentity');
   if (!el) return;
   const ent = selectedEntity;
+  const person = canonicalPerson;
   const r = selectedCandidate;
-  if (!ent && !r) {
-    el.innerHTML = '<p class="muted">Search and pick someone or something first. Deep Dive investigates that selection.</p>';
+  const name = (person && person.canonicalName) || ent?.canonicalName || lastClassification?.subject || r?.title || '';
+  if (!name && !r) {
+    el.innerHTML = '<p class="muted">Search and confirm a person or thing first. Deep Dive is the investigation workspace.</p>';
+    if ($('diveStatus')) $('diveStatus').innerHTML = '';
     return;
   }
-  const name = ent?.canonicalName || lastClassification?.subject || r?.title || 'Selected entity';
-  const img = ent?.image || r?.image || '';
-  const ctx = ent?.context || diveTopic || extraContextText(lastClassification) || currentLens()?.context || '';
-  const isPerson = (ent?.type || lastClassification?.type) === 'person';
-  const conf = ent?.confidence || lastClassification?.confidence || '';
+  const img = (person && person.representativeImages && person.representativeImages[0]) || ent?.image || r?.image || '';
+  const ctx = ent?.context || diveTopic || extraContextText(lastClassification) || '';
+  const focus = (researchFocus && researchFocus.length) ? researchFocus : [];
+  const confirmed = identityVerdict === 'confirmed' || !!(person && person.canonicalName) || confirmedIdentity.length;
+  const visN = lastVisuals.length;
+  const visRej = lastVisuals.filter(v => v.visualGate === 'rejected' || v.evidenceLevel === 'REJECTED').length;
+  const visUnv = lastVisuals.filter(v => v.unverifiedVisual || v.evidenceLevel === 'METADATA_MATCH').length;
+  const visOk = lastVisuals.filter(v => v.evidenceLevel === 'VISUAL_IDENTITY_VERIFIED').length;
   if ($('diveSearchHint') && name) {
     $('diveSearchHint').textContent = ctx
       ? ('Keeping “' + name + '” + “' + ctx + '”.')
       : ('Search this investigation of “' + name + '”. Topics keep this subject.');
   }
-  el.innerHTML = `<div class="dive-id">
-    ${img ? `<img src="${esc(imgSrc(img))}" alt="" referrerpolicy="no-referrer">` : ''}
-    <div class="body">
-      <h2>${esc(name)}</h2>
-      <div class="rmeta">${currentAdult !== 'off' ? adultBadge(ent?.adultContent || currentAdult) : ''}${ctx ? ' <span class="badge">' + esc(ctx) + '</span>' : ''}${conf ? ' <span class="badge">' + esc(confidenceLabel(conf)) + '</span>' : ''}${identityVerdict === 'confirmed' ? ' <span class="badge access-ok">That’s the one</span>' : ''}</div>
-      <p class="hint" style="margin:8px 0 0">${isPerson ? 'A picture is not proof of identity. Search below keeps this person — type a topic, not a new name, unless you want to branch.' : 'Investigating the selected subject. Search below keeps this context.'}</p>
+  const topicLabel = ctx ? (' × ' + ctx) : '';
+  el.innerHTML = `<div>
+    <h2 class="dive-title">${esc(name)}${esc(topicLabel)}</h2>
+    <div class="rmeta">
+      <span class="badge ${confirmed ? 'access-ok' : 'unknown'}">Identity: ${confirmed ? 'Confirmed' : 'Unconfirmed'}</span>
+      ${focus.length ? '<span class="badge">' + esc(focus.map(f => f[0].toUpperCase() + f.slice(1)).join(' · ')) + '</span>' : ''}
+      ${currentAdult !== 'off' ? adultBadge(ent?.adultContent || currentAdult) : ''}
     </div>
   </div>`;
+  const status = $('diveStatus');
+  if (status) {
+    status.innerHTML = `<div class="inv-status" data-testid="investigation-status">
+      <div class="cell"><b>Identity</b><span>${confirmed ? 'Confirmed' : 'Needs confirmation'}</span></div>
+      <div class="cell"><b>Visuals</b><span>${visOk} verified · ${visUnv} unverified · ${visRej} rejected · ${visN} total</span></div>
+      <div class="cell"><b>Sources</b><span>${lastResults.length} analyzed</span></div>
+      <div class="cell"><b>Accounts</b><span>${(lastPremium || []).length} found</span></div>
+    </div>`;
+  }
+  ['diveBondageBtn', 'divePeopleBtn', 'diveVisualsBtn'].forEach(id => {
+    const b = $(id);
+    if (b) b.classList.add('hidden');
+  });
   renderIdentityBanner();
   renderDiveTabs();
 }
@@ -2435,6 +2516,11 @@ function hardNewInvestigation(opts = {}) {
   researchSubject = '';
   confirmedIdentity = [];
   rejectedPeople = [];
+  rejectedCandidateIds = [];
+  canonicalPerson = null;
+  awaitingFocus = false;
+  identityCursor = 0;
+  visualRenderLimit = 12;
   researchFocus = [];
   lastIdentityVerification = null;
   lastInvestigationQueue = null;
@@ -2453,7 +2539,10 @@ function hardNewInvestigation(opts = {}) {
   if ($('diveStream')) $('diveStream').innerHTML = '';
   if ($('resultCount')) $('resultCount').textContent = '';
   if ($('searchDiagnostics')) $('searchDiagnostics').textContent = '';
-  if ($('diveIdentity')) $('diveIdentity').innerHTML = '<p class="muted">Search and pick someone or something first. Deep Dive investigates that selection.</p>';
+  if ($('diveIdentity')) $('diveIdentity').innerHTML = '<p class="muted">Search and confirm a person or thing first. Deep Dive is the investigation workspace.</p>';
+  if ($('identityVerify')) $('identityVerify').innerHTML = '';
+  if ($('focusPrompt')) { $('focusPrompt').innerHTML = ''; $('focusPrompt').classList.add('hidden'); }
+  if ($('diveStatus')) $('diveStatus').innerHTML = '';
   try { sessionStorage.removeItem(SESSION_KEY); sessionStorage.removeItem(SESSION_KEY_LEGACY); } catch {}
   persistSession();
   setAgentState({
@@ -2495,9 +2584,12 @@ function setDiveTab(id) {
 function streamItemsForTab() {
   const posts = (lastResults || []).filter(resultIsReddit);
   const web = (lastResults || []).filter(r => !resultIsReddit(r));
-  if (diveTab === 'posts') return { results: posts, images: [], videos: [], redditFirst: true };
+  if (diveTab === 'posts' || diveTab === 'people') return { results: lastRelatedPeople && lastRelatedPeople.length ? lastResults.filter(r => /person|people|collaborat/i.test((r.title || '') + ' ' + (r.snippet || ''))) : lastResults.filter(r => r.resultKind === 'PERSON' || r.relatedPerson), images: [], videos: [], redditFirst: false, people: lastRelatedPeople };
   if (diveTab === 'images') return { results: [], images: lastVisuals, videos: [], redditFirst: false };
-  if (diveTab === 'sources') return { results: lastResults, images: [], videos: [], redditFirst: false };
+  if (diveTab === 'videos') return { results: [], images: [], videos: lastVideos, redditFirst: false };
+  if (diveTab === 'sources' || diveTab === 'evidence') return { results: lastResults, images: [], videos: [], redditFirst: false };
+  if (diveTab === 'accounts') return { results: (lastPremium || []).concat(lastResults.filter(r => /onlyfans|fansly|instagram|twitter|reddit\.com\/(user|u)\//i.test(r.url || ''))), images: [], videos: [], redditFirst: false };
+  if (diveTab === 'timeline') return { results: lastResults, images: [], videos: [], redditFirst: false, trail: investigationTrail };
   if (diveTab === 'search') return { results: lastResults, images: lastVisuals.slice(0, 8), videos: lastVideos.slice(0, 6), redditFirst: false };
   const ordered = [...posts, ...web];
   return { results: ordered.length ? ordered : lastResults, images: lastVisuals.slice(0, 6), videos: lastVideos.slice(0, 4), redditFirst: true };
@@ -4378,17 +4470,40 @@ function wire() {
       const name = c.name || lastClassification?.subject || '';
       if (name && !confirmedIdentity.includes(name)) confirmedIdentity = [...confirmedIdentity, name].slice(-6);
       identityVerdict = 'confirmed';
-      pushTrail({ kind: 'identity', label: 'Yes, this is the person · ' + name, entity: name, topic: diveTopic });
-      toast('Identity confirmed. Expanding the investigation under this person.');
-      discover({ keepSubject: true, entity: name, topic: diveTopic, append: true, confirmIdentity: true });
+      canonicalPerson = {
+        canonicalName: name,
+        aliases: c.knownAliases || [],
+        handles: c.usernames || [],
+        sourceIdentifiers: c.sources || [],
+        accountIdentifiers: [],
+        trustedSourceDomains: c.sources || [],
+        identityEvidence: c.additionalSources || [],
+        representativeImages: c.representativeImages || [],
+        candidateId: c.candidateId || '',
+        identityClass: c.identityClass || 'PERSON_REAL',
+      };
+      selectedEntity = selectedEntity || { canonicalName: name, type: 'person', image: (c.representativeImages || [])[0] || '', url: c.sampleUrl || '', confidence: c.confidence || 'high' };
+      pushTrail({ kind: 'identity', label: 'YES — THIS PERSON · ' + name, entity: name, topic: diveTopic });
+      toast('Identity confirmed. Choose a Research Focus, then Investigate.');
+      awaitingFocus = !(researchFocus && researchFocus.length);
+      renderIdentityVerification({ identityVerification: { ...pack, userConfirmed: true, needed: false, candidates: [c] } });
+      persistSession();
+      if (!awaitingFocus) {
+        discover({ keepSubject: true, entity: name, topic: diveTopic, append: true, confirmIdentity: true });
+      }
     } else if (act.dataset.idact === 'no') {
       const name = c.name || '';
-      if (name && !rejectedPeople.includes(name)) rejectedPeople = [...rejectedPeople, name].slice(-12);
-      if (c.profileSource) suppressed.hosts.push(c.profileSource);
+      const cid = c.candidateId || '';
+      if (cid && !rejectedCandidateIds.includes(cid)) rejectedCandidateIds = [...rejectedCandidateIds, cid].slice(-16);
+      if (name && tokensForReject(name).length >= 2 && !rejectedPeople.includes(name)) rejectedPeople = [...rejectedPeople, name].slice(-12);
       if (c.sampleUrl) suppressed.urls.push(c.sampleUrl);
-      pushTrail({ kind: 'identity', label: 'Not this person · ' + name, entity: lastClassification?.subject || '' });
-      toast('Recorded as negative evidence. Searching for another candidate.');
-      discover({ visualMode: 'different', findDifferent: true, keepSubject: !!(lastClassification?.subject), entity: lastClassification?.subject || '', topic: diveTopic });
+      pushTrail({ kind: 'identity', label: 'NOT THIS PERSON · ' + (cid || name), entity: lastClassification?.subject || '' });
+      toast('Rejected this candidate only. Looking at the next match.');
+      identityCursor += 1;
+      const remaining = (pack.candidates || []).filter(x => x.candidateId !== cid);
+      lastIdentityVerification = { ...pack, candidates: remaining };
+      if (remaining.length) renderIdentityVerification({ identityVerification: lastIdentityVerification });
+      else discover({ findDifferent: true, keepSubject: !!(lastClassification?.subject), entity: lastClassification?.subject || '', topic: diveTopic, identityPhase: true });
     }
     persistSession();
     return true;

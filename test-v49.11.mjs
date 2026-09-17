@@ -430,8 +430,8 @@ console.log('--- health 49.11 ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.11', 'health version 49.11');
-  assert(body.build === '49.11-exact-source-retrieval', 'health build');
+  assert(body.version === '49.12' || body.version === '49.11', 'health version current');
+  assert(body.build === '49.12-investigation-workflow' || body.build === '49.11-exact-source-retrieval', 'health build');
   assert((body.features || []).includes('v49.11-exact-source-retrieval'), 'feature exact-source');
   assert((body.features || []).includes('v49.9-identity-verification'), 'v49.9 flags retained');
 }

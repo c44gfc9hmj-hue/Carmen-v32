@@ -10,7 +10,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon.svg">
 <title>Carmen</title>
-<meta name="carmen-build" content="49.11">
+<meta name="carmen-build" content="49.12">
 <style>
 :root{
   color-scheme:dark;
@@ -120,6 +120,28 @@ details.adv summary::-webkit-details-marker{display:none}
 .person-tile.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .id-verify{margin:8px 0 14px}
 .id-card .racts button.primary{background:var(--accent);color:var(--accent-fg);border-color:transparent}
+.tinder-wrap{margin:8px 0 16px}
+.tinder-card{border:1px solid var(--line2);border-radius:var(--radius-xl);overflow:hidden;background:var(--card2);max-width:420px;margin:0 auto}
+.tinder-card img.hero{width:100%;height:min(72vw,340px);object-fit:cover;display:block;background:#050607}
+.tinder-card .rbody{padding:16px}
+.tinder-card .pname{font-size:26px;letter-spacing:-.04em;font-weight:620;margin:0 0 6px}
+.tinder-yes,.tinder-no{min-height:52px;font-size:15px;letter-spacing:.04em;text-transform:uppercase;font-weight:700}
+.tinder-yes{background:var(--accent);color:var(--accent-fg);border-color:transparent}
+.tinder-no{background:transparent;color:var(--danger);border-color:color-mix(in oklab, var(--danger) 45%, var(--line))}
+.tinder-dots{display:flex;gap:6px;justify-content:center;margin:10px 0 0}
+.tinder-dots span{width:7px;height:7px;border-radius:99px;background:var(--line2)}
+.tinder-dots span.on{background:var(--fg)}
+.focus-prompt{border:1px solid var(--line2);border-radius:var(--radius-xl);padding:16px;margin:8px 0 14px;background:var(--card2)}
+.focus-prompt h3{margin:0 0 8px;font-size:20px;letter-spacing:-.03em}
+.inv-status{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 14px}
+.inv-status .cell{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--card2)}
+.inv-status .cell b{display:block;font-size:13px;margin-bottom:2px}
+.inv-status .cell span{font-size:12px;color:var(--muted)}
+.dive-kicker{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--subtle);font-weight:650;margin:0 0 6px}
+.dive-title{font-size:28px;letter-spacing:-.04em;font-weight:620;margin:0 0 8px}
+.visual-tile .vcap .gate-verified{color:var(--good)}
+.visual-tile .vcap .gate-unverified{color:var(--warn)}
+.visual-tile .vcap .gate-rejected{color:var(--danger)}
 .visual-tile.unverified .vcap{color:var(--warn)}
 .person-tile .pname{font-size:20px;letter-spacing:-.03em;font-weight:620;margin:0 0 4px}
 .result.person .hero{height:min(58vw,280px)}
@@ -255,7 +277,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <div id="carmenAgentStatus" class="carmen-agent-status" data-testid="carmen-status" aria-live="polite" data-status="idle" data-view="home" data-busy="false">idle · home</div>
 <header class="appbar">
   <div class="rowbits">
-    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.11</span></h1>
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.12</span></h1>
     <button class="btn ghost" id="newInvestigationBtn" type="button" data-testid="new-investigation">New investigation</button>
   </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>
@@ -298,33 +320,36 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     <div id="searchPhotoPreview" class="photo-preview hidden" hidden></div>
     <input id="searchImage" type="file" accept="image/*" class="hidden">
     <div id="lensStack" class="hidden"></div>
+    <div class="filter-block" id="focusBlock" style="margin-top:10px">
+      <p class="flabel">Research Focus</p>
+      <div class="chips" id="subjectChips" style="margin-top:0">
+        <button class="chip" data-subject="person">Person</button>
+        <button class="chip" data-subject="visuals" title="Images + videos + galleries, and other visual media">Visuals</button>
+        <button class="chip" data-subject="position">Position</button>
+        <button class="chip" data-subject="tutorial">Tutorial</button>
+        <button class="chip" data-subject="clothing">Clothing</button>
+        <button class="chip" data-subject="website">URL</button>
+        <button class="chip" data-subject="topic">Topic</button>
+        <button class="chip" data-subject="accounts">Accounts</button>
+        <button class="chip" data-subject="career">Career</button>
+        <button class="chip" data-subject="interviews">Interviews</button>
+      </div>
+      <p class="hint">These change what Carmen actually searches. PERSON + VISUALS (images + videos + galleries) is not PERSON + CAREER.</p>
+    </div>
+    <div class="stage" id="interestBlock" style="margin-top:10px">
+      <h3>Adaptive Lens</h3>
+      <div class="chips" id="interestChips"></div>
+      <div id="customContextWrap" class="hidden" style="margin-top:8px">
+        <label class="hint">Specific context</label>
+        <input id="customContext" placeholder="A production, collaboration, interview series, repair, towing…">
+      </div>
+      <div id="customQuestionWrap" class="hidden" style="margin-top:8px">
+        <label class="hint">Your question</label>
+        <textarea id="customQuestion" placeholder="What do you actually want to know?"></textarea>
+      </div>
+    </div>
     <details class="adv">
       <summary>More options</summary>
-      <div class="filter-block" id="focusBlock" style="margin-top:10px">
-        <p class="flabel">Research Focus</p>
-        <div class="chips" id="subjectChips" style="margin-top:0">
-          <button class="chip" data-subject="person">Person</button>
-          <button class="chip" data-subject="visuals" title="Images, videos, galleries, and other visual media">Visuals</button>
-          <button class="chip" data-subject="position">Position</button>
-          <button class="chip" data-subject="tutorial">Tutorial</button>
-          <button class="chip" data-subject="clothing">Clothing</button>
-          <button class="chip" data-subject="website">URL</button>
-          <button class="chip" data-subject="topic">Topic</button>
-        </div>
-        <p class="hint">Multi-select. VISUALS means images + videos + galleries. Selecting a focus does not mean that branch has succeeded — Carmen has to actually run it.</p>
-      </div>
-      <div class="stage" id="interestBlock" style="margin-top:10px">
-        <h3>Adaptive lenses</h3>
-        <div class="chips" id="interestChips"></div>
-        <div id="customContextWrap" class="hidden" style="margin-top:8px">
-          <label class="hint">Specific context</label>
-          <input id="customContext" placeholder="A production, collaboration, interview series, repair, towing…">
-        </div>
-        <div id="customQuestionWrap" class="hidden" style="margin-top:8px">
-          <label class="hint">Your question</label>
-          <textarea id="customQuestion" placeholder="What do you actually want to know?"></textarea>
-        </div>
-      </div>
       <div class="filter-block">
         <p class="flabel">How deep</p>
         <div class="chips" id="depthChips" style="margin-top:0">
@@ -357,8 +382,9 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
   </div>
   <div class="card">
     <h3 id="resultsHeading">Results <span id="resultCount" class="badge"></span></h3>
-    <p class="hint" id="identifyHint">For a person, confirm the identity first. A picture is not proof of identity.</p>
+    <p class="hint" id="identifyHint">For a person, confirm who you mean before Carmen investigates.</p>
     <div id="identityVerify" data-testid="identity-verify"></div>
+    <div id="focusPrompt" class="hidden" data-testid="focus-prompt"></div>
     <div id="resumeQueue" class="hidden" data-testid="resume-queue"></div>
     <div id="selectedBanner"></div>
     <div id="graphTrail" class="graph-trail hidden"></div>
@@ -373,27 +399,25 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 
 <section id="diveView" class="view hidden" hidden inert aria-hidden="true">
   <div class="card" id="diveIdentityCard">
-    <p class="kicker">Investigate</p>
-    <div id="diveIdentity"><p class="muted">Search and pick someone or something first. Deep Dive investigates that selection.</p></div>
+    <p class="dive-kicker">Deep Dive</p>
+    <div id="diveIdentity"><p class="muted">Search and confirm a person or thing first. Deep Dive is the investigation workspace.</p></div>
+    <div id="diveStatus" data-testid="dive-status"></div>
     <div class="dive-primary" id="divePrimaryLenses">
-      <p class="flabel">Deep Dive</p>
-      <div class="row">
-        <button class="btn primary" id="diveBondageBtn" type="button" data-testid="dive-bondage">Bondage</button>
-        <button class="btn" id="divePeopleBtn" type="button" data-testid="dive-people">People</button>
-        <button class="btn" id="diveVisualsBtn" type="button" data-testid="dive-visuals">Visuals</button>
-      </div>
-      <p class="flabel" style="margin-top:14px">Ask Carmen anything:</p>
+      <p class="flabel">Ask this investigation</p>
       <div class="searchbox stack" style="margin-top:6px">
-        <textarea id="diveCustom" data-testid="dive-nl-input" placeholder="Career, related people, the original source of this image…" rows="2"></textarea>
+        <textarea id="diveCustom" data-testid="dive-nl-input" placeholder="Find more public visual sources, accounts connected to this source, tutorials for this technique…" rows="2"></textarea>
         <input id="diveSearchQuery" data-testid="search-input-dive" class="hidden" hidden aria-hidden="true">
         <button class="btn primary" id="diveSearchBtn" type="button" data-testid="search-submit-dive">Ask</button>
       </div>
       <div class="row" style="margin-top:8px">
         <button class="btn ghost" id="diveFindMoreBtn" type="button" data-testid="find-more">Find More</button>
-        <button class="btn ghost" id="divePremiumBtn" type="button" data-testid="premium-accounts">Account / Premium</button>
+        <button class="btn ghost" id="divePremiumBtn" type="button" data-testid="premium-accounts">Accounts</button>
+        <button class="btn ghost hidden" id="diveBondageBtn" type="button" data-testid="dive-bondage">Bondage</button>
+        <button class="btn ghost hidden" id="divePeopleBtn" type="button" data-testid="dive-people">People</button>
+        <button class="btn ghost hidden" id="diveVisualsBtn" type="button" data-testid="dive-visuals">Visuals</button>
       </div>
       <div id="diveVariationChips" class="chips" style="margin-top:8px"></div>
-      <p class="hint" id="diveLensHint">Tap a shortcut, type anything, or Find More to expand from new evidence.</p>
+      <p class="hint" id="diveLensHint">Questions stay inside this case. They do not start a new search.</p>
       <p class="hint" id="diveSearchHint" hidden>Type what you want. Carmen picks the search paths.</p>
       <p class="expansion-note hidden" id="diveExpansionNote"></p>
     </div>
@@ -402,9 +426,13 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
     </div>
     <div class="ws-tabs" id="diveTabs" style="margin-top:12px">
       <button class="chip active" type="button" data-divetab="overview">Overview</button>
-      <button class="chip" type="button" data-divetab="posts">Posts</button>
-      <button class="chip" type="button" data-divetab="images">Images</button>
+      <button class="chip" type="button" data-divetab="evidence">Evidence</button>
+      <button class="chip" type="button" data-divetab="images">Visuals</button>
+      <button class="chip" type="button" data-divetab="videos">Videos</button>
       <button class="chip" type="button" data-divetab="sources">Sources</button>
+      <button class="chip" type="button" data-divetab="posts">People</button>
+      <button class="chip" type="button" data-divetab="accounts">Accounts</button>
+      <button class="chip" type="button" data-divetab="timeline">Timeline</button>
     </div>
   </div>
   <div id="identityBanner"></div>
