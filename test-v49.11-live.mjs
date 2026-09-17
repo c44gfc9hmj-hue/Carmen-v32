@@ -73,9 +73,14 @@ console.log('--- R Chanta Rose Reddit ---');
   }));
   assert(status === 200, 'R 200');
   assert(/reddit\.com/i.test(body.canonicalUrl || ''), 'R permalink preserved');
+  assert(/1afxb3z/i.test(body.canonicalUrl || '') || (body.reddit && body.reddit.postId === '1afxb3z'), 'R post id preserved');
   assert(body.fetchAttempted === true, 'R fetch attempted');
   assert(body.genericSearchUsedAsRetrieval !== true, 'R not generic Reddit discovery');
-  if (!body.fetchSucceeded) {
+  assert((body.identity && body.identity.handle) !== 'r', 'R handle is not the /r/ path segment');
+  if (body.fetchSucceeded) {
+    assert(body.reddit && body.reddit.postContentRetrieved === 'YES', 'R post content retrieved');
+    assert(!/^(reddit)$/i.test(String((body.reddit && body.reddit.title) || (body.retrieved && body.retrieved.title) || '').trim()), 'R is the post, not the Reddit shell');
+  } else {
     assert(/could not be publicly retrieved|FETCH_FAILED|NOT_PUBLICLY_RETRIEVABLE/i.test(JSON.stringify(body.unknowns || []) + (body.whatCarmenActuallyRetrieved || '') + (body.terminalState || '')), 'R honest failure');
   }
 }

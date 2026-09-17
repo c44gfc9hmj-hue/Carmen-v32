@@ -6601,16 +6601,17 @@ async function analyzeExactSource(req, env, body, context = {}) {
   const access = (retrieved && retrieved.accessState) || '';
   const genericShell = !!(retrieved && (retrieved.genericPlatformShell || retrieved.redirectToHomepage && /onlyfans|fansly|loyalfans|manyvids|patreon/i.test(identity.host)));
   const platformOnlyTitle = /^(onlyfans|fansly|loyalfans|manyvids|patreon|reddit)$/i.test(String((retrieved && retrieved.title) || '').trim());
+  const genericReddit = identity.sourceType === 'reddit-post' && (!retrieved || !retrieved.redditPost) && (platformOnlyTitle || !!(retrieved && retrieved.genericPlatformShell));
   const authRequired = genericShell
     || /AUTHENTICATION_REQUIRED|PAYWALLED|AGE_RESTRICTED/i.test(access)
     || (platformOnlyTitle && /onlyfans|fansly|loyalfans|manyvids/i.test(identity.host));
-  const publicMeta = !!(retrieved && !genericShell && (retrieved.title || retrieved.description || retrieved.publicEvidence || retrieved.ogImage || retrieved.author || retrieved.subreddit || (retrieved.identifiers && ((retrieved.identifiers.handles || []).length || (retrieved.identifiers.aliases || []).length))));
-  const fetchSucceeded = !!(retrieved && retrieved.status === 'RETRIEVED' && !genericShell && !authRequired);
-  const publicContentRetrieved = fetchSucceeded || (!genericShell && publicMeta && (authRequired || (retrieved && retrieved.status === 'RETRIEVAL_FAILED')));
-  if (genericShell && retrieved) {
-    retrieved.title = identity.displayName || identity.handle || retrieved.title;
+  const publicMeta = !!(retrieved && !genericShell && !genericReddit && (retrieved.title || retrieved.description || retrieved.publicEvidence || retrieved.ogImage || retrieved.author || retrieved.subreddit || (retrieved.identifiers && ((retrieved.identifiers.handles || []).length || (retrieved.identifiers.aliases || []).length))));
+  const fetchSucceeded = !!(retrieved && retrieved.status === 'RETRIEVED' && !genericShell && !genericReddit && !authRequired);
+  const publicContentRetrieved = fetchSucceeded || (!genericShell && !genericReddit && publicMeta && (authRequired || (retrieved && retrieved.status === 'RETRIEVAL_FAILED')));
+  if ((genericShell || genericReddit) && retrieved) {
+    retrieved.title = genericReddit ? (identity.displayName || ('Reddit post ' + (identity.postId || ''))) : (identity.displayName || identity.handle || retrieved.title);
     retrieved.genericPlatformShell = true;
-    retrieved.accessState = retrieved.accessState || 'AUTHENTICATION_REQUIRED';
+    retrieved.accessState = retrieved.accessState || (genericReddit ? 'NOT_PUBLICLY_RETRIEVABLE' : 'AUTHENTICATION_REQUIRED');
     retrieved.status = 'RETRIEVAL_FAILED';
   }
   if (fetchSucceeded) mark('FETCHED', identity.canonicalUrl);
@@ -9002,114 +9003,128 @@ async function retrieveExactReddit(targetUrl, identity, opts = {}) {
   const postId = parsed.postId || identity.postId;
   const permalink = parsed.canonicalPermalink || identity.permalink || targetUrl;
   const path = (() => { try { return new URL(permalink.startsWith('http') ? permalink : 'https://' + permalink).pathname.replace(/\/+$/, ''); } catch { return pathOf(permalink); } })();
-  const jsonCandidates = [];
-  const add = (u) => { if (u && !jsonCandidates.includes(u)) jsonCandidates.push(u); };
-  add('https://old.reddit.com' + path + '.json?raw_json=1');
-  add('https://www.reddit.com' + path + '.json?raw_json=1');
-  add('https://api.reddit.com' + path + '.json?raw_json=1');
-  if (postId) {
-    add('https://old.reddit.com/comments/' + postId + '.json?raw_json=1');
-    add('https://www.reddit.com/comments/' + postId + '.json?raw_json=1');
-    add('https://www.reddit.com/by_id/t3_' + postId + '.json?raw_json=1');
-  }
-  for (const jsonUrl of jsonCandidates) {
-    try {
-      const rr = await fetchText(jsonUrl, { headers: { ...BROWSER_HEADERS, accept: 'application/json' }, redirect: 'follow' }, RETRIEVE_TIMEOUT_MS);
-      if (!rr.ok) continue;
-      const j = await rr.json();
-      const listing = parseRedditListing(j, permalink);
-      if (listing.ok && listing.post) {
-        const p = listing.post;
-        const text = cleanText((p.title || '') + ' ' + (p.body || '')).slice(0, MAX_TEXT_CHARS);
-        return {
-          status: 'RETRIEVED',
-          accessState: 'DIRECTLY_RETRIEVED',
-          url: permalink,
-          finalUrl: p.permalink || permalink,
-          title: p.title || 'Reddit post',
-          description: String(p.body || '').slice(0, 600),
-          text,
-          textExcerpt: text,
-          ogImage: (listing.media || [])[0] || '',
-          images: (listing.media || []).slice(0, MAX_IMAGES),
-          fingerprint: simpleFingerprint(text),
-          retrievedAt: new Date().toISOString(),
-          author: p.author || '',
-          subreddit: p.subreddit || '',
-          published: p.created || '',
-          contentType: 'application/json',
-          redditPost: p,
-          comments: listing.comments || [],
-          outboundLinks: listing.outboundLinks || [],
-          redditJson: j,
-          exactSource: true,
-        };
-      }
-    } catch {}
-  }
-  if (postId && remainingFetches() > 2) {
-    try {
-      const pu = 'https://api.pullpush.io/reddit/search/submission/?ids=' + encodeURIComponent(postId);
-      const rr = await fetchText(pu, { headers: { ...BROWSER_HEADERS, accept: 'application/json' }, redirect: 'follow' }, RETRIEVE_TIMEOUT_MS);
-      if (rr.ok) {
+  const packFromListing = (listing, extra = {}) => {
+    if (!listing || !listing.ok || !listing.post) return null;
+    const p = listing.post;
+    if (!p.id && !p.title && !p.body) return null;
+    if (postId && p.id && String(p.id).replace(/^t3_/, '') !== String(postId).replace(/^t3_/, '')) return null;
+    const text = cleanText((p.title || '') + ' ' + (p.body || '')).slice(0, MAX_TEXT_CHARS);
+    return {
+      status: 'RETRIEVED',
+      accessState: extra.accessState || 'DIRECTLY_RETRIEVED',
+      url: permalink,
+      finalUrl: p.permalink || permalink,
+      title: p.title || 'Reddit post',
+      description: String(p.body || '').slice(0, 600),
+      text,
+      textExcerpt: text,
+      ogImage: (listing.media || [])[0] || '',
+      images: (listing.media || extra.images || []).slice(0, MAX_IMAGES),
+      fingerprint: simpleFingerprint(text),
+      retrievedAt: new Date().toISOString(),
+      author: p.author || '',
+      subreddit: p.subreddit || (identity.subreddit ? 'r/' + identity.subreddit : ''),
+      published: p.created || '',
+      contentType: extra.contentType || 'application/json',
+      redditPost: p,
+      comments: listing.comments || extra.comments || [],
+      outboundLinks: listing.outboundLinks || extra.outboundLinks || [],
+      redditJson: extra.redditJson,
+      exactSource: true,
+      alternativeSource: extra.alternativeSource || '',
+      accessNote: extra.accessNote || '',
+    };
+  };
+  const failed = (note, accessState = 'NOT_PUBLICLY_RETRIEVABLE') => ({
+    status: 'RETRIEVAL_FAILED',
+    accessState,
+    url: permalink,
+    error: 'Exact Reddit post could not be publicly retrieved.',
+    accessNote: note || 'Exact Reddit post could not be publicly retrieved. Generic Reddit search was not used as a substitute.',
+    exactSource: true,
+    subreddit: identity.subreddit ? 'r/' + identity.subreddit : '',
+    author: identity.author || '',
+    title: '',
+    genericPlatformShell: true,
+  });
+  const isGenericRedditPage = (retrieved) => {
+    if (!retrieved) return true;
+    if (retrieved.redditPost && (retrieved.redditPost.title || retrieved.redditPost.body || retrieved.redditPost.id)) return false;
+    const title = String(retrieved.title || '').trim();
+    const excerpt = String(retrieved.textExcerpt || retrieved.text || retrieved.description || '');
+    if (postId && (excerpt.includes(postId) || title.includes(postId))) return false;
+    if (/^(reddit|old reddit|blocked|just a moment.*|attention required)$/i.test(title)) return true;
+    if (!title || title.length < 3) return true;
+    if (identity.sourceType === 'reddit-post' && !retrieved.redditPost) return true;
+    return false;
+  };
+
+  if (postId && remainingFetches() > 0) {
+    const pullUrls = [
+      'https://api.pullpush.io/reddit/search/submission/?ids=' + encodeURIComponent(postId),
+      'https://api.pullpush.io/reddit/search/submission/?ids=' + encodeURIComponent('t3_' + postId),
+    ];
+    for (const pu of pullUrls) {
+      try {
+        const rr = await fetchText(pu, { headers: { accept: 'application/json', 'user-agent': 'CarmenResearch/49.11 (exact-source)' }, redirect: 'follow' }, RETRIEVE_TIMEOUT_MS);
+        if (!rr.ok) continue;
         const j = await rr.json().catch(() => ({}));
         const rows = Array.isArray(j?.data) ? j.data : (Array.isArray(j) ? j : []);
-        const d = rows[0];
+        const d = rows.find(x => x && String(x.id || '').replace(/^t3_/, '') === String(postId).replace(/^t3_/, '')) || rows[0];
         if (d && (d.title || d.selftext || d.id)) {
           let comments = [];
           try {
-            const cr = await fetchText('https://api.pullpush.io/reddit/search/comment/?link_id=' + encodeURIComponent(postId) + '&size=20', { headers: { ...BROWSER_HEADERS, accept: 'application/json' } }, RETRIEVE_TIMEOUT_MS);
+            const cr = await fetchText('https://api.pullpush.io/reddit/search/comment/?link_id=' + encodeURIComponent(postId) + '&size=20', { headers: { accept: 'application/json', 'user-agent': 'CarmenResearch/49.11 (exact-source)' } }, RETRIEVE_TIMEOUT_MS);
             if (cr.ok) {
               const cj = await cr.json().catch(() => ({}));
               const crows = Array.isArray(cj?.data) ? cj.data : (Array.isArray(cj) ? cj : []);
               comments = crows.slice(0, 20).map(c => ({ author: c.author || '', body: String(c.body || '').slice(0, 800), score: c.score, created: c.created_utc ? new Date(c.created_utc * 1000).toISOString() : '' }));
             }
           } catch {}
+          const media = [];
+          if (typeof d.url === 'string' && /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(d.url)) media.push(d.url);
+          if (typeof d.url_overridden_by_dest === 'string' && /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(d.url_overridden_by_dest)) media.push(d.url_overridden_by_dest);
           const listing = parseRedditListing([{ kind: 'Listing', data: { children: [{ kind: 't3', data: d }] } }, { kind: 'Listing', data: { children: comments.map(c => ({ kind: 't1', data: c })) } }], permalink);
-          const p = listing.post || {
-            id: d.id || postId,
-            title: d.title || '',
-            body: d.selftext || d.body || '',
-            author: d.author || '',
-            subreddit: d.subreddit_name_prefixed || (d.subreddit ? 'r/' + d.subreddit : identity.subreddit ? 'r/' + identity.subreddit : ''),
-            permalink: d.permalink ? ('https://www.reddit.com' + d.permalink) : permalink,
-            created: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : '',
-            score: d.score,
-          };
-          const text = cleanText((p.title || '') + ' ' + (p.body || '')).slice(0, MAX_TEXT_CHARS);
-          return {
-            status: 'RETRIEVED',
+          const packed = packFromListing(listing, {
             accessState: 'PUBLIC_ALTERNATIVE',
-            url: permalink,
-            finalUrl: p.permalink || permalink,
-            title: p.title || 'Reddit post',
-            description: String(p.body || '').slice(0, 600),
-            text,
-            textExcerpt: text,
-            images: listing.media || [],
-            ogImage: (listing.media || [])[0] || '',
-            fingerprint: simpleFingerprint(text),
-            retrievedAt: new Date().toISOString(),
-            author: p.author || '',
-            subreddit: p.subreddit || '',
-            published: p.created || '',
-            redditPost: p,
-            comments,
-            outboundLinks: listing.outboundLinks || extractOutboundLinks(p.body || '', permalink),
             alternativeSource: 'Pullpush',
-            exactSource: true,
+            comments,
+            images: media,
             accessNote: 'Exact Reddit post retrieved from the public Pullpush archive of this post ID. This is not a generic Reddit search.',
-          };
+          });
+          if (packed) {
+            packed.images = [...new Set([...(packed.images || []), ...media])].slice(0, MAX_IMAGES);
+            packed.ogImage = packed.ogImage || media[0] || '';
+            return packed;
+          }
         }
-      }
+      } catch {}
+    }
+  }
+
+  const jsonCandidates = [];
+  const add = (u) => { if (u && !jsonCandidates.includes(u)) jsonCandidates.push(u); };
+  if (postId) {
+    add('https://old.reddit.com/comments/' + postId + '.json?raw_json=1');
+    add('https://www.reddit.com/by_id/t3_' + postId + '.json?raw_json=1');
+  }
+  add('https://old.reddit.com' + path + '.json?raw_json=1');
+  for (const jsonUrl of jsonCandidates) {
+    try {
+      const rr = await fetchText(jsonUrl, { headers: { ...BROWSER_HEADERS, accept: 'application/json' }, redirect: 'follow' }, Math.min(RETRIEVE_TIMEOUT_MS, 5000));
+      if (!rr.ok) continue;
+      const j = await rr.json();
+      const packed = packFromListing(parseRedditListing(j, permalink), { redditJson: j });
+      if (packed) return packed;
     } catch {}
   }
+
   if (!opts.skipAlt) {
     try {
       const snap = await retrieveWayback(permalink);
       if (snap) {
         const alt = await retrieveSource(snap, { skipAlt: true });
-        if (alt && alt.status === 'RETRIEVED') {
+        if (alt && alt.status === 'RETRIEVED' && !isGenericRedditPage(alt)) {
           return {
             ...alt,
             url: permalink,
@@ -9124,29 +9139,15 @@ async function retrieveExactReddit(targetUrl, identity, opts = {}) {
       }
     } catch {}
   }
+
   try {
     const htmlTry = await retrieveSource(permalink, { skipAlt: true });
-    if (htmlTry && htmlTry.status === 'RETRIEVED') return { ...htmlTry, exactSource: true, redditPost: htmlTry.redditPost };
-    if (htmlTry) {
-      return {
-        ...htmlTry,
-        url: permalink,
-        exactSource: true,
-        status: htmlTry.status || 'RETRIEVAL_FAILED',
-        accessNote: htmlTry.accessNote || 'Exact Reddit post could not be publicly retrieved.',
-      };
+    if (htmlTry && htmlTry.status === 'RETRIEVED' && !isGenericRedditPage(htmlTry)) {
+      return { ...htmlTry, exactSource: true, redditPost: htmlTry.redditPost };
     }
   } catch {}
-  return {
-    status: 'RETRIEVAL_FAILED',
-    accessState: 'NOT_PUBLICLY_RETRIEVABLE',
-    url: permalink,
-    error: 'Exact Reddit post could not be publicly retrieved.',
-    accessNote: 'Exact Reddit post could not be publicly retrieved. Generic Reddit search was not used as a substitute.',
-    exactSource: true,
-    subreddit: identity.subreddit ? 'r/' + identity.subreddit : '',
-    author: identity.author || '',
-  };
+
+  return failed('Exact Reddit post could not be publicly retrieved. Generic Reddit search was not used as a substitute.');
 }
 
 async function retrieveSource(targetUrl, opts = {}) {

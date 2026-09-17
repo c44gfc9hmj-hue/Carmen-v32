@@ -4926,7 +4926,7 @@ export function exactSourceIdentity(url, extras = {}) {
   const reddit = parseRedditPermalink(canonicalUrl);
   const premium = parsePremiumProfile(canonicalUrl);
   const subject = String(extras.subject || extras.displayName || '').trim();
-  const handle = String(extras.handle || premium.handle || reddit.author || '').replace(/^@/, '');
+  const handle = String(extras.handle || (premium.isPremium ? premium.handle : '') || reddit.author || '').replace(/^@/, '');
   const identity = {
     sourceId,
     canonicalUrl,
