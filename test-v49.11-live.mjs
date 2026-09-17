@@ -69,6 +69,8 @@ console.log('--- R Chanta Rose Reddit ---');
     postContentRetrieved: body.reddit && body.reddit.postContentRetrieved,
     terminalState: body.terminalState,
     genericSearchUsedAsRetrieval: body.genericSearchUsedAsRetrieval,
+    retrievalPath: body.retrievalPath || (body.debug && body.debug.retrievalPath),
+    attempts: (body.retrievalAttempts || (body.debug && body.debug.retrievalAttempts) || []).map(a => ({ label: a.label, status: a.status, error: a.error, note: a.note })),
     what: body.whatCarmenActuallyRetrieved,
   }));
   assert(status === 200, 'R 200');

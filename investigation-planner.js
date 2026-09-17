@@ -5145,6 +5145,7 @@ export function terminalStateForExactSource(opts = {}) {
   if (auth && opts.publicContentRetrieved) return 'AUTHENTICATION_REQUIRED';
   if (!opts.fetchAttempted) return 'FETCH_FAILED';
   if (!fetchSucceeded && !opts.publicContentRetrieved) {
+    if (/NOT_PUBLICLY_RETRIEVABLE/i.test(access)) return 'NOT_PUBLICLY_RETRIEVABLE';
     if (/UNAVAILABLE|timeout|503/i.test(String(opts.error || '') + access)) return 'PROVIDER_UNAVAILABLE';
     if (/BLOCKED|404|410|UNVERIFIED/i.test(access)) return 'NOT_PUBLICLY_RETRIEVABLE';
     return 'FETCH_FAILED';
@@ -5181,6 +5182,8 @@ export function buildSourceDebug(fields = {}) {
     parentReceivedSeeds: fields.parentReceivedSeeds === true,
     whyStopped: fields.whyStopped || '',
     whatRetrieved: fields.whatRetrieved || '',
+    retrievalPath: fields.retrievalPath || '',
+    retrievalAttempts: Array.isArray(fields.retrievalAttempts) ? fields.retrievalAttempts : [],
   };
 }
 

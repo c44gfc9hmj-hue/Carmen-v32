@@ -303,7 +303,8 @@ console.log('--- failed exact fetch is not masked by search ---');
     const body = await res.json();
     assert(body.fetchSucceeded !== true, 'failed fetch is not success');
     assert(body.genericSearchUsedAsRetrieval !== true, 'search did not mask failure');
-    assert(/FETCH_FAILED|NOT_PUBLICLY_RETRIEVABLE|AUTHENTICATION_REQUIRED|PROVIDER_UNAVAILABLE/.test(body.terminalState || ''), 'terminal is a failure/auth state');
+    assert(/FETCH_FAILED|NOT_PUBLICLY_RETRIEVABLE|PROVIDER_UNAVAILABLE/.test(body.terminalState || ''), 'terminal is a failure state');
+    assert(body.terminalState !== 'AUTHENTICATION_REQUIRED', 'reddit miss is not an OnlyFans auth wall');
     assert(/could not be publicly retrieved|not publicly retrievable|FETCH_FAILED/i.test(JSON.stringify(body.unknowns || []) + (body.whatCarmenActuallyRetrieved || '') + (body.whyDidCarmenStop || '')), 'honest failure copy');
     assert(!(body.publicReferences && body.publicReferences.length && body.fetchSucceeded), 'search hits are not claimed as retrieved source');
   } finally {
@@ -339,6 +340,87 @@ console.log('--- source → source chain (S) ---');
     assert(child.parent === body.canonicalUrl || child.parentSourceId === body.sourceId, 'S B parent is A');
     assert(child.sourceId !== body.sourceId, 'S A and B have different sourceIds');
     if (child.fetchSucceeded) assert(/unique to B|linked public profile/i.test(child.excerpt || child.title || ''), 'S B-specific retrieval');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+console.log('--- Pullpush archive of the exact post ID is retrieval, not generic search ---');
+{
+  const fetched = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    fetched.push(u);
+    if (/api\.pullpush\.io\/reddit\/search\/submission\/\?ids=abc111/i.test(u)) {
+      return new Response(JSON.stringify({
+        data: [{
+          id: 'abc111',
+          title: 'Chanta Rose post A',
+          selftext: 'Unique body for post A. https://example.org/linked-profile',
+          author: 'chantarose',
+          subreddit: 'Bondage',
+          permalink: '/r/Bondage/comments/abc111/chanta_rose_post_a/',
+          url: 'https://i.redd.it/abc111image.jpeg',
+          url_overridden_by_dest: 'https://i.redd.it/abc111image.jpeg',
+          created_utc: 1700000000,
+          score: 11,
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (/html\.duckduckgo|bing\.com\/search|reddit\.com\/search/i.test(u)) {
+      return new Response('<html><title>Reddit public search</title><a class="result__a" href="https://www.reddit.com/r/all/">Reddit</a></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    return new Response('blocked', { status: 403, headers: { 'content-type': 'text/plain' } });
+  };
+  try {
+    const res = await worker.fetch(new Request('https://test/analyze', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: REDDIT_A, title: 'Chanta Rose post A', subject: 'Chanta Rose', kind: 'reddit' }),
+    }), {});
+    const body = await res.json();
+    assert(res.status === 200, 'Pullpush Analyze 200');
+    assert(fetched.some(u => /api\.pullpush\.io.*ids=abc111/i.test(u)), 'Pullpush fetched by exact post id');
+    assert(body.fetchSucceeded === true, 'Pullpush counts as exact-source retrieval');
+    assert(body.reddit && body.reddit.postId === 'abc111', 'Pullpush preserves post id');
+    assert(body.reddit.author === 'chantarose', 'Pullpush author extracted');
+    assert(body.reddit.postContentRetrieved === 'YES', 'Pullpush post content retrieved');
+    assert(/Unique body for post A/.test(JSON.stringify(body)), 'Pullpush body retrieved');
+    assert((body.media || []).some(m => /i\.redd\.it\/abc111image/.test(m)), 'Pullpush media extracted');
+    assert(body.genericSearchUsedAsRetrieval !== true, 'Pullpush is not generic search');
+    assert(body.retrievalPath === 'pullpush' || (body.debug && body.debug.retrievalPath === 'pullpush'), 'retrievalPath pullpush');
+    assert(!/^(reddit)$/i.test(String((body.reddit && body.reddit.title) || '').trim()), 'title is the post, not Reddit');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+console.log('--- Public frontend OG of the exact permalink is retrieval when archives are blocked ---');
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (/redlib\.privacyredirect\.com\/r\/Bondage\/comments\/abc111/i.test(u)) {
+      return new Response('<!doctype html><html><head><title>Making sure you\'re not a bot!</title><meta property="author" content="u/chantarose"><meta property="twitter:url" content="/r/Bondage/comments/abc111/chanta_rose_post_a/"><meta property="og:title" content="Chanta Rose post A - r/Bondage"><meta property="og:url" content="/r/Bondage/comments/abc111/chanta_rose_post_a/"><meta property="og:image" content="/thumb/b/abc111.jpg"></head><body>abc111</body></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    if (/html\.duckduckgo|bing\.com\/search/i.test(u)) {
+      return new Response('<html><title>Reddit public search</title><a class="result__a" href="https://www.reddit.com/search/?q=chanta">Reddit search</a></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    return new Response('blocked', { status: 403, headers: { 'content-type': 'text/plain' } });
+  };
+  try {
+    const res = await worker.fetch(new Request('https://test/analyze', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: REDDIT_A, title: 'Chanta Rose post A', subject: 'Chanta Rose', kind: 'reddit' }),
+    }), {});
+    const body = await res.json();
+    assert(body.fetchSucceeded === true, 'frontend OG of the exact post is retrieval');
+    assert(body.reddit && body.reddit.postId === 'abc111', 'frontend preserves post id');
+    assert(body.reddit.author === 'chantarose', 'frontend author from public metadata');
+    assert(body.reddit.postContentRetrieved === 'YES', 'frontend post content retrieved');
+    assert(/Chanta Rose post A/i.test(body.reddit.title || body.title || ''), 'frontend title is the post');
+    assert(body.genericSearchUsedAsRetrieval !== true, 'frontend is not generic search');
+    assert(body.terminalState !== 'AUTHENTICATION_REQUIRED', 'reddit miss is not an OnlyFans auth wall');
   } finally {
     globalThis.fetch = originalFetch;
   }
