@@ -38,7 +38,7 @@ console.log('--- v49.1 source contracts still present ---');
   assert(/Teach me/.test(appSrc) && /runLearn/.test(appSrc), 'Teach Me grounding');
   assert(/hardNewInvestigation/.test(appSrc), 'hard New Investigation isolation');
   assert(/progressiveTimer/.test(appSrc), 'progressive retrieval');
-  assert(/cannot currently inspect the actual video frames/.test(appSrc), 'video analysis honesty');
+  assert(/cannot currently inspect( the actual)? video frames/.test(appSrc), 'video analysis honesty');
 }
 
 console.log('--- v49.1 query-echo rejection ---');

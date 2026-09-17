@@ -50,7 +50,8 @@ console.log('--- variants ---');
   assert(v.some(x => x.q.includes('"Drea Morgan"')), 'person gets exact-name variant');
   assert(v[0].q === 'Drea Morgan', 'primary query first');
   const u = buildSearchVariants('https://dreamorgan.com/models/DreaMorgan.html', classifyQuery('https://dreamorgan.com/models/DreaMorgan.html'));
-  assert(u.some(x => /drea morgan/i.test(x.q)), 'URL path is humanized into a name variant');
+  assert(u.some(x => /dreamorgan\.com\/models\/DreaMorgan/i.test(x.q)), 'URL variant keeps the exact submitted URL');
+  assert(!u.some(x => /^drea morgan$/i.test(x.q)), 'exact URL is not replaced with a reconstructed name search');
 }
 
 console.log('--- ranking ---');

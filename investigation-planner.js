@@ -1,8 +1,14 @@
-// Carmen v49.9 — investigation / topic-map planner + ChatGPT-access helpers.
+// Carmen v49.11 — investigation / topic-map planner + ChatGPT-access helpers.
 // Query-centric retrieval is the fallback. The planner independently
 // establishes subject evidence, topic evidence, and intersection evidence,
 // then opens source-class lanes (especially adult) instead of stuffing
 // tokens into one search string.
+//
+// v49.11: Exact-source retrieval. Analyze receives the canonical URL from the
+// source card and fetches THAT URL. Generic platform discovery cannot
+// substitute for exact-source retrieval. Source identity is hash(canonicalURL).
+// Authentication-required content is reported as AUTHENTICATION_REQUIRED, not
+// retrieved. Extracted URLs/accounts/entities become investigation seeds.
 //
 // v49.9: Identity verification, persistent investigation queue, visual
 // evidence gate. PERSON searches identify first (small high-quality
@@ -42,8 +48,8 @@
 // This module is self-contained: no import from worker.js (avoids cycles).
 // worker.js imports it. The machine-readable API uses these same functions.
 
-export const PLANNER_VERSION = '49.9';
-export const PLANNER_BUILD = '49.9-identity-queue-visual';
+export const PLANNER_VERSION = '49.11';
+export const PLANNER_BUILD = '49.11-exact-source-retrieval';
 
 function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
@@ -2544,6 +2550,7 @@ export function createInvestigationState(opts = {}) {
     rejectedVisuals: [],
     canonicalEntities: [],
     discoveredSeeds: [],
+    sourceAnalyses: [],
     stopState: null,
     resumable: false,
     identityVerification: null,
@@ -2628,6 +2635,27 @@ export function applyInvestigationAction(state, action, payload = {}) {
   if (act === 'save' && payload.item) {
     s.savedEvidence = [...(s.savedEvidence || []), { ...payload.item, savedAt: new Date().toISOString(), foundThrough: payload.foundThrough || s.foundThrough || 'save' }].slice(-80);
     pushTrail('save', 'Saved evidence');
+  }
+  if (act === 'analyze' || act === 'analyze-exact-source') {
+    const rec = payload.sourceAnalysis || payload.analysis || payload;
+    const url = rec.canonicalUrl || rec.url || payload.url || '';
+    if (url) {
+      s.sourceAnalyses = [...(s.sourceAnalyses || []), rec].slice(-32);
+      s.expansionState = s.expansionState || {};
+      s.expansionState.visitedUrls = [...new Set([...(s.expansionState.visitedUrls || []), url])].slice(-80);
+    }
+    const seeds = payload.seeds || rec.seeds || [];
+    if (seeds.length) {
+      s.discoveredSeeds = [...(s.discoveredSeeds || []), ...seeds].slice(-64);
+      s.evidenceGraph = [...(s.evidenceGraph || []), ...seeds.filter(x => x && x.url).map(x => ({
+        url: x.url,
+        parent: x.parent || url,
+        foundThrough: x.foundThrough || 'exact-source',
+        kind: x.kind || 'seed',
+        sourceId: x.sourceId || sourceIdFromCanonicalUrl(x.url),
+      }))].slice(-80);
+    }
+    pushTrail('analyze', 'Exact source ' + (url || rec.sourceId || 'unknown'));
   }
   return s;
 }
@@ -4635,11 +4663,21 @@ export function suppressionFromRejection(identityFeedback) {
 
 export function sourceLifecycleState(item, extras = {}) {
   const discovered = !!(item && (item.url || item.pageUrl));
+  const terminal = String(extras.terminalState || (item && item.terminalState) || '');
   const verified = !!(item && (item.retrievalStatus === 'RETRIEVED' || item.provenance === 'RETRIEVED' || item.accessState === 'DIRECTLY_RETRIEVED' || extras.verified));
   const opened = !!(extras.opened || (item && item.opened === true));
-  const analyzed = !!(extras.analyzed || (item && item.analyzed === true));
-  const access = (item && (item.accessState || item.premiumAccess)) || '';
+  const reallyAnalyzed = terminal === 'ANALYZED' || !!(extras.analyzed && verified);
+  const analyzed = reallyAnalyzed;
+  const access = (item && (item.accessState || item.premiumAccess)) || terminal;
   const privateish = /AUTHENTICATION_REQUIRED|PAYWALLED|AGE_RESTRICTED|authorized_access_required|inaccessible/i.test(access);
+  const fetchFailed = terminal === 'FETCH_FAILED' || terminal === 'NOT_PUBLICLY_RETRIEVABLE' || terminal === 'PROVIDER_UNAVAILABLE';
+  let label = 'unknown';
+  if (terminal === 'AUTHENTICATION_REQUIRED' || privateish) label = 'authentication required';
+  else if (fetchFailed) label = 'exact source not retrieved';
+  else if (analyzed) label = 'source analyzed';
+  else if (opened && !verified) label = 'source opened';
+  else if (verified) label = 'source verified';
+  else if (discovered) label = 'source discovered';
   return {
     discovered,
     verified,
@@ -4647,10 +4685,12 @@ export function sourceLifecycleState(item, extras = {}) {
     analyzed,
     retrievedContent: verified && !privateish,
     accessBoundary: privateish,
-    label: analyzed ? 'source analyzed' : (opened ? 'source opened' : (verified ? 'source verified' : (discovered ? 'source discovered' : 'unknown'))),
+    terminalState: terminal || (analyzed ? 'ANALYZED' : (privateish ? 'AUTHENTICATION_REQUIRED' : (verified ? 'FETCHED' : (discovered ? 'DISCOVERED' : '')))),
+    label,
     note: opened && !verified
       ? 'Carmen opened a public URL. Opening a page is not the same as retrieving or verifying its contents.'
-      : (privateish ? 'Remaining material requires authentication. Carmen did not bypass the access control.' : ''),
+      : (privateish ? 'Remaining material requires authentication. Carmen did not bypass the access control.'
+        : (fetchFailed ? 'Exact URL fetch did not retrieve this source. Generic platform search is not a substitute.' : '')),
   };
 }
 
@@ -4724,3 +4764,451 @@ export function honestResourceStop(controller, extras = {}) {
     remainingQueue: summary,
   };
 }
+
+// ---------------------------------------------------------------------------
+// v49.11 exact-source retrieval — identity, state machine, parse, seeds
+// The exact canonical URL is authoritative. Platform/name/domain search
+// cannot substitute for fetching that URL.
+// ---------------------------------------------------------------------------
+
+export const SOURCE_ANALYSIS_STATES = [
+  'DISCOVERED',
+  'URL_CANONICALIZED',
+  'FETCH_ATTEMPTED',
+  'FETCHED',
+  'PARSED',
+  'MEDIA_EXTRACTED',
+  'LINKS_EXTRACTED',
+  'ENTITIES_EXTRACTED',
+  'TOPICS_EXTRACTED',
+  'SEEDS_CREATED',
+  'CORROBORATION_SEARCHED',
+  'ANALYZED',
+];
+
+export const SOURCE_TERMINAL_STATES = [
+  'ANALYZED',
+  'AUTHENTICATION_REQUIRED',
+  'FETCH_FAILED',
+  'NOT_PUBLICLY_RETRIEVABLE',
+  'PROVIDER_UNAVAILABLE',
+];
+
+export function sourceIdFromCanonicalUrl(url) {
+  const s = canonicalizeExactSourceUrl(url) || String(url || '');
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return 'src_' + (h >>> 0).toString(16).padStart(8, '0');
+}
+
+export function canonicalizeExactSourceUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  let href = raw;
+  try {
+    if (!/^https?:\/\//i.test(href) && /^[\w.-]+\.[a-z]{2,}/i.test(href) && !/\s/.test(href)) href = 'https://' + href;
+    const u = new URL(href);
+    if (!/^https?:$/i.test(u.protocol)) return '';
+    u.hash = '';
+    u.hostname = u.hostname.replace(/^www\./, '').toLowerCase();
+    ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'fbclid', 'gclid', 'ref', 'rdt'].forEach(k => u.searchParams.delete(k));
+    const host = u.hostname;
+    if (host === 'reddit.com' || host.endsWith('.reddit.com') || host === 'redd.it') {
+      if (host === 'old.reddit.com' || host === 'np.reddit.com' || host === 'm.reddit.com' || host === 'new.reddit.com' || host === 'amp.reddit.com') {
+        u.hostname = 'reddit.com';
+      }
+      if (host === 'redd.it') {
+        const id = u.pathname.replace(/\//g, '');
+        if (id) return 'https://reddit.com/comments/' + id;
+      }
+      const parsed = parseRedditPermalink(u.href.replace(u.hostname, 'reddit.com'));
+      if (parsed.postId && parsed.subreddit) {
+        const slug = parsed.slug ? parsed.slug.replace(/\/+$/, '') : '';
+        return ('https://reddit.com/r/' + parsed.subreddit + '/comments/' + parsed.postId + (slug ? '/' + slug : '')).replace(/\/+$/, '');
+      }
+      if (parsed.postId) return 'https://reddit.com/comments/' + parsed.postId;
+      u.hostname = 'reddit.com';
+    }
+    if (host === 'onlyfans.com' || host.endsWith('.onlyfans.com')) {
+      u.hostname = 'onlyfans.com';
+      const handle = parsePremiumProfile(u.href).handle;
+      if (handle) return 'https://onlyfans.com/' + handle;
+    }
+    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, '');
+    return u.href;
+  } catch {
+    return canonicalizeUrl(raw);
+  }
+}
+
+export function parseRedditPermalink(url) {
+  const u = String(url || '');
+  const host = hostOf(u);
+  const reddit = host === 'reddit.com' || host.endsWith('.reddit.com') || host === 'redd.it';
+  if (!reddit) return { isReddit: false, isPost: false, postId: '', subreddit: '', slug: '', author: '', canonicalPermalink: '' };
+  const path = pathOf(u).replace(/\/+$/, '');
+  const user = path.match(/^\/(?:user|u)\/([^/]+)/i);
+  const subOnly = path.match(/^\/r\/([^/]+)\/?$/i);
+  const rComments = path.match(/^\/r\/([^/]+)\/comments\/([a-z0-9]+)(?:\/([^/]+))?/i);
+  const bareComments = path.match(/^\/comments\/([a-z0-9]+)(?:\/([^/]+))?/i);
+  const share = path.match(/^\/r\/([^/]+)\/s\/([a-z0-9]+)/i);
+  if (rComments) {
+    const subreddit = rComments[1];
+    const postId = rComments[2];
+    const slug = rComments[3] || '';
+    const permalink = ('https://reddit.com/r/' + subreddit + '/comments/' + postId + (slug ? '/' + slug : '')).replace(/\/+$/, '');
+    return { isReddit: true, isPost: true, isSearch: false, postId, subreddit, slug, author: '', canonicalPermalink: permalink };
+  }
+  if (bareComments) {
+    const postId = bareComments[1];
+    const slug = bareComments[2] || '';
+    const permalink = ('https://reddit.com/comments/' + postId + (slug ? '/' + slug : '')).replace(/\/+$/, '');
+    return { isReddit: true, isPost: true, isSearch: false, postId, subreddit: '', slug, author: '', canonicalPermalink: permalink };
+  }
+  if (share) {
+    return { isReddit: true, isPost: true, isSearch: false, postId: share[2], subreddit: share[1], slug: '', author: '', canonicalPermalink: 'https://reddit.com/r/' + share[1] + '/s/' + share[2] };
+  }
+  return {
+    isReddit: true,
+    isPost: false,
+    isSearch: isRedditSearchPage(u),
+    postId: '',
+    subreddit: subOnly ? subOnly[1] : '',
+    slug: '',
+    author: user ? user[1] : '',
+    canonicalPermalink: canonicalizeUrl(u),
+  };
+}
+
+export function parsePremiumProfile(url) {
+  const host = hostOf(url).replace(/^www\./, '');
+  const premium = PREMIUM_PLATFORM_SEEDS.find(p => host === p.host || host.endsWith('.' + p.host));
+  const parts = pathOf(url).replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+  const skip = /^(login|signup|subscribe|explore|discover|search|terms|privacy|help|about|cdn-cgi|posts|photos|videos)$/i;
+  const handle = parts[0] && !skip.test(parts[0]) ? parts[0].replace(/^@/, '') : '';
+  return {
+    isPremium: !!premium,
+    platform: premium ? premium.label : (host || 'unknown'),
+    host: premium ? premium.host : host,
+    handle,
+    canonicalProfile: handle && (premium || /onlyfans|fansly|loyalfans|manyvids/i.test(host))
+      ? ('https://' + (premium ? premium.host : host) + '/' + handle)
+      : canonicalizeUrl(url),
+  };
+}
+
+export function identifyExactSourceType(url) {
+  const reddit = parseRedditPermalink(url);
+  if (reddit.isReddit) {
+    if (reddit.isSearch) return 'reddit-search';
+    if (reddit.isPost) return 'reddit-post';
+    if (reddit.author) return 'reddit-user';
+    if (reddit.subreddit) return 'reddit-subreddit';
+    return 'reddit';
+  }
+  const prem = parsePremiumProfile(url);
+  if (prem.isPremium && prem.handle) return prem.host.replace(/\.com$/, '') + '-profile';
+  if (prem.isPremium) return prem.host.replace(/\.com$/, '') + '-platform';
+  const host = hostOf(url).replace(/^www\./, '');
+  if (/\.(jpg|jpeg|png|webp|gif|avif)(\?|$)/i.test(url)) return 'image-url';
+  if (/youtube|youtu\.be|vimeo|\.mp4/i.test(host + url)) return 'video';
+  if (host) return 'webpage';
+  return 'unknown';
+}
+
+export function exactSourceIdentity(url, extras = {}) {
+  const canonicalUrl = canonicalizeExactSourceUrl(url || extras.url || '');
+  const sourceId = sourceIdFromCanonicalUrl(canonicalUrl);
+  const sourceType = identifyExactSourceType(canonicalUrl);
+  const reddit = parseRedditPermalink(canonicalUrl);
+  const premium = parsePremiumProfile(canonicalUrl);
+  const subject = String(extras.subject || extras.displayName || '').trim();
+  const handle = String(extras.handle || premium.handle || reddit.author || '').replace(/^@/, '');
+  const identity = {
+    sourceId,
+    canonicalUrl,
+    sourceType,
+    url: canonicalUrl,
+    host: hostOf(canonicalUrl).replace(/^www\./, ''),
+    subject: subject || handle || '',
+    handle,
+    displayName: extras.displayName || subject || handle || '',
+    platform: premium.isPremium ? premium.platform : (reddit.isReddit ? 'Reddit' : (hostOf(canonicalUrl).replace(/^www\./, '') || 'web')),
+  };
+  if (reddit.isReddit) {
+    identity.subreddit = reddit.subreddit;
+    identity.postId = reddit.postId;
+    identity.permalink = reddit.canonicalPermalink;
+    identity.platform = 'Reddit';
+  }
+  if (premium.isPremium) {
+    identity.canonicalProfile = premium.canonicalProfile;
+    identity.handle = premium.handle || identity.handle;
+  }
+  return identity;
+}
+
+export function isGenericPlatformDiscoveryQuery(q) {
+  const s = String(q || '').trim().toLowerCase();
+  if (!s) return true;
+  if (/^https?:\/\//.test(s) && /\/comments\/[a-z0-9]+/i.test(s)) return false;
+  if (/^https?:\/\/onlyfans\.com\/[a-z0-9._-]+/i.test(s)) return false;
+  if (/^(reddit|onlyfans|fansly|loyalfans|manyvids)$/i.test(s)) return true;
+  if (/^site:(reddit|onlyfans)\.com\s*$/i.test(s)) return true;
+  if (/\b(onlyfans|fansly|loyalfans|manyvids)\b/.test(s) && !/onlyfans\.com\/[a-z0-9]/i.test(s) && (s.split(/\s+/).length <= 4)) {
+    if (/^(onlyfans|site:onlyfans\.com)/.test(s)) return true;
+  }
+  if (/reddit public search/i.test(s)) return true;
+  return false;
+}
+
+export function parseRedditListing(json, canonicalUrl) {
+  const listing = Array.isArray(json) ? json : [json];
+  const children0 = listing[0] && listing[0].data && listing[0].data.children;
+  const postChild = (children0 || []).find(c => c && (c.kind === 't3' || (c.data && (c.data.title || c.data.selftext)))) || (children0 || [])[0];
+  const post = postChild && postChild.data ? postChild.data : (listing[0] && listing[0].data && !listing[0].data.children ? listing[0].data : null);
+  const comments = [];
+  const walk = (nodes, depth) => {
+    for (const c of nodes || []) {
+      if (comments.length >= 24) return;
+      const d = c && c.data;
+      if (!d) continue;
+      if (c.kind === 't1' || d.body) {
+        comments.push({
+          author: d.author || '',
+          body: String(d.body || '').slice(0, 800),
+          score: typeof d.score === 'number' ? d.score : null,
+          created: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : '',
+          depth: depth || 0,
+        });
+      }
+      const replies = d.replies && d.replies.data && d.replies.data.children;
+      if (replies) walk(replies, (depth || 0) + 1);
+    }
+  };
+  if (listing[1] && listing[1].data) walk(listing[1].data.children, 0);
+  if (!post || !(post.title || post.selftext || post.body || post.id)) {
+    return { ok: false, post: null, comments: [], outboundLinks: [], media: [] };
+  }
+  const permalink = post.permalink
+    ? ('https://www.reddit.com' + post.permalink)
+    : (canonicalUrl || '');
+  const parsed = parseRedditPermalink(permalink || canonicalUrl);
+  const body = String(post.selftext || post.body || '');
+  const outboundLinks = extractOutboundLinks(body + ' ' + String(post.url_overridden_by_dest || post.url || ''), permalink);
+  const media = [];
+  const preview = post.preview && post.preview.images && post.preview.images[0] && post.preview.images[0].source && post.preview.images[0].source.url;
+  if (preview) media.push(String(preview).replace(/&/g, '&'));
+  if (typeof post.thumbnail === 'string' && post.thumbnail.startsWith('http')) media.push(post.thumbnail);
+  if (typeof post.url_overridden_by_dest === 'string' && /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(post.url_overridden_by_dest)) media.push(post.url_overridden_by_dest);
+  if (post.media_metadata) {
+    for (const k of Object.keys(post.media_metadata).slice(0, 8)) {
+      const m = post.media_metadata[k];
+      const src = m && ((m.s && (m.s.u || m.s.gif)) || (m.p && m.p.length && m.p[m.p.length - 1].u));
+      if (src) media.push(String(src).replace(/&/g, '&'));
+    }
+  }
+  return {
+    ok: true,
+    post: {
+      id: post.id || parsed.postId,
+      fullname: post.name || (post.id ? 't3_' + post.id : ''),
+      title: post.title || '',
+      body,
+      author: post.author || '',
+      subreddit: post.subreddit_name_prefixed || (post.subreddit ? 'r/' + post.subreddit : (parsed.subreddit ? 'r/' + parsed.subreddit : '')),
+      subredditName: post.subreddit || parsed.subreddit || '',
+      permalink,
+      created: post.created_utc ? new Date(post.created_utc * 1000).toISOString() : '',
+      score: typeof post.score === 'number' ? post.score : null,
+      numComments: typeof post.num_comments === 'number' ? post.num_comments : comments.length,
+      url: post.url || permalink,
+    },
+    comments,
+    outboundLinks,
+    media: [...new Set(media)].slice(0, 12),
+  };
+}
+
+export function extractOutboundLinks(text, pageUrl) {
+  const out = [];
+  const seen = new Set();
+  const re = /https?:\/\/[^\s)\]>"']+/gi;
+  let m;
+  const pageHost = hostOf(pageUrl || '');
+  while ((m = re.exec(String(text || ''))) && out.length < 16) {
+    let href = m[0].replace(/[.,;:]+$/, '');
+    try { href = new URL(href).href; } catch { continue; }
+    const key = canonicalizeExactSourceUrl(href) || href;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const host = hostOf(href).replace(/^www\./, '');
+    if (!host || host === 'reddit.com' && /\/(static|login|register)/i.test(href)) continue;
+    out.push({ url: href, canonicalUrl: key, host, sourceId: sourceIdFromCanonicalUrl(key), parent: pageUrl || '', kind: 'outbound-link' });
+  }
+  return out;
+}
+
+export function extractEntitiesFromExcerpt(text, extras = {}) {
+  const subject = String(extras.subject || '').trim();
+  const people = [];
+  const orgs = [];
+  const aliases = [];
+  const seen = new Set();
+  const add = (arr, v, kind) => {
+    const s = String(v || '').replace(/\s+/g, ' ').trim();
+    if (!s || s.length < 3 || s.length > 60) return;
+    const k = norm(s);
+    if (seen.has(k)) return;
+    seen.add(k);
+    arr.push({ label: s, kind });
+  };
+  if (subject) add(people, subject, 'person');
+  const blob = String(text || '');
+  const re = /\b([A-Z][a-z]+(?:\s+(?:de|da|van|von|di|le|la|del|st|saint))?(?:\s+[A-Z][a-z]+){1,2})\b/g;
+  let m;
+  while ((m = re.exec(blob)) && people.length < 10) {
+    const name = m[1];
+    if (/^(January|February|March|April|May|June|July|August|September|October|November|December|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Reddit|OnlyFans|The|This|That)$/i.test(name.split(/\s+/)[0])) continue;
+    add(people, name, 'person');
+  }
+  const aka = blob.match(/\b(?:aka|also known as)\s+([A-Z][A-Za-z0-9_.\s-]{2,40})/i);
+  if (aka) add(aliases, aka[1], 'alias');
+  if (extras.handle) add(aliases, extras.handle, 'handle');
+  if (/\b(Inc|LLC|Ltd|University|Studio|Productions)\b/.test(blob)) {
+    const o = blob.match(/\b([A-Z][A-Za-z0-9&.\s-]{2,40}\s(?:Inc|LLC|Ltd|University|Studio|Productions))\b/);
+    if (o) add(orgs, o[1], 'organization');
+  }
+  return { people: people.slice(0, 8), organizations: orgs.slice(0, 6), aliases: aliases.slice(0, 6) };
+}
+
+export function extractTopicsFromExcerpt(text, extras = {}) {
+  const blob = norm(text || '');
+  const topics = [];
+  const add = (t) => {
+    const s = String(t || '').trim();
+    if (!s) return;
+    if (!topics.some(x => norm(x) === norm(s))) topics.push(s);
+  };
+  if (extras.topic) add(extras.topic);
+  const canon = canonicalAdultTopic(text);
+  if (canon) add(canon);
+  for (const [k, fam] of Object.entries(ADULT_TOPIC_FAMILY || {})) {
+    if (blob.includes(k) || (fam.related || []).some(v => blob.includes(norm(v)))) add(fam.canonical || k);
+  }
+  const extrasHit = ['interview', 'photoset', 'tutorial', 'gallery', 'profile', 'bondage', 'bdsm', 'onlyfans', 'reddit'];
+  for (const t of extrasHit) if (blob.includes(t)) add(t);
+  return topics.slice(0, 8);
+}
+
+export function createExactSourceSeeds(extracted, identity) {
+  const seeds = [];
+  const parent = identity.canonicalUrl || identity.url || '';
+  const parentId = identity.sourceId || sourceIdFromCanonicalUrl(parent);
+  const push = (item) => {
+    if (!item || !(item.url || item.label)) return;
+    const url = item.url || '';
+    const sourceId = url ? sourceIdFromCanonicalUrl(url) : (parentId + ':' + norm(item.label || ''));
+    if (seeds.some(s => s.sourceId === sourceId || (url && s.url === url))) return;
+    seeds.push({
+      ...item,
+      url: url || item.url,
+      sourceId,
+      parent,
+      parentSourceId: parentId,
+      foundThrough: 'exact-source',
+      provenance: 'EXTRACTED',
+    });
+  };
+  for (const l of extracted.links || []) push({ url: l.url || l.canonicalUrl, kind: 'url', host: l.host, label: l.host });
+  for (const a of extracted.accounts || []) push({ url: a.url, kind: 'account', handle: a.handle, platform: a.platform, label: a.handle || a.platform });
+  for (const p of (extracted.entities && extracted.entities.people) || []) push({ kind: 'person', label: p.label, url: '' });
+  for (const o of (extracted.entities && extracted.entities.organizations) || []) push({ kind: 'organization', label: o.label, url: '' });
+  for (const al of (extracted.entities && extracted.entities.aliases) || extracted.aliases || []) push({ kind: 'alias', label: al.label || al, url: '' });
+  for (const t of extracted.topics || []) push({ kind: 'topic', label: t, url: '' });
+  for (const m of extracted.media || []) push({ url: typeof m === 'string' ? m : m.url, kind: 'media', label: 'media' });
+  for (const d of extracted.domains || []) push({ kind: 'domain', label: d.host || d.label || d, url: d.url || '' });
+  for (const r of extracted.referencedPosts || []) push({ url: r.url, kind: 'referenced-post', label: r.title || r.url });
+  return seeds.slice(0, 24);
+}
+
+export function terminalStateForExactSource(opts = {}) {
+  const access = String(opts.accessState || '');
+  const fetchSucceeded = opts.fetchSucceeded === true;
+  const auth = opts.authRequired === true || /AUTHENTICATION_REQUIRED|PAYWALLED|AGE_RESTRICTED/i.test(access);
+  const providerDown = opts.providerUnavailable === true;
+  if (providerDown) return 'PROVIDER_UNAVAILABLE';
+  if (auth && !fetchSucceeded && !opts.publicContentRetrieved) return 'AUTHENTICATION_REQUIRED';
+  if (auth && opts.publicContentRetrieved) return 'AUTHENTICATION_REQUIRED';
+  if (!opts.fetchAttempted) return 'FETCH_FAILED';
+  if (!fetchSucceeded && !opts.publicContentRetrieved) {
+    if (/UNAVAILABLE|timeout|503/i.test(String(opts.error || '') + access)) return 'PROVIDER_UNAVAILABLE';
+    if (/BLOCKED|404|410|UNVERIFIED/i.test(access)) return 'NOT_PUBLICLY_RETRIEVABLE';
+    return 'FETCH_FAILED';
+  }
+  if (opts.parsed && (opts.seedsCreated || opts.publicContentRetrieved || fetchSucceeded)) return 'ANALYZED';
+  if (fetchSucceeded) return 'FETCHED';
+  return 'FETCH_FAILED';
+}
+
+export function buildSourceDebug(fields = {}) {
+  const canonicalUrl = canonicalizeExactSourceUrl(fields.canonicalUrl || fields.url || '');
+  const sourceId = fields.sourceId || sourceIdFromCanonicalUrl(canonicalUrl);
+  const terminalState = fields.terminalState || terminalStateForExactSource(fields);
+  return {
+    canonicalUrl,
+    sourceId,
+    sourceType: fields.sourceType || identifyExactSourceType(canonicalUrl),
+    fetchAttempted: fields.fetchAttempted === true,
+    fetchSucceeded: fields.fetchSucceeded === true,
+    parseSucceeded: fields.parseSucceeded === true,
+    publicContentRetrieved: fields.publicContentRetrieved === true,
+    mediaExtracted: fields.mediaExtracted === true,
+    linksExtracted: fields.linksExtracted === true,
+    entitiesExtracted: fields.entitiesExtracted === true,
+    topicsExtracted: fields.topicsExtracted === true,
+    authRequired: fields.authRequired === true,
+    seedsCreated: Number(fields.seedsCreated || 0),
+    corroborationQueries: Array.isArray(fields.corroborationQueries) ? fields.corroborationQueries : [],
+    terminalState,
+    provenance: fields.provenance || (fields.fetchSucceeded ? 'RETRIEVED' : (fields.fetchAttempted ? 'FETCH_ATTEMPTED' : 'DISCOVERED')),
+    pipeline: fields.pipeline || [],
+    exactUrlPreserved: !!(canonicalUrl && (fields.requestedUrl ? canonicalizeExactSourceUrl(fields.requestedUrl) === canonicalUrl || String(fields.requestedUrl).indexOf(canonicalUrl.replace(/^https?:\/\//, '')) >= 0 : true)),
+    genericSearchUsedAsRetrieval: fields.genericSearchUsedAsRetrieval === true,
+    parentReceivedSeeds: fields.parentReceivedSeeds === true,
+    whyStopped: fields.whyStopped || '',
+    whatRetrieved: fields.whatRetrieved || '',
+  };
+}
+
+export function attachExactSourceToInvestigation(state, analysis) {
+  const s = applyInvestigationAction(state || createInvestigationState(), 'analyze', {
+    sourceAnalysis: analysis && analysis.debug ? analysis.debug : analysis,
+    seeds: (analysis && analysis.seeds) || [],
+    url: analysis && (analysis.canonicalUrl || (analysis.identity && analysis.identity.canonicalUrl)),
+  });
+  return s;
+}
+
+export const EXACT_SOURCE_PIPELINE_LABELS = {
+  DISCOVERED: 'Exact source identified',
+  URL_CANONICALIZED: 'URL canonicalized',
+  FETCH_ATTEMPTED: 'Fetching exact source',
+  FETCHED: 'Exact source fetched',
+  PARSED: 'Parsing source',
+  MEDIA_EXTRACTED: 'Extracting links/media',
+  LINKS_EXTRACTED: 'Extracting links/media',
+  ENTITIES_EXTRACTED: 'Identifying entities/topics',
+  TOPICS_EXTRACTED: 'Identifying entities/topics',
+  SEEDS_CREATED: 'Creating investigation seeds',
+  CORROBORATION_SEARCHED: 'Corroborating',
+  ANALYZED: 'Complete',
+  AUTHENTICATION_REQUIRED: 'Authentication required for remaining content',
+  FETCH_FAILED: 'Exact URL fetch failed',
+  NOT_PUBLICLY_RETRIEVABLE: 'Exact source is not publicly retrievable',
+  PROVIDER_UNAVAILABLE: 'Provider unavailable',
+};
+

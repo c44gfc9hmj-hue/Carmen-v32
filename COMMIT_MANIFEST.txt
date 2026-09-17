@@ -1,19 +1,22 @@
-Carmen v49.9 (49.9-identity-queue-visual) — identity + queue + visual gate
-==========================================================================
-Parent: 9cb6289 (v49.8 adaptive-investigation)
+Carmen v49.11 (49.11-exact-source-retrieval) — exact URL retrieval
+==================================================================
+Parent: 86bdfb2 (v49.9 identity + queue + visual)
 
-Incremental production fix. Extends the v49.8 planner + worker engine.
-Does not rebuild Carmen or replace retrieval.
+Incremental production fix. Extends the v49.9 planner + worker engine.
+Does not rebuild Carmen or restyle the UI.
 
-- PERSON identity-first verification pack (small candidate set, multiple Yes,
-  “Not this person” is negative evidence).
-- Persistent investigation queue survives Worker resource/time rails and is
-  resumable. StopKind E never says “Research complete.”
-- Visual evidence gate: entity + topic + visual relevance. UNVERIFIED VISUAL
-  when Carmen cannot verify. Find More returns unique relevant visuals or none.
-- Research Focus PERSON/VISUALS/TUTORIAL/CLOTHING/POSITION/URL/TOPIC are real
-  planner branches. Adaptive Lens follows focus. Topic follow-up is entity×topic.
-- Analyze investigates public account metadata only. Never bypasses auth.
-- Deep Dive snaps/transitions into the investigation view.
+- Analyze receives the exact canonical URL from the source card.
+- sourceId = hash(canonicalURL). Two Reddit posts / two OnlyFans profiles
+  cannot share an identity.
+- Exact URL is fetched first. Generic platform search cannot substitute.
+- Reddit permalinks preserve subreddit + post ID. JSON is tried first;
+  Pullpush-by-id and Wayback of THAT permalink are fallbacks. Failure copy:
+  “Exact Reddit post could not be publicly retrieved.”
+- OnlyFans profiles keep handle + exact URL. A generic OnlyFans landing
+  page (title/og:url = onlyfans.com) is NOT a profile retrieval — it is
+  AUTHENTICATION_REQUIRED. Subscriber content is never bypassed.
+- Extracted URLs/accounts/entities become investigation seeds (A → B).
+- Source debug object (fetch/parse/auth/seeds/terminalState) is in Deep Dive
+  under “Why did Carmen stop?” and “What Carmen actually retrieved.”
 
-Build identifier: **49.9-identity-queue-visual**.
+Build identifier: **49.11-exact-source-retrieval**.

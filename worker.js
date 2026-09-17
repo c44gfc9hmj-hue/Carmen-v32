@@ -141,6 +141,23 @@ import {
   honestResourceStop,
   queuedWorkSummary,
   suppressionFromRejection,
+  sourceIdFromCanonicalUrl,
+  canonicalizeExactSourceUrl,
+  identifyExactSourceType,
+  parseRedditPermalink,
+  parsePremiumProfile,
+  exactSourceIdentity,
+  parseRedditListing,
+  extractOutboundLinks,
+  extractEntitiesFromExcerpt,
+  extractTopicsFromExcerpt,
+  createExactSourceSeeds,
+  terminalStateForExactSource,
+  buildSourceDebug,
+  attachExactSourceToInvestigation,
+  EXACT_SOURCE_PIPELINE_LABELS,
+  SOURCE_ANALYSIS_STATES,
+  isGenericPlatformDiscoveryQuery,
 } from './investigation-planner.js';
 
 
@@ -1576,6 +1593,9 @@ function classifyAccess({ httpStatus, html, url, host, error } = {}) {
     return { accessState: 'PAYWALLED', status: 'RETRIEVAL_FAILED', error: 'HTTP 402', note: 'Absolutely cannot retrieve due to paywall.' };
   }
   if (httpStatus === 403 || httpStatus === 451) {
+    if (AUTH_HOST_RE.test(h) || MEMBER_HOST_RE.test(h)) {
+      return { accessState: 'AUTHENTICATION_REQUIRED', status: 'RETRIEVAL_FAILED', error: 'HTTP ' + httpStatus, note: 'This source requires a login or subscription. Carmen will not sign in or bypass access controls. A blocked Worker fetch is not a retrieval of the exact profile.' };
+    }
     return { accessState: 'BLOCKED', status: 'RETRIEVAL_FAILED', error: 'HTTP ' + httpStatus, note: 'The host blocked public retrieval.' };
   }
   if (httpStatus === 404 || httpStatus === 410) {
@@ -4433,14 +4453,7 @@ function buildSearchVariants(q, classification) {
   };
   if (classification.isUrl) {
     add(classification.url, 'inspect the submitted URL');
-    const host = hostOf(classification.url).replace(/^www\./, '');
-    const pathName = humanizePath(classification.url);
-    if (pathName && /[a-z]/i.test(pathName) && pathName.toLowerCase() !== host.split('.')[0] && pathName.length >= 4) {
-      add(pathName, 'name inferred from URL path');
-    } else if (host) {
-      add(host, 'search the domain');
-    }
-    return out.slice(0, 3);
+    return out.slice(0, 1);
   }
   add(clean, 'primary query');
   const subject = classification.subject || clean;
@@ -5027,47 +5040,57 @@ async function enrichTopResults(results, classification) {
 
 async function inspectDirectUrl(classification, results, seen, diagnostics) {
   if (!classification.isUrl || !classification.url) return null;
-  const retrieved = await retrieveSource(classification.url);
-  diagnostics.DirectURL = { status: retrieved.status === 'RETRIEVED' ? 200 : 422, ok: retrieved.status === 'RETRIEVED', error: retrieved.error };
-  if (retrieved.status === 'RETRIEVED') {
-    const imgs = rankImages([retrieved.ogImage, ...(retrieved.images || [])], retrieved.finalUrl || classification.url);
-    const title = retrieved.title || humanizePath(classification.url) || classification.url;
-    uniqueAdd(results, seen, {
-      title,
-      url: retrieved.finalUrl || retrieved.url || classification.url,
-      source: 'Direct URL',
-      snippet: retrieved.description || String(retrieved.textExcerpt || retrieved.text || '').slice(0, 400),
-      image: imgs[0] || '',
-      images: imgs,
-      queryVariant: classification.url,
-    });
-    const row = results.find(r => r.url === (retrieved.finalUrl || retrieved.url) || r.url === classification.url);
-    if (row) {
-      row.provenance = 'RETRIEVED';
-      row.retrievalStatus = 'RETRIEVED';
-      row.accessState = retrieved.accessState || 'DIRECTLY_RETRIEVED';
-      row.accessNote = retrieved.accessNote || '';
-      row.textExcerpt = String(retrieved.textExcerpt || retrieved.text || '').slice(0, 1800);
-      row.images = imgs;
-      row.image = imgs[0] || row.image;
-      row.fingerprint = retrieved.fingerprint;
-      if (retrieved.identifiers) {
-        row.aliases = [...new Set([...(row.aliases || []), ...(retrieved.identifiers.aliases || []), ...(retrieved.identifiers.handles || [])])].slice(0, 6);
-        row.profiles = retrieved.identifiers.profiles;
-      }
+  const identity = exactSourceIdentity(classification.url, { subject: classification.subject || '' });
+  const retrieved = await retrieveExactSource(identity.canonicalUrl || classification.url, { identity });
+  diagnostics.DirectURL = {
+    status: retrieved.status === 'RETRIEVED' ? 200 : 422,
+    ok: retrieved.status === 'RETRIEVED',
+    error: retrieved.error,
+    accessState: retrieved.accessState || '',
+    canonicalUrl: identity.canonicalUrl,
+    sourceId: identity.sourceId,
+    sourceType: identity.sourceType,
+    exactSource: true,
+  };
+  const imgs = rankImages([retrieved.ogImage, ...(retrieved.images || [])], retrieved.finalUrl || identity.canonicalUrl);
+  const title = retrieved.title || identity.displayName || humanizePath(identity.canonicalUrl) || identity.canonicalUrl;
+  const snippet = retrieved.description || retrieved.publicEvidence || String(retrieved.textExcerpt || retrieved.text || retrieved.accessNote || '').slice(0, 400);
+  uniqueAdd(results, seen, {
+    title,
+    url: identity.canonicalUrl,
+    source: 'Exact URL',
+    snippet: snippet || (retrieved.status === 'RETRIEVED' ? '' : (identity.sourceType === 'reddit-post' ? 'Exact Reddit post could not be publicly retrieved.' : 'Exact URL was not retrieved.')),
+    image: imgs[0] || '',
+    images: imgs,
+    queryVariant: identity.canonicalUrl,
+    contentType: identity.sourceType.indexOf('-profile') >= 0 ? 'account' : (identity.sourceType === 'reddit-post' ? 'reddit' : 'webpage'),
+  });
+  const row = results.find(r => canonicalizeExactSourceUrl(r.url) === identity.canonicalUrl || r.url === classification.url || r.url === identity.canonicalUrl);
+  if (row) {
+    row.sourceId = identity.sourceId;
+    row.canonicalUrl = identity.canonicalUrl;
+    row.sourceType = identity.sourceType;
+    row.handle = identity.handle;
+    row.subreddit = identity.subreddit ? 'r/' + identity.subreddit : '';
+    row.postId = identity.postId || '';
+    row.provenance = retrieved.status === 'RETRIEVED' ? 'RETRIEVED' : 'FETCH_ATTEMPTED';
+    row.retrievalStatus = retrieved.status;
+    row.accessState = retrieved.accessState || (retrieved.status === 'RETRIEVED' ? 'DIRECTLY_RETRIEVED' : 'UNVERIFIED');
+    row.accessNote = retrieved.accessNote || '';
+    row.textExcerpt = String(retrieved.textExcerpt || retrieved.text || retrieved.publicEvidence || '').slice(0, 1800);
+    row.images = imgs;
+    row.image = imgs[0] || row.image;
+    row.fingerprint = retrieved.fingerprint;
+    row.exactSource = true;
+    row.terminalState = retrieved.status === 'RETRIEVED' ? 'FETCHED' : ( /AUTHENTICATION_REQUIRED/i.test(retrieved.accessState || '') ? 'AUTHENTICATION_REQUIRED' : 'FETCH_FAILED');
+    if (retrieved.identifiers) {
+      row.aliases = [...new Set([...(row.aliases || []), ...(retrieved.identifiers.aliases || []), ...(retrieved.identifiers.handles || [])])].slice(0, 6);
+      row.profiles = retrieved.identifiers.profiles;
     }
-  } else {
-    diagnostics.DirectURL.accessState = retrieved.accessState || 'UNAVAILABLE';
-    if (classification.isImage) {
-      uniqueAdd(results, seen, {
-        title: humanizePath(classification.url) || classification.url,
-        url: classification.url,
-        source: 'Direct image URL',
-        snippet: 'Image URL submitted for inspection. Carmen did not invent this image.',
-        image: classification.url,
-        images: [classification.url],
-        queryVariant: classification.url,
-      });
+    if (retrieved.redditPost) {
+      row.author = retrieved.redditPost.author;
+      row.subreddit = retrieved.redditPost.subreddit || row.subreddit;
+      row.postId = retrieved.redditPost.id || row.postId;
     }
   }
   return retrieved;
@@ -5440,25 +5463,33 @@ async function runDiscovery(query, opts = {}) {
     diagnostics.LiveRetrieval = { skipped: true, reason: 'fixture mode — live providers not contacted' };
   } else if (classification.isUrl) {
     const direct = await inspectDirectUrl(classification, results, seen, diagnostics);
-    const follow = variants.filter(v => v.q && v.q !== classification.url).slice(0, expanded ? 3 : 2);
-    if (!follow.length) {
-      const host = hostOf(classification.url).replace(/^www\./, '');
-      const pathName = humanizePath(classification.url);
-      if (pathName && /[a-z]/i.test(pathName) && pathName.toLowerCase() !== host.split('.')[0]) follow.push({ q: pathName, why: 'name inferred from URL path' });
-    }
     if (direct && direct.status !== 'RETRIEVED') {
-      diagnostics.ContinuedSearch = { reason: 'submitted URL inaccessible (' + (direct.accessState || direct.error || 'failed') + ') — searching public alternatives' };
+      diagnostics.ContinuedSearch = {
+        skipped: true,
+        reason: 'exact URL fetch did not retrieve the source — generic platform search is not a substitute',
+      };
     }
-    for (const variant of follow) {
-      addVar(variant.q, variant.why, variant.lane || 'url', 'web');
-      await Promise.all([
-        ddg(variant.q, results, seen, diagnostics),
-        bing(variant.q, results, seen, diagnostics),
-        reddit(variant.q, results, seen, diagnostics),
-      ]);
-      await reservedRedditLane(variant.q, results, seen, diagnostics);
+    if (direct && Array.isArray(direct.relatedUrls) && remainingFetches() > 6) {
+      for (const href of direct.relatedUrls.slice(0, 1)) {
+        if (!href || isGenericPlatformDiscoveryQuery(href)) continue;
+        try {
+          const child = await retrieveExactSource(href, { identity: exactSourceIdentity(href, { subject: classification.subject || '' }) });
+          uniqueAdd(results, seen, {
+            title: child.title || href,
+            url: canonicalizeExactSourceUrl(href) || href,
+            source: 'Extracted from exact source',
+            snippet: String(child.description || child.textExcerpt || '').slice(0, 300),
+            queryVariant: classification.url,
+            foundThrough: 'exact-source',
+            parent: classification.url,
+            sourceId: sourceIdFromCanonicalUrl(href),
+            provenance: child.status === 'RETRIEVED' ? 'RETRIEVED' : 'FETCH_ATTEMPTED',
+            retrievalStatus: child.status,
+            accessState: child.accessState,
+          });
+        } catch {}
+      }
     }
-    if (!follow.length) await reservedRedditLane(q, results, seen, diagnostics);
   } else if (!visualOnly) {
     const webVariants = retrievalExecutionOrder(
       variants.filter(v => (v.kind || 'web') === 'web'),
@@ -5503,7 +5534,7 @@ async function runDiscovery(query, opts = {}) {
   const mode = visualMode || (visualMore ? 'more' : (further ? 'different' : 'more'));
   if (skipLive) {
     // fixture path: no live image/video providers
-  } else if (wantVisual) {
+  } else if (wantVisual && !classification.isUrl) {
     const vq = visualQueryVariants(classification, { mode, seedVisual, excludeHosts, attemptedQueries });
     const vidQ = videoQueryVariants(classification, { attemptedQueries });
     if (!videoMore) {
@@ -5961,7 +5992,9 @@ async function runDiscovery(query, opts = {}) {
     warning = warning ? warning + ' ' + note : note;
   }
   if (classification.isUrl && diagnostics.DirectURL && !diagnostics.DirectURL.ok) {
-    const fail = 'Submitted URL could not be retrieved (' + (diagnostics.DirectURL.accessState ? accessLabel(diagnostics.DirectURL.accessState) : (diagnostics.DirectURL.error || 'blocked or failed')) + '). Carmen did not pretend to inspect it and kept looking for public alternatives.';
+    const fail = (diagnostics.DirectURL.sourceType === 'reddit-post')
+      ? 'Exact Reddit post could not be publicly retrieved. Generic Reddit search was not used as a substitute.'
+      : 'Submitted URL could not be retrieved (' + (diagnostics.DirectURL.accessState ? accessLabel(diagnostics.DirectURL.accessState) : (diagnostics.DirectURL.error || 'blocked or failed')) + '). Generic platform search was not used as a substitute.';
     warning = warning ? fail + ' ' + warning : fail;
   }
   if (diagnostics.ContinuedSearch && !expanded) {
@@ -6510,91 +6543,386 @@ async function structuredVision(req, env, body, mode) {
   return parseModelJson(extractMessageContent(j));
 }
 
-async function analyzeEvidenceObject(req, env, body) {
-  const kind = analyzePayloadKind(body);
-  const evidence = body.evidence && typeof body.evidence === 'object' ? body.evidence : body;
-  const url = String(evidence.url || evidence.pageUrl || body.pageUrl || body.url || '');
-  const title = String(evidence.title || body.title || '');
-  const snippet = String(evidence.snippet || evidence.textExcerpt || evidence.description || body.pageContext || '');
-  const frames = videoFrameHonesty();
+async function analyzeExactSource(req, env, body, context = {}) {
+  resetFetchBudget();
+  const pipeline = [];
+  const mark = (state, note) => {
+    pipeline.push({ state, note: note || EXACT_SOURCE_PIPELINE_LABELS[state] || state, at: new Date().toISOString() });
+  };
+  const evidence = body && body.evidence && typeof body.evidence === 'object' ? body.evidence : (body || {});
+  const requestedUrl = String(evidence.url || evidence.pageUrl || (body && (body.pageUrl || body.url)) || context.url || '').trim();
+  const subject = String((body && body.subject) || evidence.subject || context.subject || '').trim();
+  const topic = String((body && body.topic) || evidence.topic || context.topic || '').trim();
+  if (!requestedUrl) {
+    const debug = buildSourceDebug({
+      fetchAttempted: false,
+      terminalState: 'FETCH_FAILED',
+      whyStopped: 'No exact URL on the source card. Analyze does not reconstruct the investigation from a platform or person name.',
+      whatRetrieved: 'nothing — exact URL missing',
+      genericSearchUsedAsRetrieval: false,
+    });
+    return {
+      kind: 'empty',
+      ok: false,
+      error: 'Exact URL is required. Analyze does not reconstruct an investigation from a platform name.',
+      debug,
+      sourceDebug: debug,
+      terminalState: 'FETCH_FAILED',
+      genericSearchUsedAsRetrieval: false,
+      neverBypassAuth: true,
+      seeds: [],
+      pipeline,
+    };
+  }
+  mark('DISCOVERED', 'Analyzing exact source ' + requestedUrl);
+  const identity = exactSourceIdentity(requestedUrl, {
+    subject,
+    handle: (body && body.handle) || evidence.handle || evidence.accountHandle || '',
+    displayName: (body && body.title) || evidence.title || '',
+  });
+  mark('URL_CANONICALIZED', identity.canonicalUrl);
+  const kind = identity.sourceType === 'reddit-post' ? 'reddit'
+    : (identity.sourceType.indexOf('onlyfans') === 0 || identity.sourceType.indexOf('-profile') >= 0 ? 'account'
+      : analyzePayloadKind({ ...(body || {}), url: identity.canonicalUrl }));
+
+  mark('FETCH_ATTEMPTED', 'Fetching exact source ' + identity.canonicalUrl);
   let retrieved = null;
-  if (url && kind !== 'image' && kind !== 'image-url') {
-    try { retrieved = await retrieveSource(url); } catch (e) { retrieved = { status: 'RETRIEVAL_FAILED', error: String(e.message || e).slice(0, 200) }; }
+  try {
+    retrieved = await retrieveExactSource(identity.canonicalUrl, { identity, requestedUrl });
+  } catch (e) {
+    retrieved = {
+      status: 'RETRIEVAL_FAILED',
+      accessState: e?.name === 'AbortError' ? 'UNAVAILABLE' : 'UNAVAILABLE',
+      error: String(e.message || e).slice(0, 200),
+      url: identity.canonicalUrl,
+    };
   }
-  const excerpt = retrieved && retrieved.status === 'RETRIEVED'
-    ? String(retrieved.textExcerpt || retrieved.description || '').slice(0, 1200)
-    : snippet.slice(0, 800);
-  const sourceFacts = [];
-  if (title) sourceFacts.push({ field: 'title', value: title, provenance: 'SOURCE' });
-  if (url) sourceFacts.push({ field: 'url', value: url, provenance: 'SOURCE' });
-  if (evidence.domain || evidence.host) sourceFacts.push({ field: 'host', value: evidence.domain || evidence.host, provenance: 'SOURCE' });
-  if (excerpt) sourceFacts.push({ field: 'excerpt', value: excerpt.slice(0, 400), provenance: retrieved && retrieved.status === 'RETRIEVED' ? 'RETRIEVED' : 'SNIPPET' });
-  const supported = [];
-  const inferences = [];
-  const unknowns = ['Creator vs host vs original publisher are not assumed to be the same unless a source states it.'];
-  if (kind === 'video' || kind === 'video-url') {
-    unknowns.push(frames.note);
+
+  const access = (retrieved && retrieved.accessState) || '';
+  const genericShell = !!(retrieved && (retrieved.genericPlatformShell || retrieved.redirectToHomepage && /onlyfans|fansly|loyalfans|manyvids|patreon/i.test(identity.host)));
+  const platformOnlyTitle = /^(onlyfans|fansly|loyalfans|manyvids|patreon|reddit)$/i.test(String((retrieved && retrieved.title) || '').trim());
+  const authRequired = genericShell
+    || /AUTHENTICATION_REQUIRED|PAYWALLED|AGE_RESTRICTED/i.test(access)
+    || (platformOnlyTitle && /onlyfans|fansly|loyalfans|manyvids/i.test(identity.host));
+  const publicMeta = !!(retrieved && !genericShell && (retrieved.title || retrieved.description || retrieved.publicEvidence || retrieved.ogImage || retrieved.author || retrieved.subreddit || (retrieved.identifiers && ((retrieved.identifiers.handles || []).length || (retrieved.identifiers.aliases || []).length))));
+  const fetchSucceeded = !!(retrieved && retrieved.status === 'RETRIEVED' && !genericShell && !authRequired);
+  const publicContentRetrieved = fetchSucceeded || (!genericShell && publicMeta && (authRequired || (retrieved && retrieved.status === 'RETRIEVAL_FAILED')));
+  if (genericShell && retrieved) {
+    retrieved.title = identity.displayName || identity.handle || retrieved.title;
+    retrieved.genericPlatformShell = true;
+    retrieved.accessState = retrieved.accessState || 'AUTHENTICATION_REQUIRED';
+    retrieved.status = 'RETRIEVAL_FAILED';
   }
-  if (!(retrieved && retrieved.status === 'RETRIEVED')) {
-    unknowns.push('Unretrieved page body is UNKNOWN. Carmen did not invent the missing content.');
+  if (fetchSucceeded) mark('FETCHED', identity.canonicalUrl);
+  else mark(authRequired ? 'AUTHENTICATION_REQUIRED' : 'FETCH_ATTEMPTED', (retrieved && (retrieved.accessNote || retrieved.error)) || 'exact URL fetch did not return public content');
+
+  const excerpt = fetchSucceeded
+    ? String(retrieved.textExcerpt || retrieved.description || retrieved.text || '').slice(0, 4000)
+    : String((retrieved && (retrieved.publicEvidence || retrieved.description || retrieved.title)) || '').slice(0, 1200);
+
+  let parsedReddit = retrieved && retrieved.redditPost ? { ok: true, post: retrieved.redditPost, comments: retrieved.comments || [], outboundLinks: retrieved.outboundLinks || [], media: retrieved.images || [] } : null;
+  if (!parsedReddit && retrieved && retrieved.redditJson) {
+    parsedReddit = parseRedditListing(retrieved.redditJson, identity.canonicalUrl);
   }
-  if (kind === 'reddit' && isRedditSearchPage(url, title)) {
-    unknowns.push('A Reddit search page is not Reddit evidence.');
+
+  mark('PARSED');
+  const links = [];
+  const media = [];
+  if (parsedReddit && parsedReddit.ok) {
+    for (const l of parsedReddit.outboundLinks || []) links.push(l);
+    for (const m of parsedReddit.media || []) media.push(typeof m === 'string' ? m : m.url);
   }
-  const subject = String(body.subject || evidence.subject || '').trim();
-  const handle = String(body.handle || evidence.handle || evidence.accountHandle || '').replace(/^@/, '');
-  const accountPlan = url ? analyzePublicAccountPlan(url, { subject, type: 'person' }, { handle, subject }) : null;
-  const lifecycle = sourceLifecycleState({
-    url,
-    retrievalStatus: retrieved && retrieved.status,
-    provenance: retrieved && retrieved.status,
-    accessState: retrieved && retrieved.accessState,
-  }, { analyzed: true, verified: !!(retrieved && retrieved.status === 'RETRIEVED') });
-  if (accountPlan && /onlyfans|fansly|loyalfans|manyvids|patreon/i.test(accountPlan.host || url)) {
-    unknowns.push(accountPlan.boundary);
-    unknowns.push('Finding or opening a public profile URL is not content retrieval. Carmen does not bypass authentication, paywalls, DRM, or access controls.');
+  if (retrieved) {
+    for (const l of extractOutboundLinks(excerpt + ' ' + String(retrieved.description || ''), identity.canonicalUrl)) links.push(l);
+    for (const u of (retrieved.relatedUrls || [])) links.push({ url: u, canonicalUrl: canonicalizeExactSourceUrl(u), host: hostOf(u), parent: identity.canonicalUrl, kind: 'outbound-link', sourceId: sourceIdFromCanonicalUrl(u) });
+    for (const u of (retrieved.galleryUrls || [])) links.push({ url: u, canonicalUrl: canonicalizeExactSourceUrl(u), host: hostOf(u), parent: identity.canonicalUrl, kind: 'gallery', sourceId: sourceIdFromCanonicalUrl(u) });
+    if (retrieved.ogImage) media.push(retrieved.ogImage);
+    for (const im of retrieved.images || []) media.push(im);
   }
-  let publicRefs = [];
-  if (accountPlan && accountPlan.queries && accountPlan.queries.length && remainingFetches() > 6) {
+  const uniqLinks = [];
+  const seenL = new Set();
+  for (const l of links) {
+    const key = l.canonicalUrl || l.url;
+    if (!key || seenL.has(key) || canonicalizeExactSourceUrl(key) === identity.canonicalUrl) continue;
+    seenL.add(key);
+    uniqLinks.push(l);
+  }
+  const uniqMedia = [...new Set(media.filter(Boolean))].slice(0, 12);
+  mark('MEDIA_EXTRACTED');
+  mark('LINKS_EXTRACTED');
+
+  const entities = extractEntitiesFromExcerpt(
+    [excerpt, retrieved && retrieved.title, parsedReddit && parsedReddit.post && parsedReddit.post.title, parsedReddit && parsedReddit.post && parsedReddit.post.body, subject].filter(Boolean).join('\n'),
+    { subject, handle: identity.handle }
+  );
+  const topics = extractTopicsFromExcerpt(excerpt + ' ' + (retrieved && retrieved.title || '') + ' ' + topic, { topic });
+  mark('ENTITIES_EXTRACTED');
+  mark('TOPICS_EXTRACTED');
+
+  const accounts = [];
+  if (identity.sourceType.indexOf('-profile') >= 0 || identity.sourceType.indexOf('onlyfans') === 0) {
+    accounts.push({ url: identity.canonicalUrl, handle: identity.handle, platform: identity.platform, domain: identity.host });
+  }
+  if (retrieved && retrieved.identifiers) {
+    for (const p of retrieved.identifiers.profiles || []) accounts.push({ url: p, handle: '', platform: hostOf(p), domain: hostOf(p) });
+  }
+  const seeds = createExactSourceSeeds({
+    links: uniqLinks,
+    media: uniqMedia,
+    entities,
+    topics,
+    accounts,
+    domains: uniqLinks.map(l => ({ host: l.host, url: l.url })),
+    referencedPosts: parsedReddit && parsedReddit.ok ? [] : [],
+    aliases: entities.aliases,
+  }, identity);
+  mark('SEEDS_CREATED');
+
+  const corroborationQueries = [];
+  const chained = [];
+  const hop = uniqLinks.filter(l => l.url && !/onlyfans|fansly|loyalfans/i.test(l.host || '') && !isGenericPlatformDiscoveryQuery(l.url)).slice(0, 2);
+  for (const l of hop) {
+    if (remainingFetches() < 4) break;
+    corroborationQueries.push({ q: l.url, why: 'exact extracted outbound URL', family: 'exact-source-chain' });
     try {
-      const qv = accountPlan.queries[0];
-      const hits = [];
-      const seen = new Set();
-      await ddg(qv.q, hits, seen, {});
-      publicRefs = (hits || []).slice(0, 6).map(h => ({ title: h.title, url: h.url, domain: h.domain || hostOf(h.url), why: qv.why, provenance: 'DISCOVERED' }));
-      if (publicRefs.length) supported.push({ field: 'indexedPublicReferences', value: publicRefs.length + ' public references found for this handle/profile', provenance: 'SEARCH' });
+      const child = await retrieveExactSource(l.url, { skipAlt: false, identity: exactSourceIdentity(l.url, { subject }) });
+      chained.push({
+        url: l.url,
+        canonicalUrl: canonicalizeExactSourceUrl(l.url),
+        sourceId: sourceIdFromCanonicalUrl(l.url),
+        parent: identity.canonicalUrl,
+        parentSourceId: identity.sourceId,
+        fetchSucceeded: child && child.status === 'RETRIEVED',
+        title: child && child.title || '',
+        accessState: child && child.accessState || '',
+        excerpt: child && String(child.textExcerpt || child.description || '').slice(0, 400),
+        provenance: 'EXTRACTED',
+        foundThrough: 'exact-source',
+      });
     } catch {}
   }
+  if (corroborationQueries.length) mark('CORROBORATION_SEARCHED', 'Corroborating extracted outbound URLs — not a platform search');
+
+  const accountPlan = /onlyfans|fansly|loyalfans|manyvids|patreon/i.test(identity.host)
+    ? { ...analyzePublicAccountPlan(identity.canonicalUrl, { subject, type: 'person' }, { handle: identity.handle, subject }), queries: [], usedAsRetrieval: false }
+    : null;
+
+  const terminalState = terminalStateForExactSource({
+    fetchAttempted: true,
+    fetchSucceeded,
+    publicContentRetrieved,
+    authRequired,
+    parsed: true,
+    seedsCreated: seeds.length > 0,
+    accessState: access,
+    error: retrieved && retrieved.error,
+    providerUnavailable: /UNAVAILABLE|timeout|503/i.test(String((retrieved && retrieved.error) || '') + access),
+  });
+  if (terminalState === 'ANALYZED') mark('ANALYZED');
+  else mark(terminalState);
+
+  const sourceFacts = [];
+  sourceFacts.push({ field: 'canonicalUrl', value: identity.canonicalUrl, provenance: 'SOURCE' });
+  sourceFacts.push({ field: 'sourceId', value: identity.sourceId, provenance: 'SOURCE' });
+  sourceFacts.push({ field: 'sourceType', value: identity.sourceType, provenance: 'SOURCE' });
+  if (identity.platform) sourceFacts.push({ field: 'platform', value: identity.platform, provenance: 'SOURCE' });
+  if (identity.handle) sourceFacts.push({ field: 'handle', value: identity.handle, provenance: 'SOURCE' });
+  if (identity.displayName || (retrieved && retrieved.title)) sourceFacts.push({ field: 'title', value: (retrieved && retrieved.title) || identity.displayName, provenance: publicContentRetrieved ? 'RETRIEVED' : 'SOURCE' });
+  if (identity.subreddit) sourceFacts.push({ field: 'subreddit', value: identity.subreddit, provenance: 'SOURCE' });
+  if (identity.postId) sourceFacts.push({ field: 'postId', value: identity.postId, provenance: 'SOURCE' });
+  if (parsedReddit && parsedReddit.ok && parsedReddit.post) {
+    const p = parsedReddit.post;
+    if (p.author) sourceFacts.push({ field: 'author', value: p.author, provenance: 'RETRIEVED' });
+    if (p.body) sourceFacts.push({ field: 'body', value: p.body.slice(0, 600), provenance: 'RETRIEVED' });
+    if (p.score != null) sourceFacts.push({ field: 'score', value: String(p.score), provenance: 'RETRIEVED' });
+    if (p.created) sourceFacts.push({ field: 'timestamp', value: p.created, provenance: 'RETRIEVED' });
+  }
+  if (retrieved && retrieved.description && !sourceFacts.some(f => f.field === 'body')) {
+    sourceFacts.push({ field: 'description', value: String(retrieved.description).slice(0, 400), provenance: publicContentRetrieved ? 'RETRIEVED' : 'PUBLIC_METADATA' });
+  }
+  if (excerpt && fetchSucceeded) sourceFacts.push({ field: 'excerpt', value: excerpt.slice(0, 400), provenance: 'RETRIEVED' });
+
+  const supported = [];
+  if (fetchSucceeded) supported.push({ field: 'exactUrlFetched', value: 'YES', provenance: 'RETRIEVED' });
+  if (uniqMedia.length) supported.push({ field: 'media', value: String(uniqMedia.length), provenance: 'RETRIEVED' });
+  if (uniqLinks.length) supported.push({ field: 'outboundLinks', value: String(uniqLinks.length), provenance: 'RETRIEVED' });
+  if (parsedReddit && parsedReddit.comments && parsedReddit.comments.length) supported.push({ field: 'comments', value: String(parsedReddit.comments.length), provenance: 'RETRIEVED' });
+
+  const unknowns = [];
+  const inferences = [];
+  if (!fetchSucceeded && !publicContentRetrieved) {
+    if (identity.sourceType === 'reddit-post') unknowns.push('Exact Reddit post could not be publicly retrieved.');
+    else unknowns.push('Exact URL could not be publicly retrieved. Generic platform search was not used as a substitute.');
+  }
+  if (authRequired) {
+    unknowns.push('Authentication required for remaining content. Carmen does not bypass authentication, paywalls, DRM, or access controls.');
+  }
+  if (kind === 'video' || kind === 'video-url') unknowns.push(videoFrameHonesty().note);
+  unknowns.push('Creator vs host vs original publisher are not assumed to be the same unless a source states it.');
+
+  const lifecycle = sourceLifecycleState({
+    url: identity.canonicalUrl,
+    retrievalStatus: retrieved && retrieved.status,
+    provenance: fetchSucceeded ? 'RETRIEVED' : 'FETCH_ATTEMPTED',
+    accessState: access,
+    terminalState,
+  }, {
+    analyzed: terminalState === 'ANALYZED',
+    verified: fetchSucceeded,
+    terminalState,
+  });
+
+  const whatRetrieved = fetchSucceeded
+    ? ('Exact URL fetched. Title/body/media/links extracted from ' + identity.canonicalUrl)
+    : (genericShell
+      ? ('Exact URL was requested. The host returned a generic ' + (identity.platform || identity.host) + ' landing page, not this profile. Handle @' + (identity.handle || '') + ' is taken from the exact URL. Remaining content requires authentication.')
+      : (publicContentRetrieved
+        ? ('Public metadata from ' + identity.canonicalUrl + (authRequired ? ' — remaining content requires authentication.' : ''))
+        : (identity.sourceType === 'reddit-post'
+          ? 'Exact Reddit post could not be publicly retrieved.'
+          : 'Exact URL was not retrieved. Nothing from a generic platform search is claimed as this source.')));
+
+  const whyStopped = terminalState === 'ANALYZED'
+    ? (authRequired ? 'Public profile/page analyzed. Authentication required for remaining content.' : 'Exact source analyzed.')
+    : (terminalState === 'AUTHENTICATION_REQUIRED' || genericShell
+      ? (genericShell
+        ? ('The exact URL resolved to a generic ' + (identity.platform || 'platform') + ' page, not this profile. Authentication required for remaining content. Generic platform discovery was not used as a substitute.')
+        : 'Authentication required for remaining content. Public metadata ' + (publicContentRetrieved ? 'was' : 'was not') + ' retrieved from the exact URL.')
+      : (identity.sourceType === 'reddit-post'
+        ? 'Exact Reddit post could not be publicly retrieved.'
+        : 'Exact URL fetch did not succeed. Generic platform discovery is not a substitute.'));
+
+  const debug = buildSourceDebug({
+    canonicalUrl: identity.canonicalUrl,
+    requestedUrl,
+    sourceId: identity.sourceId,
+    sourceType: identity.sourceType,
+    fetchAttempted: true,
+    fetchSucceeded,
+    parseSucceeded: !!(fetchSucceeded || publicContentRetrieved || (parsedReddit && parsedReddit.ok)),
+    publicContentRetrieved,
+    mediaExtracted: uniqMedia.length > 0,
+    linksExtracted: uniqLinks.length > 0,
+    entitiesExtracted: (entities.people || []).length > 0 || (entities.aliases || []).length > 0,
+    topicsExtracted: topics.length > 0,
+    authRequired,
+    seedsCreated: seeds.length,
+    corroborationQueries,
+    terminalState,
+    provenance: fetchSucceeded ? 'RETRIEVED' : (publicContentRetrieved ? 'PUBLIC_METADATA' : 'FETCH_ATTEMPTED'),
+    pipeline,
+    genericSearchUsedAsRetrieval: false,
+    parentReceivedSeeds: seeds.length > 0,
+    whyStopped,
+    whatRetrieved,
+  });
+
+  const redditBlock = identity.sourceType === 'reddit-post' || kind === 'reddit' ? {
+    platform: 'Reddit',
+    subreddit: (parsedReddit && parsedReddit.post && parsedReddit.post.subreddit) || (identity.subreddit ? 'r/' + identity.subreddit : ''),
+    postId: (parsedReddit && parsedReddit.post && parsedReddit.post.id) || identity.postId || '',
+    author: (parsedReddit && parsedReddit.post && parsedReddit.post.author) || '',
+    title: (parsedReddit && parsedReddit.post && parsedReddit.post.title) || (retrieved && retrieved.title) || '',
+    body: (parsedReddit && parsedReddit.post && parsedReddit.post.body) || '',
+    timestamp: (parsedReddit && parsedReddit.post && parsedReddit.post.created) || '',
+    score: parsedReddit && parsedReddit.post ? parsedReddit.post.score : null,
+    comments: (parsedReddit && parsedReddit.comments) || [],
+    permalink: identity.permalink || identity.canonicalUrl,
+    exactUrlFetched: fetchSucceeded ? 'YES' : 'NO',
+    postContentRetrieved: !!(parsedReddit && parsedReddit.ok && (parsedReddit.post.title || parsedReddit.post.body)) ? 'YES' : 'NO',
+    commentsRetrieved: parsedReddit && parsedReddit.comments && parsedReddit.comments.length ? 'YES' : 'NO',
+    mediaReferencesExtracted: uniqMedia.length ? 'YES' : 'NO',
+    outboundLinks: uniqLinks.length,
+  } : null;
+
+  const profileBlock = /onlyfans|fansly|loyalfans|manyvids/i.test(identity.host) ? {
+    platform: identity.platform,
+    handle: identity.handle,
+    displayName: (retrieved && retrieved.title) || identity.displayName || identity.handle,
+    canonicalProfileUrl: identity.canonicalUrl,
+    bio: (retrieved && (retrieved.description || retrieved.publicEvidence)) || '',
+    publicLinks: uniqLinks.slice(0, 8),
+    publicMedia: uniqMedia.slice(0, 8),
+    linkedAccounts: accounts.slice(0, 8),
+    timestamps: retrieved && retrieved.retrievedAt,
+    exactUrlFetched: fetchSucceeded || publicContentRetrieved ? 'YES' : 'NO',
+    publicMetadataRetrieved: publicContentRetrieved ? 'YES' : 'NO',
+    authenticationRequired: authRequired,
+  } : null;
+
+  const safeTitle = (!platformOnlyTitle && !genericShell && retrieved && retrieved.title)
+    ? retrieved.title
+    : (identity.displayName || identity.handle || (kind + ' evidence'));
   const payload = {
+    ok: true,
     kind,
-    title: title || (kind + ' evidence'),
+    title: safeTitle,
+    identity,
+    sourceId: identity.sourceId,
+    canonicalUrl: identity.canonicalUrl,
+    requestedUrl,
+    sourceType: identity.sourceType,
     observations: sourceFacts,
     sourceFacts,
     supportedFacts: supported,
     inferences,
     generalBackground: [],
     unknowns,
-    videoFrames: kind === 'video' ? frames : undefined,
-    retrieved: retrieved ? { status: retrieved.status, accessState: retrieved.accessState, url: retrieved.finalUrl || retrieved.url } : null,
-    audit: { inputKind: kind, usedVision: false, usedPageBody: !!(retrieved && retrieved.status === 'RETRIEVED') },
+    reddit: redditBlock,
+    profile: profileBlock,
+    media: uniqMedia,
+    links: uniqLinks,
+    entities,
+    topics,
+    seeds,
+    chainedSources: chained,
+    videoFrames: kind === 'video' ? videoFrameHonesty() : undefined,
+    retrieved: retrieved ? {
+      status: retrieved.status,
+      accessState: retrieved.accessState,
+      url: retrieved.finalUrl || retrieved.url || identity.canonicalUrl,
+      title: retrieved.title || '',
+      author: retrieved.author || '',
+      subreddit: retrieved.subreddit || '',
+    } : null,
+    audit: {
+      inputKind: kind,
+      usedVision: false,
+      usedPageBody: fetchSucceeded,
+      exactUrl: identity.canonicalUrl,
+      genericSearchUsedAsRetrieval: false,
+    },
     accountPlan,
     sourceLifecycle: lifecycle,
-    publicReferences: publicRefs,
+    publicReferences: [],
     neverBypassAuth: true,
     accessBoundary: lifecycle.accessBoundary,
     note: lifecycle.note,
+    debug,
+    sourceDebug: debug,
+    pipeline,
+    terminalState,
+    fetchAttempted: true,
+    fetchSucceeded,
+    parseSucceeded: debug.parseSucceeded,
+    publicContentRetrieved,
+    authRequired,
+    genericSearchUsedAsRetrieval: false,
+    whyDidCarmenStop: whyStopped,
+    whatCarmenActuallyRetrieved: whatRetrieved,
   };
-  if (getApiKey(env) && excerpt) {
+
+  if (getApiKey(env) && excerpt && (fetchSucceeded || publicContentRetrieved)) {
     try {
       const j = await provider(env, [{
         role: 'user',
-        content: 'You are Carmen. Analyze this retrieved public evidence. Return ONLY JSON with keys: sourceFacts, supportedFacts, inferences, generalBackground, unknowns, audit. Distinguish SOURCE FACTS (quoted/on-page), SUPPORTED FACTS (backed by the excerpt), INFERENCES (labeled), GENERAL BACKGROUND (not from this source), UNKNOWN. Never invent. Evidence kind: ' + kind + '\nTitle: ' + title + '\nURL: ' + url + '\nExcerpt: ' + excerpt,
+        content: 'You are Carmen. Analyze this retrieved public evidence from the EXACT URL. Return ONLY JSON with keys: sourceFacts, supportedFacts, inferences, generalBackground, unknowns, audit. Distinguish SOURCE FACTS, SUPPORTED FACTS, INFERENCES, GENERAL BACKGROUND, UNKNOWN. Never invent. Never treat a platform name as the source. Evidence kind: ' + kind + '\nCanonical URL: ' + identity.canonicalUrl + '\nSource id: ' + identity.sourceId + '\nTitle: ' + (retrieved && retrieved.title || '') + '\nExcerpt: ' + excerpt.slice(0, 1800),
       }], 0);
       const parsed = parseModelJson(extractMessageContent(j));
       return {
         ...payload,
         sourceFacts: parsed.sourceFacts || payload.sourceFacts,
-        supportedFacts: parsed.supportedFacts || [],
+        supportedFacts: parsed.supportedFacts || payload.supportedFacts,
         inferences: parsed.inferences || [],
         generalBackground: parsed.generalBackground || [],
         unknowns: parsed.unknowns || payload.unknowns,
@@ -6606,6 +6934,10 @@ async function analyzeEvidenceObject(req, env, body) {
     }
   }
   return payload;
+}
+
+async function analyzeEvidenceObject(req, env, body) {
+  return analyzeExactSource(req, env, body || {});
 }
 
 async function analyze(req, env) {
@@ -8212,7 +8544,8 @@ async function handleCarmenApi(req, env) {
     return json({ ok: result.status === 'RETRIEVED', investigationId: state.investigationId, action, retrieve: result, frames: action === 'analyze' ? undefined : undefined }, result.status === 'RETRIEVAL_FAILED' ? 422 : 200, req);
   }
   if (action === 'analyze') {
-    const analyzed = await analyzeEvidenceObject(req, env, body);
+    const analyzed = await analyzeExactSource(req, env, body);
+    state = attachExactSourceToInvestigation(state, analyzed);
     rememberInvestigation(state);
     return json(attachInvestigationStateEcho({
       ok: true,
@@ -8221,6 +8554,7 @@ async function handleCarmenApi(req, env) {
       investigationState: state,
       identityState: identityStateFrom(state, null),
       readOnly: true,
+      parentReceivedSeeds: Array.isArray(analyzed.seeds) && analyzed.seeds.length > 0,
       ...analyzed,
     }, state), 200, req);
   }
@@ -8441,7 +8775,7 @@ export default {
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
         api: { docs: '/api', version: 'v1', samePipelineAsIphoneUi: true },
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants', 'v49.9-identity-verification', 'v49.9-persistent-queue', 'v49.9-visual-evidence-gate', 'v49.9-find-more-unique', 'v49.9-research-focus', 'v49.9-adaptive-lens-focus', 'v49.9-analyze-public-account'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants', 'v49.9-identity-verification', 'v49.9-persistent-queue', 'v49.9-visual-evidence-gate', 'v49.9-find-more-unique', 'v49.9-research-focus', 'v49.9-adaptive-lens-focus', 'v49.9-analyze-public-account', 'v49.11-exact-source-retrieval', 'v49.11-source-state-machine', 'v49.11-source-id-canonical-url'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);
@@ -8480,18 +8814,42 @@ function normalizeUrlForStore(raw) {
   } catch { return ''; }
 }
 
+function metaTagContent(html, prop) {
+  const esc = String(prop || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!esc) return '';
+  const tagRe = new RegExp('<meta\\b[^>]*(?:property|name)\\s*=\\s*(?:["\']' + esc + '["\']|' + esc + ')(?=[\\s>])[^>]*>', 'i');
+  const tag = String(html || '').match(tagRe);
+  if (!tag) return '';
+  const quoted = tag[0].match(/content\s*=\s*["']([^"']*)["']/i);
+  if (quoted) return decodeEntities(quoted[1]);
+  const bare = tag[0].match(/content\s*=\s*([^\s>]+)/i);
+  return bare ? decodeEntities(bare[1]) : '';
+}
+
 function extractMeta(html) {
   const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '';
-  const desc = (html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i) ||
-    html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i) || [])[1] || '';
-  const ogImage = (html.match(/<meta[^>]+property=["']og:image(?::url)?["'][^>]+content=["']([^"']*)["']/i) ||
-    html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:image(?::url)?["']/i) ||
-    html.match(/<meta[^>]+(?:name|property)=["']twitter:image(?::src)?["'][^>]+content=["']([^"']*)["']/i) ||
-    html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+(?:name|property)=["']twitter:image/i) || [])[1] || '';
-  const ogVideo = (html.match(/<meta[^>]+property=["']og:video(?::url)?["'][^>]+content=["']([^"']*)["']/i) ||
-    html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:video(?::url)?["']/i) || [])[1] || '';
+  const desc = metaTagContent(html, 'description')
+    || metaTagContent(html, 'og:description')
+    || (html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i) || [])[1] || '';
+  const ogImage = metaTagContent(html, 'og:image')
+    || metaTagContent(html, 'og:image:url')
+    || metaTagContent(html, 'twitter:image')
+    || (html.match(/<meta[^>]+property=["']og:image(?::url)?["'][^>]+content=["']([^"']*)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:image(?::url)?["']/i) ||
+      html.match(/<meta[^>]+(?:name|property)=["']twitter:image(?::src)?["'][^>]+content=["']([^"']*)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+(?:name|property)=["']twitter:image/i) || [])[1] || '';
+  const ogVideo = metaTagContent(html, 'og:video')
+    || metaTagContent(html, 'og:video:url')
+    || (html.match(/<meta[^>]+property=["']og:video(?::url)?["'][^>]+content=["']([^"']*)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:video(?::url)?["']/i) || [])[1] || '';
+  const ogTitle = metaTagContent(html, 'og:title');
+  const ogUrl = metaTagContent(html, 'og:url');
   return {
-    title: cleanText(title).slice(0, 300),
+    title: cleanText(ogTitle || title).slice(0, 300),
+    rawTitle: cleanText(title).slice(0, 300),
+    ogTitle: cleanText(ogTitle).slice(0, 300),
+    ogUrl: String(ogUrl || '').trim(),
     description: cleanText(desc).slice(0, 600),
     ogImage: decodeEntities(ogImage),
     ogVideo: decodeEntities(ogVideo),
@@ -8581,6 +8939,39 @@ function redirectMeta(requested, finalUrl) {
   };
 }
 
+function isProfileCollapsedToPlatformHome(requestedUrl, finalUrl, html, meta) {
+  const identity = exactSourceIdentity(requestedUrl || '');
+  const handle = String(identity.handle || '').replace(/^@/, '');
+  const host = String(identity.host || hostOf(requestedUrl) || '').replace(/^www\./, '');
+  if (!handle) return false;
+  const premium = MEMBER_HOST_RE.test(host) || AUTH_HOST_RE.test(host) || /onlyfans|fansly|loyalfans|manyvids|patreon/i.test(host);
+  if (!premium) return false;
+  const blob = String(html || '').toLowerCase();
+  const handlePresent = blob.includes(handle.toLowerCase());
+  const title = String((meta && (meta.ogTitle || meta.title || meta.rawTitle)) || '').trim();
+  const titleIsPlatform = /^(onlyfans|fansly|loyalfans|manyvids|patreon)$/i.test(title);
+  let ogIsHome = false;
+  const ogUrl = String((meta && meta.ogUrl) || '').trim();
+  try {
+    if (ogUrl) {
+      const u = new URL(ogUrl);
+      const p = (u.pathname || '/').replace(/\/+$/, '') || '/';
+      ogIsHome = p === '/' && u.hostname.replace(/^www\./, '').toLowerCase() === host.toLowerCase();
+    }
+  } catch {}
+  let finalIsHome = false;
+  try {
+    const u = new URL(finalUrl || requestedUrl);
+    const p = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    const req = new URL(requestedUrl);
+    const reqPath = (req.pathname || '/').replace(/\/+$/, '');
+    finalIsHome = p === '/' && reqPath && reqPath !== '/' && u.hostname.replace(/^www\./, '').toLowerCase() === host.toLowerCase();
+  } catch {}
+  if ((ogIsHome || finalIsHome || titleIsPlatform) && !handlePresent) return true;
+  if (titleIsPlatform && !new RegExp('\\b' + handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(title)) return true;
+  return false;
+}
+
 function decorateAccess(base, access) {
   return {
     ...base,
@@ -8588,6 +8979,173 @@ function decorateAccess(base, access) {
     accessState: access.accessState,
     accessNote: access.note || base.accessNote || '',
     error: access.error || base.error,
+  };
+}
+
+async function retrieveExactSource(targetUrl, opts = {}) {
+  const identity = opts.identity || exactSourceIdentity(targetUrl, {});
+  const url = identity.canonicalUrl || normalizeUrlForStore(targetUrl) || String(targetUrl || '');
+  if (identity.sourceType === 'reddit-post' || identity.postId) {
+    const reddit = await retrieveExactReddit(url, identity, opts);
+    if (reddit) return reddit;
+  }
+  const retrieved = await retrieveSource(url, opts);
+  if (retrieved && retrieved.status !== 'RETRIEVED') {
+    const publicBits = [retrieved.title, retrieved.description, retrieved.ogImage, retrieved.publicEvidence].filter(Boolean).join(' · ').slice(0, 600);
+    if (publicBits && !retrieved.publicEvidence) retrieved.publicEvidence = publicBits;
+  }
+  return retrieved;
+}
+
+async function retrieveExactReddit(targetUrl, identity, opts = {}) {
+  const parsed = identity.postId ? identity : parseRedditPermalink(targetUrl);
+  const postId = parsed.postId || identity.postId;
+  const permalink = parsed.canonicalPermalink || identity.permalink || targetUrl;
+  const path = (() => { try { return new URL(permalink.startsWith('http') ? permalink : 'https://' + permalink).pathname.replace(/\/+$/, ''); } catch { return pathOf(permalink); } })();
+  const jsonCandidates = [];
+  const add = (u) => { if (u && !jsonCandidates.includes(u)) jsonCandidates.push(u); };
+  add('https://old.reddit.com' + path + '.json?raw_json=1');
+  add('https://www.reddit.com' + path + '.json?raw_json=1');
+  add('https://api.reddit.com' + path + '.json?raw_json=1');
+  if (postId) {
+    add('https://old.reddit.com/comments/' + postId + '.json?raw_json=1');
+    add('https://www.reddit.com/comments/' + postId + '.json?raw_json=1');
+    add('https://www.reddit.com/by_id/t3_' + postId + '.json?raw_json=1');
+  }
+  for (const jsonUrl of jsonCandidates) {
+    try {
+      const rr = await fetchText(jsonUrl, { headers: { ...BROWSER_HEADERS, accept: 'application/json' }, redirect: 'follow' }, RETRIEVE_TIMEOUT_MS);
+      if (!rr.ok) continue;
+      const j = await rr.json();
+      const listing = parseRedditListing(j, permalink);
+      if (listing.ok && listing.post) {
+        const p = listing.post;
+        const text = cleanText((p.title || '') + ' ' + (p.body || '')).slice(0, MAX_TEXT_CHARS);
+        return {
+          status: 'RETRIEVED',
+          accessState: 'DIRECTLY_RETRIEVED',
+          url: permalink,
+          finalUrl: p.permalink || permalink,
+          title: p.title || 'Reddit post',
+          description: String(p.body || '').slice(0, 600),
+          text,
+          textExcerpt: text,
+          ogImage: (listing.media || [])[0] || '',
+          images: (listing.media || []).slice(0, MAX_IMAGES),
+          fingerprint: simpleFingerprint(text),
+          retrievedAt: new Date().toISOString(),
+          author: p.author || '',
+          subreddit: p.subreddit || '',
+          published: p.created || '',
+          contentType: 'application/json',
+          redditPost: p,
+          comments: listing.comments || [],
+          outboundLinks: listing.outboundLinks || [],
+          redditJson: j,
+          exactSource: true,
+        };
+      }
+    } catch {}
+  }
+  if (postId && remainingFetches() > 2) {
+    try {
+      const pu = 'https://api.pullpush.io/reddit/search/submission/?ids=' + encodeURIComponent(postId);
+      const rr = await fetchText(pu, { headers: { ...BROWSER_HEADERS, accept: 'application/json' }, redirect: 'follow' }, RETRIEVE_TIMEOUT_MS);
+      if (rr.ok) {
+        const j = await rr.json().catch(() => ({}));
+        const rows = Array.isArray(j?.data) ? j.data : (Array.isArray(j) ? j : []);
+        const d = rows[0];
+        if (d && (d.title || d.selftext || d.id)) {
+          let comments = [];
+          try {
+            const cr = await fetchText('https://api.pullpush.io/reddit/search/comment/?link_id=' + encodeURIComponent(postId) + '&size=20', { headers: { ...BROWSER_HEADERS, accept: 'application/json' } }, RETRIEVE_TIMEOUT_MS);
+            if (cr.ok) {
+              const cj = await cr.json().catch(() => ({}));
+              const crows = Array.isArray(cj?.data) ? cj.data : (Array.isArray(cj) ? cj : []);
+              comments = crows.slice(0, 20).map(c => ({ author: c.author || '', body: String(c.body || '').slice(0, 800), score: c.score, created: c.created_utc ? new Date(c.created_utc * 1000).toISOString() : '' }));
+            }
+          } catch {}
+          const listing = parseRedditListing([{ kind: 'Listing', data: { children: [{ kind: 't3', data: d }] } }, { kind: 'Listing', data: { children: comments.map(c => ({ kind: 't1', data: c })) } }], permalink);
+          const p = listing.post || {
+            id: d.id || postId,
+            title: d.title || '',
+            body: d.selftext || d.body || '',
+            author: d.author || '',
+            subreddit: d.subreddit_name_prefixed || (d.subreddit ? 'r/' + d.subreddit : identity.subreddit ? 'r/' + identity.subreddit : ''),
+            permalink: d.permalink ? ('https://www.reddit.com' + d.permalink) : permalink,
+            created: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : '',
+            score: d.score,
+          };
+          const text = cleanText((p.title || '') + ' ' + (p.body || '')).slice(0, MAX_TEXT_CHARS);
+          return {
+            status: 'RETRIEVED',
+            accessState: 'PUBLIC_ALTERNATIVE',
+            url: permalink,
+            finalUrl: p.permalink || permalink,
+            title: p.title || 'Reddit post',
+            description: String(p.body || '').slice(0, 600),
+            text,
+            textExcerpt: text,
+            images: listing.media || [],
+            ogImage: (listing.media || [])[0] || '',
+            fingerprint: simpleFingerprint(text),
+            retrievedAt: new Date().toISOString(),
+            author: p.author || '',
+            subreddit: p.subreddit || '',
+            published: p.created || '',
+            redditPost: p,
+            comments,
+            outboundLinks: listing.outboundLinks || extractOutboundLinks(p.body || '', permalink),
+            alternativeSource: 'Pullpush',
+            exactSource: true,
+            accessNote: 'Exact Reddit post retrieved from the public Pullpush archive of this post ID. This is not a generic Reddit search.',
+          };
+        }
+      }
+    } catch {}
+  }
+  if (!opts.skipAlt) {
+    try {
+      const snap = await retrieveWayback(permalink);
+      if (snap) {
+        const alt = await retrieveSource(snap, { skipAlt: true });
+        if (alt && alt.status === 'RETRIEVED') {
+          return {
+            ...alt,
+            url: permalink,
+            accessState: 'PUBLIC_ALTERNATIVE',
+            accessNote: 'Exact Reddit permalink was archived. Public snapshot retrieved. This is not a generic Reddit search.',
+            alternativeOf: permalink,
+            alternativeSource: 'Internet Archive',
+            alternativeUrl: snap,
+            exactSource: true,
+          };
+        }
+      }
+    } catch {}
+  }
+  try {
+    const htmlTry = await retrieveSource(permalink, { skipAlt: true });
+    if (htmlTry && htmlTry.status === 'RETRIEVED') return { ...htmlTry, exactSource: true, redditPost: htmlTry.redditPost };
+    if (htmlTry) {
+      return {
+        ...htmlTry,
+        url: permalink,
+        exactSource: true,
+        status: htmlTry.status || 'RETRIEVAL_FAILED',
+        accessNote: htmlTry.accessNote || 'Exact Reddit post could not be publicly retrieved.',
+      };
+    }
+  } catch {}
+  return {
+    status: 'RETRIEVAL_FAILED',
+    accessState: 'NOT_PUBLICLY_RETRIEVABLE',
+    url: permalink,
+    error: 'Exact Reddit post could not be publicly retrieved.',
+    accessNote: 'Exact Reddit post could not be publicly retrieved. Generic Reddit search was not used as a substitute.',
+    exactSource: true,
+    subreddit: identity.subreddit ? 'r/' + identity.subreddit : '',
+    author: identity.author || '',
   };
 }
 
@@ -8699,29 +9257,49 @@ async function retrieveSource(targetUrl, opts = {}) {
     try { if (ogVideo) ogVideo = new URL(decodeEntities(ogVideo), r.url || url).href; } catch {}
     const publicBits = [meta.title, meta.description, ogAbs].filter(Boolean).join(' · ').slice(0, 400);
     const redir = redirectMeta(url, r.url || url);
+    const collapsed = isProfileCollapsedToPlatformHome(url, r.url || url, html, meta);
+    const ident = collapsed ? exactSourceIdentity(url) : null;
     const base = {
       url,
       requestedUrl: redir.requestedUrl,
       finalUrl: redir.finalUrl,
-      redirected: redir.redirected,
-      redirectToHomepage: redir.redirectToHomepage,
-      title: meta.title,
-      description: meta.description,
-      ogImage: ogAbs || images[0] || '',
-      ogVideo,
-      images,
+      redirected: redir.redirected || collapsed,
+      redirectToHomepage: redir.redirectToHomepage || collapsed,
+      title: collapsed ? (ident.displayName || ident.handle || '') : meta.title,
+      description: collapsed ? '' : meta.description,
+      ogImage: collapsed ? '' : (ogAbs || images[0] || ''),
+      ogVideo: collapsed ? '' : ogVideo,
+      images: collapsed ? [] : images,
       imageExtraction,
       fingerprint: simpleFingerprint(text),
       retrievedAt: new Date().toISOString(),
       bytes: buf.byteLength,
       contentType: r.headers.get('content-type') || '',
-      identifiers,
-      galleryUrls: [...new Set([...(graph.galleries || []), ...galleryLinks(html, r.url || url)])].slice(0, 6),
-      videoUrls: (graph.videos || []).map(v => v.url).slice(0, 12),
-      harvestedVideos: graph.videos || [],
-      productionUrls: (graph.productions || []).map(x => x.url).slice(0, 8),
-      relatedUrls: (graph.related || []).map(x => x.url).slice(0, 8),
+      identifiers: collapsed
+        ? { profiles: ident.canonicalUrl ? [ident.canonicalUrl] : [], handles: ident.handle ? [ident.handle] : [], aliases: ident.displayName ? [ident.displayName] : [] }
+        : identifiers,
+      galleryUrls: collapsed ? [] : [...new Set([...(graph.galleries || []), ...galleryLinks(html, r.url || url)])].slice(0, 6),
+      videoUrls: collapsed ? [] : (graph.videos || []).map(v => v.url).slice(0, 12),
+      harvestedVideos: collapsed ? [] : (graph.videos || []),
+      productionUrls: collapsed ? [] : (graph.productions || []).map(x => x.url).slice(0, 8),
+      relatedUrls: collapsed ? [] : (graph.related || []).map(x => x.url).slice(0, 8),
+      genericPlatformShell: collapsed,
+      ogUrl: meta.ogUrl || '',
     };
+    if (collapsed) {
+      return {
+        ...base,
+        status: 'RETRIEVAL_FAILED',
+        accessState: 'AUTHENTICATION_REQUIRED',
+        accessNote: 'The host returned a generic ' + (ident.platform || host) + ' landing page instead of this profile. Authentication required for remaining content. This is not a retrieval of ' + (ident.handle || 'the requested profile') + '.',
+        error: 'generic platform landing page',
+        httpStatus: r.status,
+        publicEvidence: ident.handle ? ('Public profile identity from the exact URL: @' + ident.handle + ' · ' + ident.canonicalUrl) : '',
+        text: '',
+        textExcerpt: '',
+        exactSource: true,
+      };
+    }
     if (redir.redirectToHomepage) {
       return {
         ...base,
@@ -8800,4 +9378,4 @@ async function retrieveHandler(req) {
   }
 }
 
-export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing, composeInvestigationQuery, parseInvestigationIntent, resolveKnownEntity, buildTopicMap, plannerLaneQueries, evidenceForResult, isQueryEchoTitle, isRedditSearchPage, isActualRedditEvidence, annotateProvenance, classifyAccountOwnership, mergeInvestigationEvidence, sourceDiversityReport, competingIdentityCandidates, findMoreQueries, moreLikeThisQueries, findDifferentQueries, analyzePayloadKind, PLANNER_BUILD, PLANNER_VERSION, identityIsAmbiguous, applyIdentityFeedback, serializeEvidenceItem, createInvestigationState, applyInvestigationAction, evidenceBuckets, knownSiteAccessStatus, intentClassFor, routeNaturalLanguageResearch, extractImagesFromHtml, describeImageExtraction, looksLikeFirstPartySource, fillTopicMapFromEvidence, isObjectOrTechniquePhrase, isTutorialIntent, parseRetrievalIntents, fictionalNameCollision, semanticVariations, classifyVisualRelevance, classifyMatchQuality, classifyContentType, socialShouldDeprioritize, sourceVolumePenalty, premiumAccessClassification, premiumEscalationQueries, publicAccountQueries, tutorialQueries, detectImpersonator, buildEntityIdentityRecord, buildWhatCarmenChecked, buildWhyDidYouStop, coupleEntityTopic, keepEntityTopicQueries, negativeResultReport, identityDisambiguation, conceptOrthographyVariants, conceptDiscoveryQueries, identityVariantQueries, visualInvestigationQueries, entityAssociatedVisualQueries, accountInvestigationQueries, extractInvestigationSeeds, evaluateNovelty, createAdaptiveController, enqueueInvestigationPaths, nextInvestigationBatch, recordInvestigationBatch, decideInvestigationContinuation, enqueueAdaptiveFamilies, seedsToQueries, adaptiveTrace, ADAPTIVE_TIME_GUARD_MS, ADAPTIVE_MAX_ITERATIONS, ADAPTIVE_BATCH_SIZE, conceptVisualSearchQuery, isRestraintTechnique };
+export { classifyQuery, scoreResult, buildSearchVariants, buildExpandedVariants, decodeEntities, rankResults, humanizePath, researchPaths, resolveDivePaths, inferPathsFromQuestion, parseInvestigativeQuestion, pathSearchVariants, youtubeId, collectDiveVideos, collectDiveImages, parseRelated, classifyAccess, accessLabel, parseQueryContext, attachContext, applyResearchFilter, normalizeAdult, adultSemanticVariants, imageSearchQuery, isAdultishSource, extraContext, normalizeDepth, contextVocabulary, discoveryLanes, extractGraphLeads, contextTermsForScore, isAggregatorPage, isSpecificEvidence, classifyResultKind, interestLenses, investigationChoices, visualCandidatesFor, buildSelectedEntity, entityIdFor, discoveryEvidenceFrom, diveSeedQuery, diveExpansionQueries, diveRetrievalQueue, userAskedForSourceRestriction, extractRequestedSourceDomain, interpretConcept, interpretRequest, morphologicalNeighbors, inferFamily, enrichConceptsFromEvidence, mergeConceptKnowledge, intersectionFormulations, intersectionBroadenQueries, budgetReport, resetFetchBudget, remainingFetches, FETCH_HARD_CAP, retrieveBatchPlan, isUnusableAnalysis, analysisExcerpts, applyQuestionToClassification, isNameParticle, redirectMeta, pickIdentityCandidate, nameOnIdentitySurface, isVisualSubject, visualDedupeKey, buildVisualCorpus, classifyVideoDuration, investigateFurtherQueries, ambiguousInterpretations, splitContextConcepts, visualQueryVariants, classifySourceClass, identityExpansionQueries, applyExclusions, pushVisualHit, plusSplitQuery, canonicalVideoKey, sourceClassQueries, sourceClassCatalog, independentLaneQueries, harvestPageGraph, nextUnusedQueries, collectPremiumContent, knowledgeModelGuide, parseAttemptedList, uniqueAdd, videoQueryVariants, isVideoUrl, expandVideoUrl, isRedditHost, redditBlocked, redditResultCount, adultIdentityQueries, adultIdentityCombinedQuery, ADULT_IDENTITY_SITES, buildResearchMetrics, reservedRedditLane, reservedAdultIdentityLane, redditIndexedWeb, redditPullpush, redditWayback, unwrap, parseBing, composeInvestigationQuery, parseInvestigationIntent, resolveKnownEntity, buildTopicMap, plannerLaneQueries, evidenceForResult, isQueryEchoTitle, isRedditSearchPage, isActualRedditEvidence, annotateProvenance, classifyAccountOwnership, mergeInvestigationEvidence, sourceDiversityReport, competingIdentityCandidates, findMoreQueries, moreLikeThisQueries, findDifferentQueries, analyzePayloadKind, PLANNER_BUILD, PLANNER_VERSION, identityIsAmbiguous, applyIdentityFeedback, serializeEvidenceItem, createInvestigationState, applyInvestigationAction, evidenceBuckets, knownSiteAccessStatus, intentClassFor, routeNaturalLanguageResearch, extractImagesFromHtml, describeImageExtraction, looksLikeFirstPartySource, fillTopicMapFromEvidence, isObjectOrTechniquePhrase, isTutorialIntent, parseRetrievalIntents, fictionalNameCollision, semanticVariations, classifyVisualRelevance, classifyMatchQuality, classifyContentType, socialShouldDeprioritize, sourceVolumePenalty, premiumAccessClassification, premiumEscalationQueries, publicAccountQueries, tutorialQueries, detectImpersonator, buildEntityIdentityRecord, buildWhatCarmenChecked, buildWhyDidYouStop, coupleEntityTopic, keepEntityTopicQueries, negativeResultReport, identityDisambiguation, conceptOrthographyVariants, conceptDiscoveryQueries, identityVariantQueries, visualInvestigationQueries, entityAssociatedVisualQueries, accountInvestigationQueries, extractInvestigationSeeds, evaluateNovelty, createAdaptiveController, enqueueInvestigationPaths, nextInvestigationBatch, recordInvestigationBatch, decideInvestigationContinuation, enqueueAdaptiveFamilies, seedsToQueries, adaptiveTrace, ADAPTIVE_TIME_GUARD_MS, ADAPTIVE_MAX_ITERATIONS, ADAPTIVE_BATCH_SIZE, conceptVisualSearchQuery, isRestraintTechnique, analyzeExactSource, retrieveExactSource, sourceIdFromCanonicalUrl, canonicalizeExactSourceUrl, exactSourceIdentity, parseRedditPermalink, parseRedditListing, buildSourceDebug, identifyExactSourceType };

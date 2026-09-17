@@ -51,11 +51,11 @@ const plannerSrc = readFileSync(new URL('./investigation-planner.js', import.met
 
 console.log('--- v49.6 version / Deep Dive hierarchy ---');
 {
-  assert(PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6', 'PLANNER_VERSION current');
-  assert(PLANNER_BUILD === '49.9-identity-queue-visual' || PLANNER_BUILD === '49.8-adaptive-investigation' || PLANNER_BUILD === '49.7-retrieval-engine' || PLANNER_BUILD === '49.6-correctness-ux', 'PLANNER_BUILD');
-  assert(/const VERSION = '49\.[6789]'/.test(appSrc), 'frontend VERSION');
-  assert(/carmen-build" content="49\.[6789]"/.test(html), 'html build');
-  assert(/v49\.[6789]/.test(html), 'header shows version');
+  assert(PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6', 'PLANNER_VERSION current');
+  assert(PLANNER_BUILD === '49.11-exact-source-retrieval' || PLANNER_BUILD === '49.9-identity-queue-visual' || PLANNER_BUILD === '49.8-adaptive-investigation' || PLANNER_BUILD === '49.7-retrieval-engine' || PLANNER_BUILD === '49.6-correctness-ux', 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.(?:[6-9]|11)'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.(?:[6-9]|11)"/.test(html), 'html build');
+  assert(/v49\.(6|7|8|9|11)/.test(html), 'header shows version');
   assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,people,visuals', 'exactly three primary lenses');
   assert((html.match(/id="diveBondageBtn"/g) || []).length === 1, 'exactly one Bondage button');
   assert((html.match(/id="divePeopleBtn"/g) || []).length === 1, 'exactly one People button');

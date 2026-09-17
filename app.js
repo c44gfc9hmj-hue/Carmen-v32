@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.9';
+const VERSION = '49.11';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -2204,7 +2204,7 @@ function resultCardHtml(r, i, isPersonType) {
           <button data-ract="save" data-testid="result-save" data-i="${i}">Save</button>
           <button data-ract="open" data-testid="result-open" data-source-url="${esc(r.url || '')}" data-i="${i}">Open source</button>
           ${personCard ? `<button data-ract="notperson" data-testid="identity-reject" data-i="${i}">Not this person</button>` : ''}
-          ${r.contentType === 'account' || /onlyfans|fansly|loyalfans|manyvids/i.test(r.url || r.domain || '') ? `<button data-ract="analyze" data-testid="result-analyze" data-i="${i}">Analyze</button>` : ''}
+          <button data-ract="analyze" data-testid="result-analyze" data-i="${i}">Analyze</button>
         </div>
       </div>
     </div>`;
@@ -2818,38 +2818,47 @@ async function analyzeDiscoveryItem(item) {
   const panel = $('analyzePanel');
   if (!panel || !item) return toast('Nothing to analyze.');
   panel.classList.remove('hidden');
-  const isVideo = item.kind === 'video' || item.mediaKind === 'video' || item.thumbnail || /youtube|vimeo|youtu\.be|\.mp4|xvideos|pornhub|redgifs/i.test(String(item.url || item.pageUrl || ''));
-  const isImage = !!(item.imageDataUrl || (item.image && !isVideo && /\.(jpg|jpeg|png|webp|gif|avif)(\?|$)/i.test(String(item.url || item.image || ''))));
-  let html = '<h3>Analyze</h3>';
-  html += '<p class="hint">SOURCE FACTS are on the page. SUPPORTED FACTS are backed by retrieved text. INFERENCES are labeled. GENERAL BACKGROUND is not from this source. UNKNOWN stays unknown.</p>';
-  if (isVideo) {
-    html += '<div class="claim unknown"><b>UNKNOWN — video frames</b><br>Carmen cannot currently inspect the actual video frames. Timestamps are UNKNOWN until real frame analysis is available. This analysis uses the title, thumbnail, page metadata, and retrieved public pages — not a frame-by-frame watch.</div>';
-  }
-  html += `<div class="claim"><b>SOURCE FACTS</b><br>${esc(item.title || item.url || '')}<br>${esc(item.domain || hostOf(item.url || item.pageUrl || ''))}${item.snippet ? '<br>' + esc(item.snippet) : ''}</div>`;
-  html += `<div class="claim inferred"><b>INFERRED</b><br>${esc(item.reason || 'Relevance is inferred from public title/snippet overlap with the current subject. That is not identity proof.')}</div>`;
-  html += `<div class="claim unknown"><b>UNKNOWN</b><br>Creator vs host vs original publisher are not assumed to be the same. ${isVideo ? 'What happens in the video is unknown without frame analysis.' : 'Unretrieved page contents are unknown.'}</div>`;
-  html += '<div class="row" style="margin-top:8px"><button class="btn" data-stream-close-analyze="1">Hide</button><button class="btn primary" data-findmore="like" data-kind="result" data-i="0">More like this</button><button class="btn" id="analyzeTeach">Teach me about this</button></div>';
-  panel.innerHTML = html;
-  $('analyzeTeach').onclick = () => teachAbout(item);
+  const exactUrl = String(item.canonicalUrl || item.url || item.pageUrl || '').trim();
+  const isVideo = item.kind === 'video' || item.mediaKind === 'video' || item.thumbnail || /youtube|vimeo|youtu\.be|\.mp4|xvideos|pornhub|redgifs/i.test(String(exactUrl));
+  const isImage = !!(item.imageDataUrl || (item.image && !isVideo && /\.(jpg|jpeg|png|webp|gif|avif)(\?|$)/i.test(String(exactUrl || item.image || ''))));
+  const hostPath = (() => { try { const u = new URL(exactUrl); return u.hostname.replace(/^www\./, '') + u.pathname; } catch { return exactUrl; } })();
+  panel.innerHTML = `<h3>Analyzing exact source</h3>
+    <p class="hint">${esc(hostPath || exactUrl || 'no URL on this card')}</p>
+    <ol class="analyze-steps" id="analyzeSteps">
+      <li>Fetching exact source</li>
+      <li>Parsing source</li>
+      <li>Extracting links/media</li>
+      <li>Identifying entities/topics</li>
+      <li>Creating investigation seeds</li>
+      <li>Corroborating</li>
+    </ol>
+    <p class="muted" id="analyzeProgress">Carmen is retrieving this exact URL — not a platform search.</p>`;
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (!exactUrl) {
+    panel.insertAdjacentHTML('beforeend', `<div class="claim unknown"><b>FETCH_FAILED</b><br>This card has no exact URL. Analyze will not reconstruct the investigation from a platform or person name.</div>`);
+    return;
+  }
   const base = backendUrl();
   if (base) {
     try {
       const body = {
-        kind: isVideo ? 'video' : (isImage ? 'webpage' : 'webpage'),
-        url: item.url || item.pageUrl || '',
-        pageUrl: item.pageUrl || item.url || '',
+        kind: isVideo ? 'video' : (resultIsReddit(item) ? 'reddit' : (isImage ? 'webpage' : 'webpage')),
+        url: exactUrl,
+        pageUrl: exactUrl,
         title: item.title || '',
         snippet: item.snippet || item.textExcerpt || item.description || '',
         evidence: {
-          url: item.url || item.pageUrl || '',
+          url: exactUrl,
           title: item.title || '',
           snippet: item.snippet || '',
-          domain: item.domain || hostOf(item.url || item.pageUrl || ''),
+          domain: item.domain || hostOf(exactUrl),
           kind: isVideo ? 'video' : (resultIsReddit(item) ? 'reddit' : 'webpage'),
+          handle: item.handle || item.accountHandle || '',
+          sourceId: item.sourceId || '',
         },
         subject: selectedEntity?.canonicalName || lastClassification?.subject || '',
         topic: diveTopic || extraContextText(lastClassification) || '',
+        exactSource: true,
       };
       if (item.imageDataUrl) body.imageDataUrl = item.imageDataUrl;
       const r = await fetch(base + '/analyze', {
@@ -2862,43 +2871,128 @@ async function analyzeDiscoveryItem(item) {
       if (!r.ok) {
         panel.insertAdjacentHTML('beforeend', `<div class="claim unknown"><b>Analyze failed</b><br>${esc(data.error || ('HTTP ' + r.status))}</div>`);
       } else {
-        const facts = (data.sourceFacts || data.observations || []).map(f => typeof f === 'string' ? f : (f.field ? f.field + ': ' + f.value : JSON.stringify(f))).slice(0, 8);
-        const supported = (data.supportedFacts || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 6);
-        const inf = (data.inferences || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 6);
-        const unk = (data.unknowns || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 6);
-        const bg = (data.generalBackground || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 4);
-        let extra = '';
-        if (data.kind) extra += `<p class="hint">Evidence kind: ${esc(data.kind)}</p>`;
-        if (facts.length) extra += `<div class="claim"><b>SOURCE FACTS</b><br>${esc(facts.join(' · '))}</div>`;
-        if (supported.length) extra += `<div class="claim"><b>SUPPORTED FACTS</b><br>${esc(supported.join(' · '))}</div>`;
-        if (inf.length) extra += `<div class="claim inferred"><b>INFERENCES</b><br>${esc(inf.join(' · '))}</div>`;
-        if (bg.length) extra += `<div class="claim"><b>GENERAL BACKGROUND</b><br>${esc(bg.join(' · '))}</div>`;
-        if (unk.length) extra += `<div class="claim unknown"><b>UNKNOWN</b><br>${esc(unk.join(' · '))}</div>`;
-        if (data.videoFrames && data.videoFrames.timestamps) extra += `<div class="claim unknown"><b>VIDEO FRAMES</b><br>${esc(data.videoFrames.note || 'Timestamps UNKNOWN')}</div>`;
-        if (data.accountPlan) {
-          extra += `<div class="claim"><b>PUBLIC ACCOUNT INVESTIGATION</b><br>${esc(data.accountPlan.platform || '')} · handle ${esc(data.accountPlan.handle || 'unknown')}<br>${esc((data.accountPlan.investigate || []).slice(0, 8).join(' · '))}<br>${esc(data.accountPlan.boundary || '')}</div>`;
-          extra += `<p class="hint">Analyze investigates publicly accessible metadata. Carmen does not bypass authentication, paywalls, DRM, or access controls. Opening a public URL is not content retrieval.</p>`;
-        }
-        if (data.sourceLifecycle) extra += `<p class="hint">Source: ${esc(data.sourceLifecycle.label || '')}${data.sourceLifecycle.note ? ' — ' + esc(data.sourceLifecycle.note) : ''}</p>`;
-        if (Array.isArray(data.publicReferences) && data.publicReferences.length) extra += `<div class="claim"><b>INDEXED PUBLIC REFERENCES</b><br>${data.publicReferences.slice(0, 6).map(r => esc((r.title || r.url || '') + (r.domain ? ' · ' + r.domain : ''))).join('<br>')}</div>`;
-        if (data.analysisError) extra += `<div class="claim unknown"><b>AI note</b><br>${esc(data.analysisError)}</div>`;
-        if (extra) panel.insertAdjacentHTML('beforeend', extra);
+        renderExactSourceAnalysis(panel, data, exactUrl);
+        if (Array.isArray(data.seeds) && data.seeds.length) mergeExactSourceSeeds(data.seeds, data.canonicalUrl || exactUrl);
       }
     } catch (e) {
       panel.insertAdjacentHTML('beforeend', `<div class="claim unknown"><b>UNKNOWN — analyze</b><br>${esc(e.message)}</div>`);
     }
-  } else if (item.url) {
+  } else if (exactUrl) {
     try {
-      const retrieved = await retrieveSource(item.url);
+      const retrieved = await retrieveSource(exactUrl);
       const extra = retrieved && retrieved.status === 'RETRIEVED'
         ? `<div class="claim"><b>OBSERVED from page</b><br>${esc((retrieved.title || '') + ' — ' + String(retrieved.textExcerpt || retrieved.description || '').slice(0, 400))}</div>`
-        : `<div class="claim unknown"><b>UNKNOWN — page body</b><br>${esc(retrieved && (retrieved.accessNote || retrieved.error) || 'The page could not be retrieved.')}</div>`;
+        : `<div class="claim unknown"><b>FETCH_FAILED</b><br>${esc(retrieved && (retrieved.accessNote || retrieved.error) || 'Exact URL could not be retrieved.')}</div>`;
       panel.insertAdjacentHTML('beforeend', extra);
     } catch (e) {
-      panel.insertAdjacentHTML('beforeend', `<div class="claim unknown"><b>UNKNOWN — page body</b><br>${esc(e.message)}</div>`);
+      panel.insertAdjacentHTML('beforeend', `<div class="claim unknown"><b>FETCH_FAILED</b><br>${esc(e.message)}</div>`);
     }
   }
-  pushTrail({ kind: 'analyze', label: 'Analyzed “' + (item.title || item.url || 'item') + '”', entity: selectedEntity?.canonicalName || '', topic: diveTopic });
+  pushTrail({ kind: 'analyze', label: 'Exact source ' + exactUrl, entity: selectedEntity?.canonicalName || '', topic: diveTopic });
+}
+
+function mergeExactSourceSeeds(seeds, parentUrl) {
+  if (!Array.isArray(seeds) || !seeds.length) return 0;
+  if (!Array.isArray(lastResults)) lastResults = [];
+  const seen = new Set(lastResults.map(r => String(r.url || '').replace(/\/+$/, '').toLowerCase()));
+  let added = 0;
+  for (const s of seeds) {
+    const url = s && s.url;
+    if (!url) continue;
+    const key = String(url).replace(/\/+$/, '').toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lastResults.unshift({
+      title: s.label || s.title || url,
+      url,
+      domain: s.host || hostOf(url),
+      snippet: 'Extracted from exact source ' + (parentUrl || ''),
+      foundThrough: 'exact-source',
+      parent: parentUrl,
+      sourceId: s.sourceId,
+      kind: s.kind,
+      provenance: 'EXTRACTED',
+      contentType: s.kind === 'account' ? 'account' : (/reddit\.com/i.test(url) ? 'reddit' : 'webpage'),
+    });
+    added++;
+  }
+  try { if (typeof renderDiveStream === 'function') renderDiveStream(); } catch {}
+  return added;
+}
+
+function renderExactSourceAnalysis(panel, data, exactUrl) {
+  const debug = data.sourceDebug || data.debug || {};
+  const identity = data.identity || {};
+  const terminal = data.terminalState || debug.terminalState || '';
+  const fetched = data.fetchSucceeded === true || debug.fetchSucceeded === true;
+  const publicBits = data.publicContentRetrieved === true || debug.publicContentRetrieved === true;
+  const auth = data.authRequired === true || debug.authRequired === true;
+  const facts = (data.sourceFacts || data.observations || []).map(f => typeof f === 'string' ? f : (f.field ? f.field + ': ' + f.value : JSON.stringify(f))).slice(0, 10);
+  const supported = (data.supportedFacts || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 6);
+  const inf = (data.inferences || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 6);
+  const unk = (data.unknowns || []).map(f => typeof f === 'string' ? f : (f.value || JSON.stringify(f))).slice(0, 8);
+  const reddit = data.reddit;
+  const profile = data.profile;
+  let html = '<h3>Exact source</h3>';
+  html += `<div class="claim"><b>SOURCE</b><br>${esc(identity.platform || identity.host || data.kind || '')}`;
+  if (reddit) {
+    html += `<br>${esc(reddit.subreddit || '')}`;
+    if (reddit.postId) html += `<br>Post ID: ${esc(reddit.postId)}`;
+    if (reddit.author) html += `<br>Author: ${esc(reddit.author)}`;
+  } else {
+    if (identity.handle || (profile && profile.handle)) html += `<br>Handle: ${esc(identity.handle || profile.handle)}`;
+    if (identity.displayName || (profile && profile.displayName)) html += `<br>${esc(identity.displayName || profile.displayName)}`;
+  }
+  html += `<br>${esc(debug.canonicalUrl || data.canonicalUrl || exactUrl)}</div>`;
+  html += `<div class="claim"><b>RETRIEVAL</b><br>Exact URL fetched: ${fetched ? 'YES' : 'NO'}`;
+  if (reddit) {
+    html += `<br>Post content retrieved: ${esc(reddit.postContentRetrieved || 'NO')}`;
+    html += `<br>Comments retrieved: ${esc(reddit.commentsRetrieved || 'NO')}`;
+    html += `<br>Media references extracted: ${esc(reddit.mediaReferencesExtracted || 'NO')}`;
+    html += `<br>Outbound links: ${esc(String(reddit.outboundLinks ?? 0))}`;
+  } else {
+    html += `<br>Public content retrieved: ${publicBits ? 'YES' : 'NO'}`;
+    html += `<br>Media extracted: ${debug.mediaExtracted ? 'YES' : 'NO'}`;
+    html += `<br>Outbound links: ${esc(String((data.links || []).length))}`;
+  }
+  html += `<br>Terminal state: ${esc(terminal || 'unknown')}</div>`;
+  html += `<div class="claim"><b>ANALYSIS</b></div>`;
+  if (facts.length) html += `<div class="claim"><b>SOURCE FACTS</b><br>${esc(facts.join(' · '))}</div>`;
+  if (supported.length) html += `<div class="claim"><b>SUPPORTED FACTS</b><br>${esc(supported.join(' · '))}</div>`;
+  if (inf.length) html += `<div class="claim inferred"><b>INFERENCES</b><br>${esc(inf.join(' · '))}</div>`;
+  if (unk.length) html += `<div class="claim unknown"><b>UNKNOWN</b><br>${esc(unk.join(' · '))}</div>`;
+  if (auth) html += `<div class="claim unknown"><b>AUTHENTICATION_REQUIRED</b><br>Authentication required for remaining content. Carmen does not bypass authentication, paywalls, DRM, or access controls.</div>`;
+  if (!fetched && /reddit/i.test(identity.sourceType || data.kind || exactUrl)) {
+    html += `<div class="claim unknown"><b>Exact Reddit post could not be publicly retrieved.</b></div>`;
+  }
+  if (Array.isArray(data.seeds) && data.seeds.length) {
+    html += `<div class="claim"><b>INVESTIGATION SEEDS</b><br>${data.seeds.slice(0, 8).map(s => esc((s.kind || 'seed') + ': ' + (s.url || s.label || ''))).join('<br>')}</div>`;
+  }
+  if (Array.isArray(data.chainedSources) && data.chainedSources.length) {
+    html += `<div class="claim"><b>CHAINED SOURCES</b><br>${data.chainedSources.map(s => esc((s.title || s.url || '') + ' · ' + (s.fetchSucceeded ? 'retrieved' : 'not retrieved'))).join('<br>')}</div>`;
+  }
+  html += `<details class="card" open><summary>What Carmen actually retrieved</summary><p class="hint">${esc(data.whatCarmenActuallyRetrieved || debug.whatRetrieved || '')}</p></details>`;
+  html += `<details class="card"><summary>Why did Carmen stop?</summary><p class="hint">${esc(data.whyDidCarmenStop || debug.whyStopped || terminal)}</p>
+    <pre class="hint" style="white-space:pre-wrap">${esc(JSON.stringify({
+      canonicalUrl: debug.canonicalUrl,
+      sourceId: debug.sourceId,
+      sourceType: debug.sourceType,
+      fetchAttempted: debug.fetchAttempted,
+      fetchSucceeded: debug.fetchSucceeded,
+      parseSucceeded: debug.parseSucceeded,
+      publicContentRetrieved: debug.publicContentRetrieved,
+      mediaExtracted: debug.mediaExtracted,
+      linksExtracted: debug.linksExtracted,
+      entitiesExtracted: debug.entitiesExtracted,
+      topicsExtracted: debug.topicsExtracted,
+      authRequired: debug.authRequired,
+      seedsCreated: debug.seedsCreated,
+      corroborationQueries: debug.corroborationQueries,
+      terminalState: debug.terminalState,
+      provenance: debug.provenance,
+      genericSearchUsedAsRetrieval: debug.genericSearchUsedAsRetrieval,
+    }, null, 2))}</pre></details>`;
+  panel.innerHTML = html;
 }
 
 /* ---------- deep dive workspace ---------- */
