@@ -9007,7 +9007,7 @@ function chatgptSetupPayload(env) {
           'Create a connector. MCP server URL: ' + origin + '/mcp',
           'Authentication: OAuth (ChatGPT discovers ' + origin + '/.well-known/oauth-protected-resource). On the Carmen authorize page paste CARMEN_API_KEY — never API_KEY, never your ChatGPT password',
           'If the connector UI offers Header/API key instead: Authorization Bearer with CARMEN_API_KEY',
-          'Enable the connector on the chat. Ask: Search Carmen for Drea Morgan, then Deep Dive bondage',
+          'Enable the connector on the chat. Ask Carmen to search, inspect candidates, confirm, then Deep Dive bondage',
         ],
       },
       {
