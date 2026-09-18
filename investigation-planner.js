@@ -3031,7 +3031,8 @@ export function applyInvestigationAction(state, action, payload = {}) {
 
 export const API_ACTION_CATALOG = [
   { action: 'health', method: 'GET', path: '/api/v1/health', description: 'Version, features, provider status. Never returns secrets.' },
-  { action: 'openapi', method: 'GET', path: '/api/v1/openapi.json', description: 'OpenAPI 3.0.3 for ChatGPT Actions. Documents CARMEN_API_KEY, never provider API_KEY.' },
+  { action: 'chatgpt-setup', method: 'GET', path: '/api/v1/chatgpt-setup', description: 'Exact ChatGPT Custom GPT Action and MCP connector setup. Never returns secrets.' },
+  { action: 'mcp', method: 'POST', path: '/mcp', description: 'Streamable HTTP MCP. Same runDiscovery tools. Auth: Bearer CARMEN_API_KEY or OAuth.' },
   { action: 'capabilities', method: 'GET', path: '/api/v1/machine/capabilities', description: 'Read-only machine capabilities. pipelineFunction is always runDiscovery.' },
   { action: 'machine-search', method: 'POST', path: '/api/v1/machine/search', description: 'Same runDiscovery path as GET /search (iPhone PWA). Returns personCandidates, diagnostics, timings.' },
   { action: 'machine-dive', method: 'POST', path: '/api/v1/machine/dive', description: 'Deep Dive lens (bondage|people|visuals) on the same runDiscovery path. Supports stage=initial for progressive results.' },

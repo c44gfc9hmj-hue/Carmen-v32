@@ -1,40 +1,77 @@
-# Connecting ChatGPT to Carmen’s Machine API
+# Connecting ChatGPT to Carmen
 
 Carmen does **not** let a normal ChatGPT chat call arbitrary HTTP.
-There is no Carmen-side switch that makes the default ChatGPT composer
-POST JSON to this Worker.
+This Grok session **cannot** log into ChatGPT, create a GPT, or click
+Connect. `chatgptCanInvokeFromThisGrokSession` is **false**.
 
-What Carmen *does* expose is a live, OpenAPI 3.0.3, read-only
-investigation API that a ChatGPT **Custom GPT Action** (or any other
-HTTP agent) can invoke.
+What Carmen *does* expose on the live Worker:
+
+* an authenticated, read-only REST machine API (`/api/v1/machine/*`)
+* OpenAPI 3.0.3 at `/api/v1/openapi.json`
+* Streamable-HTTP MCP at `/mcp` (same `runDiscovery` pipeline as the iPhone UI)
+* MCP OAuth 2.1 (PKCE, DCR) so ChatGPT Developer Mode can actually connect
+* Setup JSON at `/api/v1/chatgpt-setup` (never returns secrets)
+* Privacy page at `/privacy`
 
 Production origin: `https://carmen-iphone-v25.94bwfd5grv.workers.dev`
 
-## Exact connection procedure (Custom GPT Actions)
+Live check: `GET /api/v1/health` → `machineAuthConfigured` must be `true`
+before ChatGPT can be pointed at a locked API.
 
-This is the only ChatGPT product path that can actually invoke Carmen
-today without building a separate MCP/OAuth server.
+## Distinction
 
-1. Confirm the Worker is reachable:
-   `GET https://carmen-iphone-v25.94bwfd5grv.workers.dev/api/v1/health`
-2. Import the Action schema from this URL:
+| Layer | Status |
+|---|---|
+| A. Carmen has an authenticated machine API | Yes, once `CARMEN_API_KEY` is on the Worker |
+| B. ChatGPT can invoke that API **from this Grok session** | **No** |
+| B. ChatGPT can invoke that API **after you add a connector/Action with a key you hold** | Yes — that is the product path |
+
+Do not treat an OpenAPI file as ChatGPT access.
+
+## Path 1 (current ChatGPT product): Developer Mode MCP
+
+ChatGPT’s current way to call a generic HTTP API is a **Developer Mode
+custom MCP connector**, not a default chat.
+
+ChatGPT custom connectors prefer **OAuth**. Carmen implements the missing
+layer: RFC 9728 protected-resource metadata, RFC 8414 authorization-server
+metadata, RFC 7591 dynamic client registration, and PKCE. The authorize
+page asks for **`CARMEN_API_KEY` only** — never your ChatGPT/OpenAI
+password, never the provider `API_KEY`.
+
+1. Confirm `GET /api/v1/health` has `machineAuthConfigured: true`.
+2. In ChatGPT: **Settings → Apps & Connectors (or Plugins) → Developer mode** on.
+3. Create a connector.
+   * MCP server URL: `https://carmen-iphone-v25.94bwfd5grv.workers.dev/mcp`
+   * Authentication: **OAuth** (ChatGPT will discover
+     `/.well-known/oauth-protected-resource`).
+   * On the Carmen authorize page, paste `CARMEN_API_KEY`.
+   * If that UI offers Header / API key instead: `Authorization: Bearer <CARMEN_API_KEY>`.
+4. Enable the connector on the chat.
+5. Ask: “Search Carmen for Drea Morgan, then Deep Dive bondage, then inspect diagnostics.”
+
+Tools ChatGPT gets (all read-only, all `runDiscovery`):
+
+`carmen_capabilities`, `carmen_search`, `carmen_candidates`,
+`carmen_confirm`, `carmen_dive` (bondage / visuals / accounts),
+`carmen_find_more`, `carmen_ask`, `carmen_diagnostics`,
+`carmen_inspect`, `carmen_analyze`.
+
+Denied: posting, messaging, purchasing, account creation, login/paywall bypass.
+
+## Path 2 (still works until Custom GPTs retire): Actions
+
+OpenAI is retiring Custom GPTs (Enterprise: no **new** GPTs after about
+2026-09-25; they stop running 2026-12-11). Existing Actions still work
+until then. Custom actions **do not** migrate to plugins.
+
+1. Import
    `https://carmen-iphone-v25.94bwfd5grv.workers.dev/api/v1/openapi.json`
-   In the GPT editor: **Create** → **Actions** → **Import from URL**.
-3. Authentication in the GPT editor (not in the schema):
-   - If `machineAuthConfigured` is `false` (current production):
-     **Authentication = None**. Machine routes are open.
-   - If `CARMEN_API_KEY` has been set on the Worker:
-     **Authentication = API Key**
-     **Auth Type = Bearer**
-     **API Key = the CARMEN_API_KEY value** (never the provider `API_KEY`)
-     Alternate: Auth Type = Custom, header name `X-Carmen-Api-Key`.
-4. Use a **non-reasoning / non-Pro** GPT model. OpenAI documents that
-   Custom GPT Actions are unavailable on Pro mode and on reasoning
-   models such as GPT-5.1 / GPT-5.2.
-5. Paste the agent contract below into the GPT Instructions.
-6. Test with: “Search Carmen for Drea Morgan, then Deep Dive bondage,
-   then inspect the investigation state.” Confirm the GPT actually
-   calls `machineSearch` and receives JSON.
+2. Authentication = **API Key**, Auth Type = **Bearer**,
+   API Key = `CARMEN_API_KEY` (never `API_KEY`)
+3. Privacy policy URL: `https://carmen-iphone-v25.94bwfd5grv.workers.dev/privacy`
+4. Use a non-reasoning / non-Pro model (Actions are unavailable on Pro and several reasoning models)
+5. Paste the agent contract below
 
 ### GPT Instructions (paste)
 
@@ -63,60 +100,37 @@ Worker memory is not durable. Always echo state. Never invent URLs.
 
 ## Auth type and header name
 
-| GPT editor field | Value |
+| Surface | Auth |
 |---|---|
-| Authentication | None until `CARMEN_API_KEY` exists; then API Key |
-| Preferred auth type | Bearer |
-| Header sent | `Authorization: Bearer <CARMEN_API_KEY>` |
-| Alternate header | `X-Carmen-Api-Key: <CARMEN_API_KEY>` |
-| Must configure key first? | Only after the Worker secret is set. Check `machineAuthConfigured` on `/api/v1/health`. |
+| REST machine API | `Authorization: Bearer <CARMEN_API_KEY>` or `X-Carmen-Api-Key` |
+| Custom GPT Actions | API Key → Bearer (editor panel, not an OpenAPI parameter) |
+| ChatGPT MCP connector | OAuth (authorize page) or Header Bearer if the UI offers it |
 | Never send | provider `API_KEY` / OpenRouter credentials |
+| PWA iPhone UI | no machine key |
 
-OpenAPI documents both Bearer and `X-Carmen-Api-Key`. ChatGPT Actions
-**do not send custom headers from the schema**; the editor Authentication
-panel is what actually attaches the key. Do not add `X-Carmen-Api-Key`
-as a request parameter.
+## How to hold the key (required for ChatGPT)
 
-## Operation sequence
+This environment cannot write GitHub Actions secrets (`403`). Deploy will
+**generate** a Worker secret if none exists so the API is not left open.
+A generated Worker key is **not recoverable** from logs.
 
-1. `GET /api/v1/machine/capabilities`
-2. `POST /api/v1/machine/search`
-3. Save `investigationId` + `investigationState`
-3b. `POST /api/v1/machine/candidates` (inspect thumbnails/source URLs)
-3c. `POST /api/v1/machine/confirm` with `candidateId` + both
-4. `POST /api/v1/machine/dive` with both (`stage=initial` optional)
-5. Inspect `results`, `images`, `visualPipeline`
-5b. `POST /api/v1/machine/diagnostics` with echoed state
-6. Optional `POST .../confirm-identity`
-7. `POST .../analyze` with a public `url` + both
-8. `POST /api/v1/machine/investigations/{id}` with echoed state
-9. Continue using the **returned** state from each response
+To use ChatGPT you must hold the same value the Worker has:
 
-## What this environment cannot do
+1. GitHub → `c44gfc9hmj-hue/Carmen-v32` → **Settings → Secrets and variables → Actions**
+2. New repository secret named exactly **`CARMEN_API_KEY`**
+   (do **not** reuse `API_KEY`)
+3. Re-run **Deploy to Cloudflare Workers** so `wrangler secret put` updates the Worker
+4. Confirm `GET /api/v1/health` → `machineAuthConfigured: true`
+5. Paste that same value into ChatGPT OAuth / Bearer. Never commit it.
 
-This Grok/Carmen workspace cannot log into ChatGPT, create a Custom GPT,
-or click “Test” in the GPT editor. Carmen-side work stops at: live
-OpenAPI, live JSON routes, auth contract, and production smoke tests.
+## Limits
 
-ChatGPT itself (a default conversation, Agent browsing, or Developer
-Mode MCP) cannot call this REST API unless the user configures one of:
+* Investigation guard ~24s; Cloudflare Worker CPU; ChatGPT Actions timeout 45s
+* Use `stage=initial` on Deep Dive, then continue with echoed state
+* No published RPM quota
+* Worker memory is not durable — echo `investigationId` + `investigationState`
+* Responses are JSON (no image bytes). Thumbnails are URLs from that candidate’s own source
+* Official ChatGPT Apps SDK does not present arbitrary customer API keys;
+  that is why Carmen hosts OAuth for MCP
 
-* a Custom GPT Action that imports the OpenAPI URL above, or
-* a remote MCP server + OAuth connector (not provided; ChatGPT custom
-  connectors currently expect OAuth, not a bearer header)
-
-## ChatGPT Action limitations that remain
-
-* Custom headers cannot be declared as OpenAPI parameters.
-* Request/response payloads must stay under 100,000 characters.
-* Actions time out after 45 seconds. Live discovery can be slow.
-* Responses are text/JSON only (no images/video bytes).
-* Endpoint `summary`/`description` ≤ 300 characters.
-* Parameter descriptions ≤ 700 characters.
-* Actions are unavailable in Pro mode and on several reasoning models.
-* Custom GPTs are being migrated toward Plugins (OpenAI: Sep 17, 2026
-  migration experience). The OpenAPI URL remains the Carmen contract
-  those surfaces import.
-
-No further OpenAPI change on the Carmen side removes those ChatGPT
-product limits.
+Live setup JSON (no secrets): `/api/v1/chatgpt-setup`

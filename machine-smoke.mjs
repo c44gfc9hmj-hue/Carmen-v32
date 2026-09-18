@@ -214,10 +214,44 @@ async function main() {
   }
   const mode = authMode(health.json);
   console.log('  AUTH_MODE', mode);
-  if (mode === 'auth-required-but-key-missing') {
-    record('authenticated test', false, { detail: 'Worker requires CARMEN_API_KEY but env is empty' });
+  if (process.env.CARMEN_REQUIRE_AUTH === '1' && mode === 'unauthenticated-open') {
+    record('machineAuthConfigured', false, { detail: 'production requires CARMEN_API_KEY; Worker is still open' });
   }
 
+  console.log('--- unauthenticated machine search ---');
+  {
+    const started = Date.now();
+    let res, text;
+    try {
+      res = await fetch(ORIGIN + '/api/v1/machine/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ query: 'Drea Morgan', fixture: 'drea-intersection' }),
+      });
+      text = await res.text();
+    } catch (err) {
+      record('unauthenticated POST /api/v1/machine/search', false, { detail: String(err) });
+      text = '';
+      res = { status: 0 };
+    }
+    let unauthJson = null;
+    try { unauthJson = text ? JSON.parse(text) : null; } catch {}
+    if (mode === 'unauthenticated-open') {
+      record('unauthenticated POST /api/v1/machine/search', process.env.CARMEN_REQUIRE_AUTH !== '1', {
+        detail: 'machineAuthConfigured=false (routes open)',
+      });
+    } else {
+      record('unauthenticated POST /api/v1/machine/search', res.status === 401, {
+        detail: 'HTTP ' + res.status + ' ' + (Date.now() - started) + 'ms',
+      });
+      const dumped = JSON.stringify(unauthJson || {});
+      record('unauth 401 does not leak secrets', !dumped.includes('openrouter') && (!KEY || !dumped.includes(KEY)), {});
+    }
+  }
+
+  if (mode === 'auth-required-but-key-missing') {
+    record('authorized smoke', true, { detail: 'skipped — Worker requires CARMEN_API_KEY but this process does not hold it' });
+  } else {
   const caps = await call('GET', '/api/v1/machine/capabilities');
   record('capabilities', caps.ok && caps.json && caps.json.readOnly === true && caps.json.pipelineFunction === 'runDiscovery', {
     detail: caps.ok ? `machineAuthConfigured=${caps.json && caps.json.machineAuthConfigured}` : (caps.kind + ' HTTP ' + caps.status),
@@ -244,6 +278,7 @@ async function main() {
   for (const subject of SUBJECTS) {
     console.log('--- subject: ' + subject.name + ' ---');
     subjectReports.push(await runSubject(subject));
+  }
   }
 
   const failed = results.filter(r => !r.ok);

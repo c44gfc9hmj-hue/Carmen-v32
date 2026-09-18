@@ -251,8 +251,8 @@ function cors(req) {
   }
   return {
     'access-control-allow-origin': allow,
-    'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type, x-carmen-client, x-carmen-test-key, x-carmen-api-key, authorization',
+    'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
+    'access-control-allow-headers': 'content-type, x-carmen-client, x-carmen-test-key, x-carmen-api-key, authorization, mcp-session-id, last-event-id, accept, mcp-protocol-version',
     'access-control-expose-headers': 'x-carmen-version, x-carmen-build, x-carmen-browser-test',
     'access-control-max-age': '86400',
     'vary': 'Origin',
@@ -260,17 +260,18 @@ function cors(req) {
 }
 
 function json(value, status, req, extra = {}) {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: {
-      ...cors(req),
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
-      'x-carmen-version': PLANNER_VERSION,
-      'x-carmen-build': PLANNER_BUILD,
-      ...extra,
-    },
-  });
+  const headers = {
+    ...cors(req),
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-carmen-version': PLANNER_VERSION,
+    'x-carmen-build': PLANNER_BUILD,
+    ...extra,
+  };
+  if (status === 401 && !headers['www-authenticate'] && !headers['WWW-Authenticate']) {
+    headers['www-authenticate'] = 'Bearer realm="Carmen"';
+  }
+  return new Response(JSON.stringify(value), { status, headers });
 }
 
 function cleanText(s = '') {
@@ -7855,8 +7856,8 @@ function apiDocsPayload() {
       investigationsAreOpaqueIds: true,
     },
     cors: {
-      allowMethods: 'GET,POST,OPTIONS',
-      allowHeaders: 'content-type, x-carmen-client, x-carmen-test-key, x-carmen-api-key, authorization',
+      allowMethods: 'GET,POST,DELETE,OPTIONS',
+      allowHeaders: 'content-type, x-carmen-client, x-carmen-test-key, x-carmen-api-key, authorization, mcp-session-id, last-event-id, mcp-protocol-version',
       notes: 'Same-origin, localhost, *.workers.dev, grok.app, chatgpt.com, and requests with no Origin (server-to-server) are allowed. Credentials are not used.',
     },
     auth: {
@@ -7890,6 +7891,8 @@ const MACHINE_PUBLIC_PATHS = new Set([
   '/api', '/api/v1', '/api/v1/docs', '/api/v1/health', '/api/health',
   '/api/v1/openapi.json', '/api/v1/machine/capabilities', '/api/v1/capabilities',
   '/api/v1/browser-test-session', '/api/browser-test-session',
+  '/api/v1/chatgpt-setup', '/api/v1/privacy', '/privacy',
+  '/oauth/authorize', '/oauth/token', '/oauth/register', '/oauth/revoke',
 ]);
 const DENIED_EXTERNAL_SEGMENTS = new Set([
   'message', 'messages', 'messaging', 'dm', 'post', 'comment', 'comments',
@@ -7912,12 +7915,18 @@ function machineCapabilities(env) {
     samePipelineAsIphoneUi: true,
     mock: false,
     browserTestSimulation: false,
-    allowed: ['search', 'dive', 'analyze', 'inspect-investigation', 'inspect-results', 'inspect-candidates', 'inspect-diagnostics', 'confirm-identity', 'reject-identity', 'find-more', 'learn', 'progressive-dive'],
+    allowed: ['search', 'dive', 'analyze', 'inspect-investigation', 'inspect-results', 'inspect-candidates', 'inspect-diagnostics', 'confirm-identity', 'reject-identity', 'find-more', 'learn', 'progressive-dive', 'mcp', 'oauth'],
     denied: ['external-action', 'messaging', 'posting', 'commenting', 'following', 'purchasing', 'submitting-forms', 'creating-accounts', 'transactions', 'login-bypass', 'paywall-bypass'],
     primaryDiveLenses: ['bondage', 'people', 'clothing'],
     findMore: 'additive expansion via the next unexplored retrieval lane',
-    authentication: 'CARMEN_API_KEY via X-Carmen-Api-Key or Authorization Bearer. Never send API_KEY.',
+    authentication: 'CARMEN_API_KEY via X-Carmen-Api-Key or Authorization Bearer. ChatGPT MCP may use OAuth (authorize page accepts the same key). Never send API_KEY.',
     machineAuthConfigured: machineKeyConfigured,
+    limits: {
+      investigationGuardMs: 24000,
+      chatgptActionsTimeoutMs: 45000,
+      publishedRpm: null,
+      note: 'No published RPM quota. Cloudflare Worker CPU and the 24s investigation guard apply. Use stage=initial for Deep Dive.',
+    },
     continuity: 'Worker memory is not durable. Echo investigationState (and investigationId) on every subsequent search, dive, analyze, or inspect call.',
     agentContract: {
       sequence: [
@@ -8037,7 +8046,7 @@ function machineOpenApiSpec() {
     info: {
       title: 'Carmen machine-readable investigation API',
       version: PLANNER_VERSION,
-      description: 'Read-only investigation API for ChatGPT Actions and other agents. Same runDiscovery pipeline as the iPhone PWA. Never messages, posts, purchases, or submits forms. Auth: Authorization Bearer CARMEN_API_KEY (preferred) or X-Carmen-Api-Key. Never send the provider API_KEY. Worker memory is not durable: echo investigationId plus investigationState on every continuation. Sequence: capabilities → search → save id+state → dive with both → inspect results → analyze a public URL → POST inspect with echoed state → continue.',
+      description: 'Read-only investigation API for ChatGPT Actions and MCP. Same runDiscovery pipeline as the iPhone PWA. Never messages, posts, purchases, or submits forms. Auth: Authorization Bearer CARMEN_API_KEY (preferred) or X-Carmen-Api-Key. Never send the provider API_KEY. Worker memory is not durable: echo investigationId plus investigationState. Sequence: capabilities → search → save id+state → candidates/confirm → dive stage=initial then continue → diagnostics. Limits: ~24s investigation guard, Cloudflare Worker CPU, ChatGPT Actions 45s timeout. Use stage=initial. No published RPM quota. MCP: POST /mcp.',
     },
     servers: [{ url: origin, description: 'Live Carmen Worker' }],
     security: bearerFirst,
@@ -8209,7 +8218,7 @@ function machineOpenApiSpec() {
             subject: { type: 'string', description: 'Person or entity name.' },
             topic: { type: 'string', description: 'Optional topic such as bondage.' },
             type: { type: 'string', description: 'Optional type hint, e.g. person.' },
-            adult: { type: 'string', enum: ['on', 'off', 'both'], description: 'Adult lens. Default off.' },
+            adult: { type: 'string', enum: ['on', 'off', 'both'], description: 'Adult lens. Default on for person searches.' },
             investigationId: { type: 'string', description: 'Echo from previous response to continue the same investigation.' },
             investigationState: { '$ref': '#/components/schemas/InvestigationState' },
             investigationStateJson: { type: 'string', description: 'Optional JSON string alternative to investigationState.' },
@@ -8217,12 +8226,17 @@ function machineOpenApiSpec() {
             stage: { type: 'string', description: 'initial returns a faster first slice. Echo investigationState then continue.' },
             identityPhase: { type: 'boolean' },
             diagnostic: { type: 'boolean' },
+            findMore: { type: 'boolean', description: 'Next unexplored retrieval lane. Same as Find More on the iPhone UI.' },
+            mode: { type: 'string', description: 'Optional intent: find-more, premium-accounts, dive-bondage, dive-visuals.' },
+            diveLens: { type: 'string', description: 'bondage, visuals, accounts, or people.' },
+            researchFocus: { type: 'string', description: 'Optional research-focus chips, e.g. visuals or career.' },
+            action: { type: 'string', description: 'Optional catalog action such as find-more or premium-accounts.' },
           },
         },
         DiveRequest: {
           type: 'object',
           properties: {
-            lens: { type: 'string', enum: ['bondage', 'people', 'clothing'], description: 'Deep Dive lens. Default bondage.' },
+            lens: { type: 'string', enum: ['bondage', 'visuals', 'accounts', 'people', 'clothing'], description: 'Deep Dive lens. bondage, visuals, accounts. clothing aliases visuals.' },
             query: { type: 'string' },
             subject: { type: 'string' },
             topic: { type: 'string' },
@@ -8329,7 +8343,7 @@ function machineOpenApiSpec() {
           operationId: 'machineDive',
           tags: ['machine'],
           summary: 'Deep Dive through discovered evidence',
-          description: 'Lens bondage|people|clothing. Send investigationId and investigationState from search. Additive merge; not a query rewrite. Read-only.',
+          description: 'Lens bondage|visuals|accounts. Send investigationId and investigationState from search. stage=initial for first useful results. Additive merge; not a query rewrite. Read-only.',
           security: bearerFirst,
           'x-openai-isConsequential': false,
           requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/DiveRequest' } } } },
@@ -8479,6 +8493,32 @@ function machineOpenApiSpec() {
             200: json({ type: 'object', additionalProperties: true }, 'Pipeline diagnostics'),
             401: json(errRef, 'Unauthorized'),
             404: json(errRef, 'No stored diagnostics'),
+          },
+        },
+      },
+      '/api/v1/chatgpt-setup': {
+        get: {
+          operationId: 'chatgptSetup',
+          tags: ['meta'],
+          summary: 'ChatGPT connection procedure',
+          description: 'Exact Custom GPT Action and MCP connector steps. Never returns secrets. Public.',
+          security: [],
+          'x-openai-isConsequential': false,
+          responses: { 200: json({ type: 'object', additionalProperties: true }, 'Setup instructions') },
+        },
+      },
+      '/mcp': {
+        post: {
+          operationId: 'mcp',
+          tags: ['machine'],
+          summary: 'MCP streamable HTTP',
+          description: 'ChatGPT Developer Mode connector. Same runDiscovery tools. Bearer or OAuth. Unauthenticated POST returns 401 + resource_metadata. Read-only.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } } },
+          responses: {
+            200: json({ type: 'object', additionalProperties: true }, 'JSON-RPC result'),
+            401: json(errRef, 'Unauthorized'),
           },
         },
       },
@@ -8656,6 +8696,558 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
   return attachInvestigationStateEcho(payload, state);
 }
 
+function carmenRequestOrigin(req) {
+  try { return new URL(req.url).origin; } catch { return 'https://carmen-iphone-v25.94bwfd5grv.workers.dev'; }
+}
+
+function b64urlBytes(bytes) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let bin = '';
+  for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function b64urlUtf8(str) {
+  return b64urlBytes(new TextEncoder().encode(str));
+}
+
+function fromB64url(s) {
+  const pad = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = pad + '==='.slice((pad.length + 3) % 4);
+  const bin = atob(padded);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function safeEqual(a, b) {
+  const x = String(a || '');
+  const y = String(b || '');
+  const n = Math.max(x.length, y.length);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < n; i++) diff |= (x.charCodeAt(i) || 0) ^ (y.charCodeAt(i) || 0);
+  return diff === 0 && x.length > 0 && y.length > 0;
+}
+
+async function hmacSha256B64url(secret, data) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
+  return b64urlBytes(sig);
+}
+
+async function signCarmenJwt(secret, payload) {
+  const header = b64urlUtf8(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const body = b64urlUtf8(JSON.stringify(payload));
+  const sig = await hmacSha256B64url(secret, header + '.' + body);
+  return header + '.' + body + '.' + sig;
+}
+
+async function verifyCarmenJwt(secret, token) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3 || !secret) return null;
+  const expected = await hmacSha256B64url(secret, parts[0] + '.' + parts[1]);
+  if (!safeEqual(expected, parts[2])) return null;
+  try {
+    const json = JSON.parse(new TextDecoder().decode(fromB64url(parts[1])));
+    if (!json || json.alg) return null;
+    if (json.exp && Number(json.exp) * 1000 < Date.now()) return null;
+    return json;
+  } catch { return null; }
+}
+
+async function pkceS256(verifier) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(verifier || '')));
+  return b64urlBytes(digest);
+}
+
+function oauthRedirectAllowed(uri) {
+  try {
+    const u = new URL(String(uri || ''));
+    if (u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1')) return true;
+    if (u.protocol !== 'https:') return false;
+    const h = u.hostname.toLowerCase();
+    return h === 'chatgpt.com' || h.endsWith('.chatgpt.com') ||
+      h === 'chat.openai.com' || h.endsWith('.openai.com') ||
+      h === 'claude.ai' || h.endsWith('.claude.ai') ||
+      h.endsWith('.anthropic.com') ||
+      h === 'test' || h.endsWith('.workers.dev');
+  } catch { return false; }
+}
+
+function oauthProtectedResourceMeta(origin) {
+  return {
+    resource: origin + '/mcp',
+    authorization_servers: [origin],
+    bearer_methods_supported: ['header'],
+    scopes_supported: ['carmen'],
+    resource_name: 'Carmen investigation API',
+  };
+}
+
+function oauthAuthorizationServerMeta(origin) {
+  return {
+    issuer: origin,
+    authorization_endpoint: origin + '/oauth/authorize',
+    token_endpoint: origin + '/oauth/token',
+    registration_endpoint: origin + '/oauth/register',
+    revocation_endpoint: origin + '/oauth/revoke',
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    code_challenge_methods_supported: ['S256'],
+    token_endpoint_auth_methods_supported: ['none'],
+    scopes_supported: ['carmen'],
+    authorization_response_iss_parameter_supported: true,
+  };
+}
+
+async function readOauthBody(req) {
+  const ct = (req.headers.get('content-type') || '').toLowerCase();
+  if (ct.includes('application/json')) {
+    try { return await req.json(); } catch { return {}; }
+  }
+  const text = await req.text();
+  if (!text) return {};
+  if (ct.includes('application/x-www-form-urlencoded') || /^(client_id|grant_type|code|redirect_uri)=/.test(text)) {
+    const o = {};
+    for (const [k, v] of new URLSearchParams(text)) o[k] = v;
+    return o;
+  }
+  try { return JSON.parse(text); } catch { return {}; }
+}
+
+function oauthWwwAuthenticate(origin) {
+  return 'Bearer realm="Carmen", resource_metadata="' + origin + '/.well-known/oauth-protected-resource"';
+}
+
+async function mcpCredentialOk(req, env) {
+  const machineKey = String((env && env.CARMEN_API_KEY) || '').trim();
+  if (!machineKey) return { ok: true, open: true };
+  const presented = presentedMachineCredential(req);
+  const providerKey = String((env && (env.API_KEY || env.Api_key)) || '').trim();
+  const testKey = String((env && env.CARMEN_TEST_KEY) || '').trim();
+  if (presented && providerKey && presented === providerKey && presented !== machineKey && presented !== testKey) {
+    return { ok: false, provider: true };
+  }
+  if (presented && (safeEqual(presented, machineKey) || (testKey && safeEqual(presented, testKey)))) return { ok: true, kind: 'key' };
+  if (presented) {
+    const jwt = await verifyCarmenJwt(machineKey, presented);
+    if (jwt && jwt.typ === 'access') return { ok: true, kind: 'jwt' };
+  }
+  return { ok: false };
+}
+
+async function handleOauth(req, env) {
+  const u = new URL(req.url);
+  const path = u.pathname.replace(/\/+$/, '') || '/';
+  const origin = carmenRequestOrigin(req);
+  const machineKey = String((env && env.CARMEN_API_KEY) || '').trim();
+
+  if (path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') {
+    return json(oauthProtectedResourceMeta(origin), 200, req);
+  }
+  if (path === '/.well-known/oauth-authorization-server' || path === '/.well-known/oauth-authorization-server/mcp' || path === '/.well-known/openid-configuration') {
+    return json(oauthAuthorizationServerMeta(origin), 200, req);
+  }
+
+  if (path === '/oauth/register' && req.method === 'POST') {
+    let body = {};
+    try { body = await req.json(); } catch { body = {}; }
+    const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris.filter(oauthRedirectAllowed) : [];
+    const now = Math.floor(Date.now() / 1000);
+    return json({
+      client_id: 'carmen-mcp',
+      client_id_issued_at: now,
+      client_name: body.client_name || 'Carmen MCP',
+      redirect_uris: redirectUris.length ? redirectUris : ['https://chatgpt.com/connector_platform_oauth_redirect', 'https://chat.openai.com/aip/oauth/callback'],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      scope: 'carmen',
+    }, 201, req);
+  }
+
+  if (path === '/oauth/revoke' && req.method === 'POST') {
+    return new Response(null, { status: 200, headers: { ...cors(req), 'cache-control': 'no-store' } });
+  }
+
+  if (path === '/oauth/authorize' && req.method === 'GET') {
+    const redirectUri = u.searchParams.get('redirect_uri') || '';
+    const state = u.searchParams.get('state') || '';
+    const clientId = u.searchParams.get('client_id') || 'carmen-mcp';
+    const challenge = u.searchParams.get('code_challenge') || '';
+    const method = u.searchParams.get('code_challenge_method') || '';
+    const scope = u.searchParams.get('scope') || 'carmen';
+    const err = !machineKey
+      ? 'CARMEN_API_KEY is not configured on this Worker, so OAuth cannot issue tokens.'
+      : (!oauthRedirectAllowed(redirectUri) ? 'redirect_uri is not allowed.'
+        : (method && method !== 'S256' ? 'code_challenge_method must be S256.' : ''));
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Carmen</title></head>
+<body style="font-family:system-ui;max-width:28rem;margin:2rem auto;padding:0 1rem;line-height:1.45">
+<h1>Authorize Carmen</h1>
+<p>ChatGPT (or another MCP client) wants <strong>read-only</strong> investigation access. Carmen will not post, message, purchase, create accounts, or bypass logins.</p>
+<p>Paste the Worker secret named <code>CARMEN_API_KEY</code>. Never paste your ChatGPT, OpenAI, or OpenRouter password. Never paste <code>API_KEY</code>.</p>
+${err ? '<p style="color:#b00020">' + err.replace(/[<>&]/g, '') + '</p>' : ''}
+${err ? '' : `<form method="post" action="/oauth/authorize">
+<input type="hidden" name="redirect_uri" value="${String(redirectUri).replace(/"/g, '"')}">
+<input type="hidden" name="state" value="${String(state).replace(/"/g, '"')}">
+<input type="hidden" name="client_id" value="${String(clientId).replace(/"/g, '"')}">
+<input type="hidden" name="code_challenge" value="${String(challenge).replace(/"/g, '"')}">
+<input type="hidden" name="code_challenge_method" value="${String(method).replace(/"/g, '"')}">
+<input type="hidden" name="scope" value="${String(scope).replace(/"/g, '"')}">
+<label>CARMEN_API_KEY<br><input type="password" name="key" autocomplete="off" required style="width:100%;padding:0.5rem"></label>
+<p><button type="submit">Authorize read-only access</button></p>
+</form>`}
+</body></html>`;
+    return new Response(html, { status: err ? 400 : 200, headers: { ...cors(req), 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+  }
+
+  if (path === '/oauth/authorize' && req.method === 'POST') {
+    const body = await readOauthBody(req);
+    const redirectUri = String(body.redirect_uri || '');
+    const state = String(body.state || '');
+    const clientId = String(body.client_id || 'carmen-mcp');
+    const challenge = String(body.code_challenge || '');
+    const presented = String(body.key || body.password || '').trim();
+    if (!machineKey) return json({ error: 'invalid_request', error_description: 'CARMEN_API_KEY is not configured' }, 400, req);
+    if (!oauthRedirectAllowed(redirectUri)) return json({ error: 'invalid_request', error_description: 'redirect_uri is not allowed' }, 400, req);
+    if (!safeEqual(presented, machineKey)) {
+      return json({ error: 'access_denied', error_description: 'Wrong CARMEN_API_KEY. Never send API_KEY.' }, 401, req);
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const code = await signCarmenJwt(machineKey, {
+      iss: origin, aud: 'carmen-mcp', sub: 'machine', typ: 'code',
+      client_id: clientId, redirect_uri: redirectUri, code_challenge: challenge,
+      iat: now, exp: now + 300,
+    });
+    const loc = new URL(redirectUri);
+    loc.searchParams.set('code', code);
+    if (state) loc.searchParams.set('state', state);
+    loc.searchParams.set('iss', origin);
+    return new Response(null, { status: 302, headers: { ...cors(req), location: loc.toString(), 'cache-control': 'no-store' } });
+  }
+
+  if (path === '/oauth/token' && req.method === 'POST') {
+    const body = await readOauthBody(req);
+    if (!machineKey) return json({ error: 'invalid_client', error_description: 'CARMEN_API_KEY is not configured' }, 401, req);
+    const grant = String(body.grant_type || '');
+    const now = Math.floor(Date.now() / 1000);
+    let claims = null;
+    if (grant === 'authorization_code') {
+      claims = await verifyCarmenJwt(machineKey, String(body.code || ''));
+      if (!claims || claims.typ !== 'code') return json({ error: 'invalid_grant' }, 400, req);
+      if (body.redirect_uri && claims.redirect_uri && body.redirect_uri !== claims.redirect_uri) return json({ error: 'invalid_grant' }, 400, req);
+      if (claims.code_challenge) {
+        const verifier = String(body.code_verifier || '');
+        const derived = await pkceS256(verifier);
+        if (!safeEqual(derived, claims.code_challenge)) return json({ error: 'invalid_grant', error_description: 'PKCE verification failed' }, 400, req);
+      }
+    } else if (grant === 'refresh_token') {
+      claims = await verifyCarmenJwt(machineKey, String(body.refresh_token || ''));
+      if (!claims || claims.typ !== 'refresh') return json({ error: 'invalid_grant' }, 400, req);
+    } else {
+      return json({ error: 'unsupported_grant_type' }, 400, req);
+    }
+    const access = await signCarmenJwt(machineKey, {
+      iss: origin, aud: 'carmen-mcp', sub: 'machine', typ: 'access',
+      client_id: claims.client_id || body.client_id || 'carmen-mcp',
+      iat: now, exp: now + 3600, token_use: 'access',
+    });
+    const refresh = await signCarmenJwt(machineKey, {
+      iss: origin, aud: 'carmen-mcp', sub: 'machine', typ: 'refresh',
+      client_id: claims.client_id || body.client_id || 'carmen-mcp',
+      iat: now, exp: now + 7 * 24 * 3600,
+    });
+    return json({
+      access_token: access,
+      token_type: 'Bearer',
+      expires_in: 3600,
+      refresh_token: refresh,
+      scope: 'carmen',
+    }, 200, req);
+  }
+
+  return json({ error: 'Not found' }, 404, req);
+}
+
+const MCP_PROTOCOL = '2025-03-26';
+const MCP_TOOLS = [
+  { name: 'carmen_capabilities', description: 'Read-only capabilities, auth flag, agent sequence. No secret values.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'carmen_search', description: 'Same runDiscovery as the iPhone UI. Returns investigationId, investigationState, results, personCandidates, timings.', inputSchema: { type: 'object', properties: { query: { type: 'string' }, subject: { type: 'string' }, topic: { type: 'string' }, type: { type: 'string' }, adult: { type: 'string' }, investigationId: { type: 'string' }, investigationState: { type: 'object' }, investigationStateJson: { type: 'string' }, stage: { type: 'string' } }, required: ['query'] } },
+  { name: 'carmen_candidates', description: 'Person-selection cards: id, displayName, sourceUrl, thumbnailUrl, whySelected.', inputSchema: { type: 'object', properties: { query: { type: 'string' }, subject: { type: 'string' }, type: { type: 'string' }, adult: { type: 'string' }, investigationId: { type: 'string' }, investigationState: { type: 'object' }, investigationStateJson: { type: 'string' } }, required: ['query'] } },
+  { name: 'carmen_confirm', description: 'Confirm a person candidate (That’s-the-one). Echo investigationState. Does not message or post.', inputSchema: { type: 'object', properties: { candidateId: { type: 'string' }, name: { type: 'string' }, investigationId: { type: 'string' }, investigationState: { type: 'object' }, investigationStateJson: { type: 'string' }, query: { type: 'string' }, subject: { type: 'string' } } } },
+  { name: 'carmen_dive', description: 'Deep Dive lens bondage|visuals|accounts. stage=initial then omit/continue. Same pipeline as iPhone Deep Dive.', inputSchema: { type: 'object', properties: { lens: { type: 'string' }, stage: { type: 'string' }, query: { type: 'string' }, subject: { type: 'string' }, topic: { type: 'string' }, investigationId: { type: 'string' }, investigationState: { type: 'object' }, investigationStateJson: { type: 'string' } }, required: ['lens'] } },
+  { name: 'carmen_find_more', description: 'Find More: next unexplored retrieval lane. Additive, not a rewrite.', inputSchema: { type: 'object', properties: { query: { type: 'string' }, subject: { type: 'string' }, investigationId: { type: 'string' }, investigationState: { type: 'object' }, investigationStateJson: { type: 'string' } } } },
+  { name: 'carmen_ask', description: 'Ask this investigation (natural-language research). Same NL routing as the iPhone Ask box.', inputSchema: { type: 'object', properties: { question: { type: 'string' }, query: { type: 'string' }, investigationId: { type: 'string' }, investigationState: { type: 'object' }, investigationStateJson: { type: 'string' } }, required: ['question'] } },
+  { name: 'carmen_diagnostics', description: 'Request ID, timings, provider counts, filter/verify/dedupe, visualPipeline zeroReason.', inputSchema: { type: 'object', properties: { investigationId: { type: 'string' }, investigationState: { type: 'object' }, investigationStateJson: { type: 'string' }, query: { type: 'string' } } } },
+  { name: 'carmen_inspect', description: 'Inspect echoed investigationState (results, candidates, provenance).', inputSchema: { type: 'object', properties: { investigationId: { type: 'string' }, investigationState: { type: 'object' }, investigationStateJson: { type: 'string' } }, required: ['investigationId'] } },
+  { name: 'carmen_analyze', description: 'Read-only analyze of a public URL. Never posts or messages.', inputSchema: { type: 'object', properties: { url: { type: 'string' }, investigationId: { type: 'string' }, investigationState: { type: 'object' }, investigationStateJson: { type: 'string' }, title: { type: 'string' } }, required: ['url'] } },
+];
+
+function chatgptSetupPayload(env) {
+  const origin = 'https://carmen-iphone-v25.94bwfd5grv.workers.dev';
+  const configured = !!(env && String(env.CARMEN_API_KEY || '').trim());
+  return {
+    ok: true,
+    version: PLANNER_VERSION,
+    build: PLANNER_BUILD,
+    secretsExposed: false,
+    machineAuthConfigured: configured,
+    secretName: 'CARMEN_API_KEY',
+    neverSend: ['API_KEY', 'OpenRouter credentials', 'provider keys'],
+    chatgptCanInvokeFromThisGrokSession: false,
+    chatgptProductPaths: [
+      {
+        kind: 'developer-mode-mcp',
+        current: true,
+        url: origin + '/mcp',
+        oauth: origin + '/oauth/authorize',
+        wellKnown: origin + '/.well-known/oauth-protected-resource',
+        steps: [
+          'In ChatGPT: Settings → Apps & Connectors (or Plugins) → enable Developer mode',
+          'Create a connector. MCP server URL: ' + origin + '/mcp',
+          'Authentication: OAuth (ChatGPT discovers ' + origin + '/.well-known/oauth-protected-resource). On the Carmen authorize page paste CARMEN_API_KEY — never API_KEY, never your ChatGPT password',
+          'If the connector UI offers Header/API key instead: Authorization Bearer with CARMEN_API_KEY',
+          'Enable the connector on the chat. Ask: Search Carmen for Drea Morgan, then Deep Dive bondage',
+        ],
+      },
+      {
+        kind: 'custom-gpt-action',
+        current: true,
+        retiring: 'OpenAI is retiring Custom GPTs (Enterprise: no new GPTs after ~2026-09-25, stop running 2026-12-11). Existing Actions still work until then. Custom actions do not migrate to plugins.',
+        openapi: origin + '/api/v1/openapi.json',
+        privacy: origin + '/privacy',
+        steps: [
+          'ChatGPT → Explore GPTs → Create → Configure → Actions → Create (if your plan still allows it)',
+          'Import from URL: ' + origin + '/api/v1/openapi.json',
+          'Authentication: API Key → Auth Type Bearer → paste CARMEN_API_KEY',
+          'Privacy policy URL: ' + origin + '/privacy',
+          'Paste GPT instructions from CHATGPT.md. Use a non-reasoning model; Actions are unavailable in Pro/reasoning modes.',
+        ],
+      },
+    ],
+    missingFromThisEnvironment: 'This Grok workspace cannot log into ChatGPT, create a Custom GPT, or click Connect. ChatGPT can invoke Carmen only after you add the MCP connector (OAuth) or Action (Bearer) in ChatGPT using a CARMEN_API_KEY you hold.',
+    howToHoldTheKey: [
+      'GitHub → c44gfc9hmj-hue/Carmen-v32 → Settings → Secrets and variables → Actions',
+      'New repository secret named exactly CARMEN_API_KEY (do not reuse API_KEY)',
+      'Re-run the Deploy to Cloudflare Workers workflow so wrangler secret put updates the Worker',
+      'Confirm GET /api/v1/health machineAuthConfigured is true',
+      'Use that same value in ChatGPT Authentication. Never commit it.',
+    ],
+    readOnly: true,
+    denied: ['posting', 'messaging', 'purchasing', 'account-creation', 'login-bypass', 'paywall-bypass'],
+    samePipelineAsIphoneUi: true,
+    pipelineFunction: 'runDiscovery',
+  };
+}
+
+function privacyResponse(req) {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Carmen privacy</title></head><body style="font-family:system-ui;max-width:40rem;margin:2rem auto;padding:0 1rem;line-height:1.5">
+<h1>Carmen privacy</h1>
+<p>Carmen is a read-only public-web investigation tool. It does not create user accounts, does not store ChatGPT conversation history on the Worker, and does not take external actions (no posting, messaging, purchasing, or login/paywall bypass).</p>
+<p>Searches query public web indexes. Investigation state is held by the client and echoed on later calls; Worker memory is not durable.</p>
+<p>Machine/API access uses a dedicated <code>CARMEN_API_KEY</code> Worker secret. That secret is never returned in API responses, HTML, or OpenAPI. Do not send provider <code>API_KEY</code> credentials to Carmen.</p>
+<p>Origin: <a href="https://carmen-iphone-v25.94bwfd5grv.workers.dev">carmen-iphone-v25.94bwfd5grv.workers.dev</a></p>
+</body></html>`;
+  return new Response(html, { status: 200, headers: { ...cors(req), 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+}
+
+function mcpTrimEnvelope(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const cands = (payload.personCandidates || []).slice(0, 8).map(c => ({
+    id: c.id || c.candidateId,
+    displayName: c.displayName || c.name,
+    sourceUrl: c.sourceUrl,
+    thumbnailUrl: c.thumbnailUrl || '',
+    confidence: c.confidence,
+    whySelected: c.whySelected,
+  }));
+  const results = (payload.results || []).slice(0, 12).map(r => ({
+    title: r.title,
+    sourceUrl: r.sourceUrl || r.url,
+    host: r.host,
+    observationState: r.observationState,
+    foundThrough: r.foundThrough,
+    identityEvidence: r.identityEvidence,
+    topicEvidence: r.topicEvidence,
+  }));
+  const images = (payload.images || payload.visualCorpus || []).slice(0, 12).map(im => ({
+    imageUrl: im.imageUrl || im.image || im.url,
+    sourceUrl: im.sourceUrl || im.pageUrl,
+    title: im.title,
+    evidenceLevel: im.evidenceLevel || im.visualGate,
+    provider: im.provider || im.source,
+  }));
+  return {
+    ok: payload.ok,
+    investigationId: payload.investigationId,
+    version: payload.version,
+    build: payload.build,
+    action: payload.action,
+    requestId: payload.requestId,
+    subject: payload.subject,
+    topic: payload.topic,
+    personCandidates: cands,
+    results,
+    images,
+    visualPipeline: payload.visualPipeline,
+    timings: payload.timings,
+    diagnostics: payload.diagnostics && {
+      requestId: payload.diagnostics.requestId,
+      providerCounts: payload.diagnostics.providerCounts,
+      filterCounts: payload.diagnostics.filterCounts,
+      zeroReason: payload.diagnostics.zeroReason,
+    },
+    diveStage: payload.diveStage,
+    partial: payload.partial,
+    nextStage: payload.nextStage,
+    identityState: payload.identityState,
+    investigationState: payload.investigationState,
+    investigationStateJson: payload.investigationStateJson,
+    samePipelineAsIphoneUi: true,
+    pipelineFunction: 'runDiscovery',
+    error: payload.error,
+    hint: payload.hint,
+  };
+}
+
+function mcpJsonRpc(id, result, error) {
+  const msg = { jsonrpc: '2.0' };
+  if (id !== undefined && id !== null) msg.id = id;
+  if (error) msg.error = error;
+  else msg.result = result;
+  return msg;
+}
+
+async function mcpDispatch(msg, req, env) {
+  const method = String((msg && msg.method) || '');
+  const id = msg && Object.prototype.hasOwnProperty.call(msg, 'id') ? msg.id : undefined;
+  const params = (msg && msg.params) || {};
+  if (method === 'initialize') {
+    return mcpJsonRpc(id, {
+      protocolVersion: MCP_PROTOCOL,
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: { name: 'carmen', version: PLANNER_VERSION, title: 'Carmen investigation API' },
+      instructions: 'Read-only public-web investigation. Echo investigationId and investigationState on every later call. Never post, message, purchase, or bypass logins. Auth: Bearer CARMEN_API_KEY.',
+    });
+  }
+  if (method === 'notifications/initialized' || method === 'notifications/cancelled') {
+    return null;
+  }
+  if (method === 'ping') return mcpJsonRpc(id, {});
+  if (method === 'tools/list') {
+    return mcpJsonRpc(id, { tools: MCP_TOOLS });
+  }
+  if (method === 'resources/list') return mcpJsonRpc(id, { resources: [] });
+  if (method === 'prompts/list') return mcpJsonRpc(id, { prompts: [] });
+  if (method !== 'tools/call') {
+    return mcpJsonRpc(id, undefined, { code: -32601, message: 'Method not found' });
+  }
+  const name = String((params && params.name) || '');
+  const args = (params && params.arguments) || {};
+  const origin = new URL(req.url).origin;
+  const headers = { 'content-type': 'application/json', accept: 'application/json' };
+  const machineKey = String((env && env.CARMEN_API_KEY) || '').trim();
+  if (machineKey) {
+    headers.authorization = 'Bearer ' + machineKey;
+    headers['x-carmen-api-key'] = machineKey;
+  } else {
+    const presented = presentedMachineCredential(req);
+    if (presented) {
+      headers.authorization = 'Bearer ' + presented;
+      headers['x-carmen-api-key'] = presented;
+    }
+  }
+  let path = '/api/v1/machine/search';
+  let body = { ...args };
+  if (name === 'carmen_capabilities') {
+    const inner = new Request(origin + '/api/v1/machine/capabilities', { method: 'GET', headers });
+    const res = await handleCarmenApi(inner, env);
+    const data = await res.json();
+    return mcpJsonRpc(id, { content: [{ type: 'text', text: JSON.stringify(data) }] });
+  }
+  if (name === 'carmen_candidates') path = '/api/v1/machine/candidates';
+  else if (name === 'carmen_confirm') path = '/api/v1/machine/confirm';
+  else if (name === 'carmen_dive') path = '/api/v1/machine/dive';
+  else if (name === 'carmen_diagnostics') path = '/api/v1/machine/diagnostics';
+  else if (name === 'carmen_find_more') {
+    path = '/api/v1/machine/search';
+    body = { ...args, action: 'find-more', findMore: true, query: args.query || args.subject || '' };
+  } else if (name === 'carmen_ask') {
+    path = '/api/v1/machine/search';
+    body = { ...args, query: args.question || args.query || '', keepSubject: true };
+  } else if (name === 'carmen_inspect') {
+    const iid = args.investigationId || 'unknown';
+    path = '/api/v1/machine/investigations/' + encodeURIComponent(iid);
+  } else if (name === 'carmen_analyze') {
+    const iid = args.investigationId || 'unknown';
+    path = '/api/v1/machine/investigations/' + encodeURIComponent(iid) + '/analyze';
+  } else if (name === 'carmen_search') path = '/api/v1/machine/search';
+  else return mcpJsonRpc(id, undefined, { code: -32601, message: 'Unknown tool' });
+  const inner = new Request(origin + path, { method: 'POST', headers, body: JSON.stringify(body) });
+  const res = await handleCarmenApi(inner, env);
+  let data = null;
+  try { data = await res.json(); } catch { data = { error: 'malformed-response', status: res.status }; }
+  if (res.status === 401) {
+    return mcpJsonRpc(id, undefined, { code: -32001, message: 'Unauthorized. Send Authorization Bearer CARMEN_API_KEY. Never send API_KEY.' });
+  }
+  const text = JSON.stringify(mcpTrimEnvelope(data));
+  return mcpJsonRpc(id, { content: [{ type: 'text', text }], isError: res.status >= 400 });
+}
+
+async function handleMcp(req, env) {
+  const origin = carmenRequestOrigin(req);
+  if (req.method === 'GET') {
+    const accept = (req.headers.get('accept') || '').toLowerCase();
+    if (accept.includes('text/event-stream')) {
+      return new Response(': connected\n\n', {
+        status: 200,
+        headers: { ...cors(req), 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    }
+    return json({
+      ok: true,
+      name: 'carmen',
+      version: PLANNER_VERSION,
+      transport: 'streamable-http',
+      protocolVersion: MCP_PROTOCOL,
+      auth: 'Authorization Bearer CARMEN_API_KEY, or OAuth at /oauth/authorize',
+      oauth: origin + '/oauth/authorize',
+      resourceMetadata: origin + '/.well-known/oauth-protected-resource',
+      samePipelineAsIphoneUi: true,
+    }, 200, req);
+  }
+  if (req.method === 'DELETE') return new Response(null, { status: 204, headers: cors(req) });
+  if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405, req);
+  let parsed;
+  try { parsed = await req.json(); } catch {
+    return json(mcpJsonRpc(null, undefined, { code: -32700, message: 'Parse error' }), 400, req);
+  }
+  const cred = await mcpCredentialOk(req, env);
+  if (!cred.ok) {
+    const id = Array.isArray(parsed) ? null : (parsed && Object.prototype.hasOwnProperty.call(parsed, 'id') ? parsed.id : null);
+    const message = cred.provider
+      ? 'Provider secret is not a Carmen machine credential'
+      : 'Unauthorized. Complete OAuth or send Authorization Bearer CARMEN_API_KEY. Never send API_KEY.';
+    return json(mcpJsonRpc(id, undefined, { code: -32001, message }), 401, req, { 'www-authenticate': oauthWwwAuthenticate(origin) });
+  }
+  const batch = Array.isArray(parsed) ? parsed : [parsed];
+  const out = [];
+  for (const msg of batch) {
+    const reply = await mcpDispatch(msg, req, env);
+    if (reply) out.push(reply);
+  }
+  const accept = (req.headers.get('accept') || '').toLowerCase();
+  const payload = Array.isArray(parsed) ? out : (out[0] || { jsonrpc: '2.0', result: { ok: true } });
+  if (accept.includes('text/event-stream') && !accept.includes('application/json')) {
+    const data = 'event: message\ndata: ' + JSON.stringify(payload) + '\n\n';
+    return new Response(data, {
+      status: 200,
+      headers: { ...cors(req), 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' },
+    });
+  }
+  return json(payload, 200, req);
+}
+
 async function handleCarmenApi(req, env) {
   const denied = apiUnauthorized(req, env);
   if (denied) return denied;
@@ -8685,7 +9277,7 @@ async function handleCarmenApi(req, env) {
       machineAuth: !!(env && String(env.CARMEN_API_KEY || '').trim()) ? 'CARMEN_API_KEY required' : 'CARMEN_API_KEY not configured — machine routes are open',
       samePipelineAsIphoneUi: true,
       pipelineFunction: 'runDiscovery',
-      features: ['v49.14-person-image-results', 'v50-agent-testable', 'v50-person-thumbnails', 'v50-visual-pipeline-diagnostics', 'v50-progressive-dive', 'v50-machine-candidates', 'v50-machine-diagnostics'],
+      features: ['v49.14-person-image-results', 'v50-agent-testable', 'v50-person-thumbnails', 'v50-visual-pipeline-diagnostics', 'v50-progressive-dive', 'v50-machine-candidates', 'v50-machine-diagnostics', 'v50-machine-auth', 'v50-mcp', 'v50-oauth'],
       environment: describeCarmenEnvironment(env, ai),
       browserTest: browserTestDescriptor(env),
       testRoutes: ['/test', '/browser-test', '/api/v1/browser-test-session'],
@@ -8697,7 +9289,10 @@ async function handleCarmenApi(req, env) {
   }
 
   if ((path === '/api/v1/openapi.json' || path === '/openapi.json') && req.method === 'GET') {
-    return json(machineOpenApiSpec(env), 200, req);
+    return json(machineOpenApiSpec(), 200, req);
+  }
+  if ((path === '/api/v1/chatgpt-setup' || path === '/api/chatgpt-setup') && req.method === 'GET') {
+    return json(chatgptSetupPayload(env), 200, req);
   }
   if ((path === '/api/v1/machine/capabilities' || path === '/api/v1/capabilities') && req.method === 'GET') {
     return json({
@@ -8738,7 +9333,8 @@ async function handleCarmenApi(req, env) {
       action = action || 'diagnostics';
     } else if (leaf === 'dive') {
       const lens = String(body.lens || body.diveLens || 'bondage').toLowerCase();
-      action = action || ('dive-' + (['bondage', 'people', 'visuals', 'clothing'].includes(lens) ? (lens === 'clothing' ? 'visuals' : lens) : 'bondage'));
+      if (lens === 'accounts' || lens === 'premium' || lens === 'premium-accounts') action = action || 'premium-accounts';
+      else action = action || ('dive-' + (['bondage', 'people', 'visuals', 'clothing'].includes(lens) ? (lens === 'clothing' ? 'visuals' : lens) : 'bondage'));
     } else if (leaf === 'investigations') {
       investigationId = investigationId || parts[4] || '';
       const sub = parts[5] || '';
@@ -9162,6 +9758,9 @@ export default {
   async fetch(req, env) {
     const u = new URL(req.url);
     if (req.method === 'OPTIONS') return new Response('', { headers: cors(req) });
+    if (u.pathname.startsWith('/.well-known/') || u.pathname.startsWith('/oauth/')) return handleOauth(req, env);
+    if ((u.pathname === '/privacy' || u.pathname === '/api/v1/privacy') && req.method === 'GET') return privacyResponse(req);
+    if (u.pathname === '/mcp' || u.pathname === '/mcp/') return handleMcp(req, env);
     if (u.pathname === '/health' && req.method === 'GET') {
       const ai = getAiConfig(env);
       return json({
@@ -9176,11 +9775,11 @@ export default {
         configured: ai.configured,
         browserTest: browserTestDescriptor(env),
         testRoutes: ['/test', '/browser-test', '/api/v1/browser-test-session'],
-        routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize', '/api', '/api/v1', '/test', '/browser-test'],
+        routes: ['/health', '/search', '/classify', '/retrieve', '/source', '/img', '/dive', '/learn', '/chat', '/analyze', '/synthesize', '/api', '/api/v1', '/mcp', '/oauth/authorize', '/privacy', '/test', '/browser-test'],
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
         api: { docs: '/api', version: 'v1', samePipelineAsIphoneUi: true },
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants', 'v49.9-identity-verification', 'v49.9-persistent-queue', 'v49.9-visual-evidence-gate', 'v49.9-find-more-unique', 'v49.9-research-focus', 'v49.9-adaptive-lens-focus', 'v49.9-analyze-public-account', 'v49.11-exact-source-retrieval', 'v49.11-source-state-machine', 'v49.11-source-id-canonical-url', 'v49.12-investigation-workflow', 'v49.12-identity-first', 'v49.12-canonical-person', 'v49.12-visual-evidence-levels', 'v49.12-continuation-slices', 'v49.13-investigation-actions', 'v49.13-primary-dive-actions', 'v49.13-bondage-retrieval', 'v49.13-recreate-position', 'v49.14-person-image-results', 'v49.14-identity-surfaces', 'v49.14-source-url', 'v50-agent-testable', 'v50-person-thumbnails', 'v50-visual-pipeline-diagnostics', 'v50-progressive-dive', 'v50-machine-candidates', 'v50-machine-diagnostics'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants', 'v49.9-identity-verification', 'v49.9-persistent-queue', 'v49.9-visual-evidence-gate', 'v49.9-find-more-unique', 'v49.9-research-focus', 'v49.9-adaptive-lens-focus', 'v49.9-analyze-public-account', 'v49.11-exact-source-retrieval', 'v49.11-source-state-machine', 'v49.11-source-id-canonical-url', 'v49.12-investigation-workflow', 'v49.12-identity-first', 'v49.12-canonical-person', 'v49.12-visual-evidence-levels', 'v49.12-continuation-slices', 'v49.13-investigation-actions', 'v49.13-primary-dive-actions', 'v49.13-bondage-retrieval', 'v49.13-recreate-position', 'v49.14-person-image-results', 'v49.14-identity-surfaces', 'v49.14-source-url', 'v50-agent-testable', 'v50-person-thumbnails', 'v50-visual-pipeline-diagnostics', 'v50-progressive-dive', 'v50-machine-candidates', 'v50-machine-diagnostics', 'v50-machine-auth', 'v50-mcp', 'v50-oauth'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);

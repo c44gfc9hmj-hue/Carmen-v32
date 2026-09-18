@@ -97,6 +97,7 @@ jobs:
           node test-v49.13.mjs
           node test-v49.14.mjs
           node test-v50.mjs
+          node test-v50-auth.mjs
           node test-browser-test.mjs
 
       - name: Install Wrangler
@@ -118,13 +119,49 @@ jobs:
 
       - name: Configure CARMEN_API_KEY (never reuse API_KEY)
         run: |
-          if [ -z "$CARMEN_API_KEY" ]; then
-            echo "GitHub secret CARMEN_API_KEY is not set. Worker /api stays open unless the Worker already has CARMEN_API_KEY."
-            npx wrangler secret list --name carmen-iphone-v25 --format json || true
-            exit 0
+          set -euo pipefail
+          echo "=== Worker secret names (before put) ==="
+          npx wrangler secret list --name carmen-iphone-v25 --format json > /tmp/secret-list.raw 2>/tmp/secret-list.err || true
+          python3 - <<'PY'
+          import json
+          raw = open('/tmp/secret-list.raw').read()
+          start = raw.find('[')
+          raw = raw[start:] if start >= 0 else '[]'
+          try:
+            data = json.loads(raw)
+            names = [x.get('name','') if isinstance(x, dict) else str(x) for x in (data if isinstance(data, list) else [])]
+          except Exception:
+            names = []
+          print('names:', ','.join(names) if names else '(none)')
+          open('/tmp/worker-secret-names.txt','w').write('\n'.join(names))
+          PY
+          HAS_WORKER=0
+          if grep -qx 'CARMEN_API_KEY' /tmp/worker-secret-names.txt 2>/dev/null; then HAS_WORKER=1; fi
+          if [ -n "${CARMEN_API_KEY:-}" ]; then
+            printf '%s' "$CARMEN_API_KEY" | npx wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25
+            echo "CARMEN_API_KEY Worker secret updated from GitHub Actions secret (value not logged)."
+            echo "CARMEN_KEY_SOURCE=github" >> "$GITHUB_ENV"
+            {
+              echo 'CARMEN_API_KEY<<CARMEN_EOF'
+              printf '%s\n' "$CARMEN_API_KEY"
+              echo 'CARMEN_EOF'
+            } >> "$GITHUB_ENV"
+          elif [ "$HAS_WORKER" = "1" ]; then
+            echo "Worker already has CARMEN_API_KEY; GitHub secret is empty. Not rotating."
+            echo "CARMEN_KEY_SOURCE=worker-existing" >> "$GITHUB_ENV"
+          else
+            GEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+            echo "::add-mask::$GEN"
+            printf '%s' "$GEN" | npx wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25
+            echo "CARMEN_KEY_SOURCE=generated" >> "$GITHUB_ENV"
+            {
+              echo 'CARMEN_API_KEY<<CARMEN_EOF'
+              printf '%s\n' "$GEN"
+              echo 'CARMEN_EOF'
+            } >> "$GITHUB_ENV"
+            echo "Generated CARMEN_API_KEY and put it on the Worker (value masked, not recoverable from logs)."
+            echo "To use ChatGPT, set GitHub Actions secret CARMEN_API_KEY to a value you hold, then re-run this workflow."
           fi
-          printf '%s' "$CARMEN_API_KEY" | npx wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25
-          echo "CARMEN_API_KEY Worker secret updated (value not logged)."
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -139,7 +176,40 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Production machine-API fixture smoke
-        run: node machine-smoke.mjs --fixture
+        run: |
+          set -euo pipefail
+          ORIGIN=https://carmen-iphone-v25.94bwfd5grv.workers.dev
+          echo "=== unauthenticated POST /api/v1/machine/search must 401 ==="
+          CODE=000
+          for i in 1 2 3 4 5 6; do
+            CODE=$(curl -sS -o /tmp/unauth.json -w '%{http_code}' -X POST \
+              -H 'content-type: application/json' \
+              -d '{"query":"Drea Morgan","fixture":"drea-intersection"}' \
+              "$ORIGIN/api/v1/machine/search" || echo 000)
+            echo "attempt $i unauth HTTP $CODE"
+            if [ "$CODE" = "401" ]; then break; fi
+            sleep 3
+          done
+          if [ "$CODE" != "401" ]; then
+            echo "FAIL: expected 401, got $CODE"
+            python3 -c 'print(open("/tmp/unauth.json").read()[:500])' || true
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          d=json.load(open("/tmp/unauth.json"))
+          assert d.get("error")=="Unauthorized", d
+          s=json.dumps(d)
+          assert "token_urlsafe" not in s
+          print("unauth 401 body ok, no secret")
+          PY
+          curl -sS "$ORIGIN/api/v1/health" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("machineAuthConfigured") is True, d; print("machineAuthConfigured true")'
+          if [ -n "${CARMEN_API_KEY:-}" ]; then
+            echo "=== authorized fixture smoke (key present in job env, value not printed) ==="
+            CARMEN_REQUIRE_AUTH=1 node machine-smoke.mjs --fixture
+          else
+            echo "Authorized smoke skipped: this job does not hold CARMEN_API_KEY (Worker already had one). Unauth 401 verified."
+          fi
         env:
           CARMEN_API_ORIGIN: https://carmen-iphone-v25.94bwfd5grv.workers.dev
-          CARMEN_API_KEY: ${{ secrets.CARMEN_API_KEY }}
+          CARMEN_REQUIRE_AUTH: "1"

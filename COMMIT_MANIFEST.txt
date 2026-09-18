@@ -22,3 +22,13 @@ Does not rebuild Carmen. Does not redesign Deep Dive. Does not mock retrieval.
   images are preserved.
 
 Build identifier: **50-agent-testable-progressive**.
+
+v50 auth + ChatGPT MCP (same VERSION 50 / 50-agent-testable-progressive)
+-----------------------------------------------------------------------
+Does not redesign search, Deep Dive, thumbnails, Bondage, Visuals, Find More, or Ask.
+
+- Machine routes require dedicated Worker secret CARMEN_API_KEY (never API_KEY).
+- Unauthorized POST /api/v1/machine/* → 401 WWW-Authenticate Bearer. PWA GET /search, POST /dive, POST /analyze stay public.
+- Deploy generate-if-missing: if GitHub secret CARMEN_API_KEY is empty and the Worker has none, wrangler secret put a generated key so production is not left open. User-held GitHub secret is required for ChatGPT.
+- ChatGPT integration layer: Streamable HTTP MCP at /mcp wrapping the same handleCarmenApi/runDiscovery tools; OAuth 2.1 (PKCE + DCR) at /oauth/* plus /.well-known/oauth-protected-resource so Developer Mode connectors can connect. Custom GPT Actions remain documented until GPTs retire.
+- Public GET /api/v1/chatgpt-setup and /privacy. This Grok session cannot log into ChatGPT.

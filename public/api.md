@@ -35,23 +35,42 @@ Send one of:
 - `X-Carmen-Api-Key: <CARMEN_API_KEY>`
 - `X-Carmen-Test-Key: <CARMEN_TEST_KEY>` (alias if that secret is set)
 
-If no machine key is configured, `/api` remains open (same as v49.3). The PWA
-`GET /search`, `POST /dive`, and `POST /analyze` routes never require the
-machine key.
+If no machine key is configured, `/api` remains open for local tests. Production
+deploy generates or applies `CARMEN_API_KEY` so live machine routes require
+auth. The PWA `GET /search`, `POST /dive`, and `POST /analyze` routes never
+require the machine key.
 
 Never send `API_KEY` / OpenRouter credentials to these routes.
 
-One-time secret configuration (do this once; do not commit the value):
+### How to set the secret (do not commit the value)
+
+**Preferred (you hold the key ChatGPT will use):**
+
+1. GitHub → `c44gfc9hmj-hue/Carmen-v32` → **Settings → Secrets and variables → Actions**
+2. New repository secret named exactly **`CARMEN_API_KEY`**. Do **not** reuse `API_KEY`.
+3. Re-run the **Deploy to Cloudflare Workers** workflow. The job runs
+   `wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25`.
+4. Confirm `GET /api/v1/health` reports `machineAuthConfigured: true`.
+
+**CLI equivalent:**
 
 ```bash
 npx wrangler secret put CARMEN_API_KEY --name carmen-iphone-v25
 ```
 
-Also set the GitHub Actions secret `CARMEN_API_KEY` so deploy can push it.
-Do not reuse `API_KEY`.
+If the GitHub secret is missing and the Worker has no `CARMEN_API_KEY` yet,
+deploy **generates** one so production is not left open. That generated value
+is masked in logs and is **not recoverable**. ChatGPT cannot use it until you
+create the GitHub secret above with a value you hold and re-deploy.
 
 `GET /api/v1/health` and `GET /api/v1/machine/capabilities` report
 `machineAuthConfigured` (boolean only — never the secret).
+
+Unauthorized machine requests return **401** with `error: "Unauthorized"` and
+`WWW-Authenticate: Bearer realm="Carmen"`. They never echo the key.
+
+ChatGPT MCP uses the same key via OAuth (`/oauth/authorize`) or Bearer.
+See [CHATGPT.md](CHATGPT.md) and `GET /api/v1/chatgpt-setup`.
 
 ## Canonical machine-agent sequence
 
@@ -277,14 +296,17 @@ failureReason, isEvidenceItem, isDiscoveryLead, ownershipClass, accessState.
 Ownership classes: CONFIRMED CREATOR-OWNED, LIKELY CREATOR-OWNED,
 DIRECTORY CLAIM, FAN/REPOSTER, MIRROR, UNVERIFIED, UNKNOWN.
 
-## ChatGPT Custom GPT / Actions setup
+## ChatGPT Custom GPT / Actions / MCP setup
 
 See [CHATGPT.md](CHATGPT.md). Short version:
 
-1. Import `https://carmen-iphone-v25.94bwfd5grv.workers.dev/api/v1/openapi.json`
-2. Auth: None until `CARMEN_API_KEY` exists; then API Key → Bearer
-3. Instruct the GPT to echo `investigationState` on every subsequent call
-4. A normal ChatGPT chat cannot call this API until that Action is configured
+1. Confirm `machineAuthConfigured: true` on `/api/v1/health`
+2. **MCP (current ChatGPT path):** connector URL `/mcp`, Authentication OAuth (or Bearer header). Same `runDiscovery` tools.
+3. **Custom GPT Actions (until GPTs retire):** import `/api/v1/openapi.json`, Auth = API Key → Bearer = `CARMEN_API_KEY`
+4. Instruct the agent to echo `investigationState` on every subsequent call
+5. A normal ChatGPT chat cannot call this API until that connector/Action is configured. This Grok session cannot do that click for you.
+
+Live setup JSON: `GET /api/v1/chatgpt-setup` (no secrets).
 
 Smoke test:
 

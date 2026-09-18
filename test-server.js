@@ -12,6 +12,8 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
 const env = {
   API_KEY: process.env.API_KEY || undefined,
   Api_key: process.env.Api_key || process.env.API_KEY || undefined,
+  CARMEN_API_KEY: process.env.CARMEN_API_KEY || undefined,
+  CARMEN_TEST_KEY: process.env.CARMEN_TEST_KEY || undefined,
   MODEL: process.env.MODEL,
   API_URL: process.env.API_URL,
   ASSETS: {
