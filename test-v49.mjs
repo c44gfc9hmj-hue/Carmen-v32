@@ -15,10 +15,10 @@ const appSrc = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8')
 
 console.log('--- v49 source / UX contracts ---');
 {
-  assert(/49\.(?:[3-9]|11|12|13)/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION current');
+  assert(/49\.(?:[3-9]|11|12|13|14)/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION current');
   assert(/const VERSION = '49\.\d+'/.test(appSrc), 'frontend VERSION 49.x');
 
-  assert(/carmen-build" content="49\.(?:[3-9]|11|12|13)"/.test(html), 'html build current');
+  assert(/carmen-build" content="49\.(?:[3-9]|11|12|13|14)"/.test(html), 'html build current');
   assert(/What are you curious about\?/.test(html), 'home curiosity prompt');
   assert(/id="diveSearchQuery"/.test(html), 'persistent dive search');
   assert(/id="diveStream"/.test(html), 'dive stream');
@@ -94,8 +94,8 @@ console.log('--- v49 health ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.13' || body.version === '49.12' || body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7' || body.version === '49.6' || body.version === '49.5' || body.version === '49.4' || body.version === '49.3', 'health version current');
-  assert(/49.(3|4|5|6|7|8|9|11|12|13)/.test(body.build || ''), 'health build current');
+  assert(body.version === '49.14' || body.version === '49.13' || body.version === '49.12' || body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7' || body.version === '49.6' || body.version === '49.5' || body.version === '49.4' || body.version === '49.3', 'health version current');
+  assert(/49.(3|4|5|6|7|8|9|11|12|13|14)/.test(body.build || ''), 'health build current');
   assert((body.features || []).includes('v49-dive-context-search'), 'feature flag dive-context-search');
   assert((body.features || []).includes('v49.2-topic-map-retrieval'), 'feature flag topic-map-retrieval');
   assert((body.features || []).includes('v49.3-chatgpt-access'), 'feature flag chatgpt-access');

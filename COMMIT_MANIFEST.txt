@@ -1,21 +1,20 @@
-Carmen v49.13 (49.13-investigation-actions) — investigation actions
-====================================================================
-Parent: 3b12ddb (v49.12 identity-first investigation workflow)
+Carmen v49.14 (49.14-person-image-results) — person selection + image results
+================================================================================
+Parent: 4f33eae (revert VERSION bump until v49.14 sources land)
 
-Incremental production fix. Extends the v49.12 planner + worker engine.
-Does not rebuild Carmen.
+Incremental production fix. Extends the v49.13 planner + worker engine.
+Does not rebuild Carmen. Does not redesign Deep Dive.
 
-- PRIMARY Deep Dive controls: Bondage, Visuals, Accounts/Premium, Find More, Ask.
-- People is not a primary Deep Dive tab (evidence-driven internally).
-- Dashboard tabs (Overview/Evidence/…) are secondary “More views”.
-- Bondage is a real entity-specific retrieval: confirmed person × bondage,
-  then semantic expansion. Not a tab filter. Not generic bondage.
-- Visuals = images + videos + galleries associated with the confirmed person.
-- Ask this investigation parses into planner branches on the current case.
-- Recreate this position analyzes the selected image/video and searches
-  instructional sources; the selected source remains the anchor.
-- Adaptive Lens for PERSON+VISUALS / PERSON+CAREER / TUTORIAL / TOPIC
-  matches the selected Research Focus.
-- v49.11 exact-source and v49.12 identity-first behavior are preserved.
+- Distinct identity surfaces stay distinct unless they corroborate.
+  Sharing an unspecified role is not a merge key.
+- Each presented person candidate carries sourceUrl / sampleUrl.
+- Open/View Source uses the stored source URL, not the image URL.
+- Thumbnails come only from that candidate's own images.
+- Image-index hits keep imageUrl and sourceUrl separate.
+- Multiple unique images survive; duplicates collapse by image identity.
+- Same-host / same-gallery-page images are not collapsed into one result.
+- Provider/retrieval metadata survives on visual hits.
+- Unverified images stay unlabeled as verified.
+- Incomplete apply-v49.14.sh hook removed; sources land in the tree.
 
-Build identifier: **49.13-investigation-actions**.
+Build identifier: **49.14-person-image-results**.

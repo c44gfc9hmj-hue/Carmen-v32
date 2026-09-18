@@ -16,7 +16,7 @@ function assert(cond, msg) {
 console.log('--- /health ---');
 { const { status, body } = await call('/health');
   assert(status === 200, 'health 200');
-  assert(body.version === '49.13' || body.version === '49.12' || body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7' || body.version === '49.6' || body.version === '49.5' || body.version === '49.4' || body.version === '49.3', 'version current');
+  assert(body.version === '49.14' || body.version === '49.13' || body.version === '49.12' || body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7' || body.version === '49.6' || body.version === '49.5' || body.version === '49.4' || body.version === '49.3', 'version current');
   assert(body.routes.includes('/retrieve'), 'routes include /retrieve');
   assert(body.routes.includes('/dive'), 'routes include /dive');
   assert(body.routes.includes('/learn'), 'routes include /learn');
@@ -68,7 +68,7 @@ console.log('--- /health ---');
   assert(body.features.includes('v48-focus-modes'), 'features include v48-focus-modes');
   assert(body.features.includes('v49-investigation-loop'), 'features include v49-investigation-loop');
   assert(body.features.includes('v49-dive-context-search'), 'features include v49-dive-context-search');
-  assert(body.build === '49.13-investigation-actions' || body.build === '49.12-investigation-workflow' || body.build === '49.11-exact-source-retrieval' || body.build === '49.9-identity-queue-visual' || body.build === '49.8-adaptive-investigation' || body.build === '49.7-retrieval-engine' || body.build === '49.6-correctness-ux' || body.build === '49.5-adult-first-nl' || body.build === '49.4-deep-dive-lenses' || body.build === '49.3-chatgpt-access', 'build current');
+  assert(body.build === '49.14-person-image-results' || body.build === '49.13-investigation-actions' || body.build === '49.12-investigation-workflow' || body.build === '49.11-exact-source-retrieval' || body.build === '49.9-identity-queue-visual' || body.build === '49.8-adaptive-investigation' || body.build === '49.7-retrieval-engine' || body.build === '49.6-correctness-ux' || body.build === '49.5-adult-first-nl' || body.build === '49.4-deep-dive-lenses' || body.build === '49.3-chatgpt-access', 'build current');
   assert(body.provider === 'openrouter', 'provider openrouter');
   assert(body.model === 'openrouter/free', 'model openrouter/free');
   assert(body.configured === false, 'configured false without key'); }

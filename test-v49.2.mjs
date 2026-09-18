@@ -52,14 +52,14 @@ const plannerSrc = readFileSync(new URL('./investigation-planner.js', import.met
 
 console.log('--- v49.2 version / source contracts ---');
 {
-  assert(PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5' || PLANNER_VERSION === '49.4' || PLANNER_VERSION === '49.3' || PLANNER_VERSION === '49.2', 'PLANNER_VERSION current');
+  assert(PLANNER_VERSION === '49.14' || PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5' || PLANNER_VERSION === '49.4' || PLANNER_VERSION === '49.3' || PLANNER_VERSION === '49.2', 'PLANNER_VERSION current');
 
-  assert(/49\.(?:2|3|4|5|6|7|8|9|11|12|13)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
-  assert(/49\.(?:[2-9]|11|12|13)/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION file');
-  assert(/const VERSION = '49\.(?:[2-9]|11|12|13)'/.test(appSrc), 'frontend VERSION');
+  assert(/49\.(?:2|3|4|5|6|7|8|9|11|12|13|14)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
+  assert(/49\.(?:[2-9]|11|12|13|14)/.test(readFileSync(new URL('./VERSION', import.meta.url), 'utf8')), 'VERSION file');
+  assert(/const VERSION = '49\.(?:[2-9]|11|12|13|14)'/.test(appSrc), 'frontend VERSION');
 
-  assert(/carmen-build" content="49\.(?:[2-9]|11|12|13)"/.test(html), 'html build');
-  assert(/carmen-v49\.(?:[2-9]|11|12|13)/.test(readFileSync(new URL('./public/sw.js', import.meta.url), 'utf8')), 'sw cache');
+  assert(/carmen-build" content="49\.(?:[2-9]|11|12|13|14)"/.test(html), 'html build');
+  assert(/carmen-v49\.(?:[2-9]|11|12|13|14)/.test(readFileSync(new URL('./public/sw.js', import.meta.url), 'utf8')), 'sw cache');
   assert(/from '\.\/investigation-planner\.js'/.test(workerSrc), 'worker imports planner');
   assert(/hardNewInvestigation/.test(appSrc) && /renderTopicMap/.test(appSrc), 'frontend topic map + hard reset');
   assert(/findEverything/.test(appSrc) && /rejectedPeople/.test(appSrc) && /confirmedIdentity/.test(appSrc), 'frontend planner params');
@@ -295,8 +295,8 @@ console.log('--- v49.2 health ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.13' || body.version === '49.12' || body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7' || body.version === '49.6' || body.version === '49.5' || body.version === '49.4' || body.version === '49.3' || body.version === '49.2', 'health version');
-  assert(/49\.(2|3|4|5|6|7|8|9|11|12|13)/.test(body.build || ''), 'health build');
+  assert(body.version === '49.14' || body.version === '49.13' || body.version === '49.12' || body.version === '49.11' || body.version === '49.9' || body.version === '49.8' || body.version === '49.7' || body.version === '49.6' || body.version === '49.5' || body.version === '49.4' || body.version === '49.3' || body.version === '49.2', 'health version');
+  assert(/49\.(2|3|4|5|6|7|8|9|11|12|13|14)/.test(body.build || ''), 'health build');
   for (const f of ['v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access']) {
     assert((body.features || []).includes(f), 'feature ' + f);
   }

@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.13';
+const VERSION = '49.14';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -899,7 +899,7 @@ async function persistDiscoveryIfKept() {
   p.query = disc.query;
   p.adultContent = currentAdult;
   p.researchDepth = currentDepth;
-  p.thumbnail = selectedCandidate?.image || lastResults[0]?.image || p.thumbnail;
+  p.thumbnail = selectedCandidate?.image || selectedCandidate?.imageUrl || (canonicalPerson && (canonicalPerson.representativeImages || [])[0]) || p.thumbnail;
   p.updatedAt = disc.at;
   await put('projects', p);
 }
@@ -920,7 +920,7 @@ async function keepInvestigation(nameHint) {
       entityType: lastClassification?.type || currentSubject || '',
       adultContent: currentAdult,
       researchDepth: currentDepth,
-      thumbnail: selectedCandidate?.image || lastResults[0]?.image || '',
+      thumbnail: selectedCandidate?.image || selectedCandidate?.imageUrl || (canonicalPerson && (canonicalPerson.representativeImages || [])[0]) || '',
       query: q,
       createdAt: now,
       updatedAt: now,
@@ -1593,7 +1593,7 @@ function renderIdentityVerification(data) {
   const html = `<div class="tinder-wrap id-verify" data-testid="identity-verify">
     <p class="flabel">Who is this?</p>
     <p class="hint">${esc(pack.reason || 'Confirm the person. Rejection applies only to this candidate.')}</p>
-    <article class="tinder-card id-card" data-testid="identity-card" data-cand="${i}" data-candidate-id="${esc(c.candidateId || '')}">
+    <article class="tinder-card id-card" data-testid="identity-card" data-cand="${i}" data-candidate-id="${esc(c.candidateId || '')}" data-source-url="${esc(c.sourceUrl || c.sampleUrl || '')}">
       ${hero ? `<img class="hero" src="${esc(imgSrc(hero))}" alt="${esc(c.name || '')}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
       <div class="rbody">
         <p class="pname">${esc(c.name || 'Unknown candidate')}</p>
@@ -1607,6 +1607,7 @@ function renderIdentityVerification(data) {
         <div class="racts" style="flex-direction:column">
           <button class="btn primary tinder-yes" data-idact="yes" data-testid="identity-confirm" data-cand="${i}">YES — THIS PERSON</button>
           <button class="btn tinder-no" data-idact="no" data-testid="identity-reject" data-cand="${i}">NOT THIS PERSON</button>
+          ${(c.sourceUrl || c.sampleUrl) ? `<a class="btn" href="${esc(c.sourceUrl || c.sampleUrl)}" target="_blank" rel="noopener noreferrer" data-testid="identity-open-source" data-source-url="${esc(c.sourceUrl || c.sampleUrl)}">View source</a>` : ''}
         </div>
         ${cands.length > 1 ? `<div class="tinder-dots">${cands.map((_, d) => '<span' + (d === i ? ' class="on"' : '') + '></span>').join('')}</div><p class="hint" style="text-align:center">${i + 1} of ${cands.length}</p>` : ''}
       </div>
@@ -1680,10 +1681,11 @@ function renderVisualCorpus() {
     return;
   }
   const gallery = visuals.map(im => ({
-    src: imgSrc(im.url || im.src),
-    cap: [im.title || im.caption || im.reason, im.domain, im.pageUrl || im.url].filter(Boolean).join(' · '),
-    pageUrl: im.pageUrl || im.url || '',
-    url: im.url,
+    src: imgSrc(im.imageUrl || im.url || im.src),
+    cap: [im.title || im.caption || im.reason, im.domain, im.sourceUrl || im.pageUrl || ''].filter(Boolean).join(' · '),
+    pageUrl: im.sourceUrl || im.pageUrl || '',
+    sourceUrl: im.sourceUrl || im.pageUrl || '',
+    url: im.imageUrl || im.url,
     title: im.title || im.caption || '',
     domain: im.domain || '',
   }));
@@ -1782,7 +1784,7 @@ function renderPersonRail() {
     const selected = (selectedCandidate && selectedCandidate.url === r.url) || (selectedEntity && selectedEntity.url === r.url);
     const kind = r.resultKind || '';
     const ctx = extraContextText(lastClassification);
-    return `<article class="person-tile${selected ? ' selected' : ''}" data-testid="person-tile" data-identify="${idx}" data-i="${idx}" data-source-url="${esc(r.url || '')}">
+    return `<article class="person-tile${selected ? ' selected' : ''}" data-testid="person-tile" data-identify="${idx}" data-i="${idx}" data-source-url="${esc(r.sourceUrl || r.url || '')}">
       ${hero ? `<img class="hero" data-testid="result-image" data-identify="${idx}" src="${esc(imgSrc(hero))}" alt="${esc(subjectName)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
       <div class="rbody">
         <p class="pname">${esc(subjectName)}</p>
@@ -2077,7 +2079,7 @@ function showLightboxSlide() {
   const loc = n > 1 ? (lightboxIndex + 1) + ' of ' + n : '';
   if ($('lightboxPos')) $('lightboxPos').textContent = loc;
   $('lightboxCap').textContent = (item.cap || item.caption || 'Image keeps its page provenance. Visual consistency is not identity proof.') + (loc ? ' · ' + loc : '');
-  lightboxSourceUrl = item.pageUrl || item.sourceUrl || '';
+  lightboxSourceUrl = item.sourceUrl || item.pageUrl || '';
   if ($('lightboxPrev')) $('lightboxPrev').disabled = lightboxIndex <= 0;
   if ($('lightboxNext')) $('lightboxNext').disabled = lightboxIndex >= n - 1;
   const rel = $('lightboxRelated');
@@ -2290,7 +2292,7 @@ function resultCardHtml(r, i, isPersonType) {
   const personCard = isPersonType || r.entityType === 'person';
   const displayName = personCard ? (lastClassification?.subject || r.title) : r.title;
   const ev = evidenceBadges(r);
-  return `<div class="result${selected ? ' selected' : ''}${personCard ? ' person' : ''}${r.intersection ? ' direct' : ''}" data-testid="result-card" data-source-url="${esc(r.url || '')}" data-i="${i}"${personCard ? ` data-identify="${i}"` : ''}>
+  return `<div class="result${selected ? ' selected' : ''}${personCard ? ' person' : ''}${r.intersection ? ' direct' : ''}" data-testid="result-card" data-source-url="${esc(r.sourceUrl || r.url || '')}" data-i="${i}"${personCard ? ` data-identify="${i}"` : ''}>
       ${hero ? `<img class="hero" data-testid="result-image"${personCard ? ` data-identify="${i}"` : ''} data-full="${esc(imgSrc(hero))}" data-cap="${esc((r.domain || '') + ' · ' + (r.url || ''))}" src="${esc(imgSrc(hero))}" alt="${esc(displayName)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
       <div class="rbody">
         <div class="rtitle">${esc(displayName)}</div>
@@ -2314,7 +2316,7 @@ function resultCardHtml(r, i, isPersonType) {
           <button data-ract="select" data-testid="${personCard ? 'identity-confirm' : 'result-select'}" data-i="${i}">${selected ? (personCard ? 'That’s the one' : 'Selected') : (personCard ? 'That’s the one' : 'Select')}</button>
           <button data-ract="dive" data-testid="result-deep-dive" data-i="${i}">Deep Dive</button>
           <button data-ract="save" data-testid="result-save" data-i="${i}">Save</button>
-          <button data-ract="open" data-testid="result-open" data-source-url="${esc(r.url || '')}" data-i="${i}">Open source</button>
+          <button data-ract="open" data-testid="result-open" data-source-url="${esc(r.sourceUrl || r.pageUrl || r.url || '')}" data-i="${i}">Open source</button>
           ${personCard ? `<button data-ract="notperson" data-testid="identity-reject" data-i="${i}">Not this person</button>` : ''}
           <button data-ract="analyze" data-testid="result-analyze" data-i="${i}">Analyze</button>
         </div>
@@ -4527,8 +4529,8 @@ function wire() {
     const im = lastVisuals[i];
     if (!im) return;
     selectedVisual = im;
-    const gallery = ($('visualCorpus')._gallery) || lastVisuals.map(x => ({ src: imgSrc(x.url), cap: [x.title || x.caption, x.domain, x.pageUrl || x.url].filter(Boolean).join(' · '), pageUrl: x.pageUrl || x.url || '', url: x.url, title: x.title || '', domain: x.domain || '' }));
-    openLightbox(imgSrc(im.url), [im.title || im.caption, im.domain, im.pageUrl || im.url].filter(Boolean).join(' · '), gallery, i, im.pageUrl || im.url);
+    const gallery = ($('visualCorpus')._gallery) || lastVisuals.map(x => ({ src: imgSrc(x.imageUrl || x.url), cap: [x.title || x.caption, x.domain, x.sourceUrl || x.pageUrl || ''].filter(Boolean).join(' · '), pageUrl: x.sourceUrl || x.pageUrl || '', sourceUrl: x.sourceUrl || x.pageUrl || '', url: x.imageUrl || x.url, title: x.title || '', domain: x.domain || '' }));
+    openLightbox(imgSrc(im.imageUrl || im.url), [im.title || im.caption, im.domain, im.sourceUrl || im.pageUrl || ''].filter(Boolean).join(' · '), gallery, i, im.sourceUrl || im.pageUrl || '');
     persistSession();
   });
   function identifyFromEvent(e, root) {
@@ -4562,7 +4564,7 @@ function wire() {
     }
     const hit = identifyFromEvent(e, $('results'));
     if (!hit) return;
-    if (hit.act === 'open') { window.open(hit.r.url, '_blank', 'noopener,noreferrer'); return; }
+    if (hit.act === 'open') { window.open(hit.r.sourceUrl || hit.r.pageUrl || hit.r.url, '_blank', 'noopener,noreferrer'); return; }
     if (hit.act === 'evidence') { await saveResultAsEvidence(hit.r); return; }
     if (hit.act === 'save') { await openSaveSheet({ kind: 'page', title: hit.r.title, url: hit.r.url, image: hit.r.image, domain: hit.r.domain, provenance: hit.r.provenance, sourceUrl: hit.r.url }); return; }
     if (hit.act === 'queue') { await queueFromResult(hit.r); return; }
@@ -4572,6 +4574,7 @@ function wire() {
     if (hit.act === 'notperson') rejectPerson(hit.r);
   };
   function handleIdentityCard(e) {
+    if (e.target.closest('a[data-source-url], a[data-testid="identity-open-source"]')) return true;
     const act = e.target.closest('[data-idact]');
     if (!act) return false;
     const pack = lastIdentityVerification || (lastDiscoveryMeta && lastDiscoveryMeta.identityVerification);
@@ -4632,7 +4635,7 @@ function wire() {
     }
     const hit = identifyFromEvent(e, $('personRail'));
     if (!hit) return;
-    if (hit.act === 'open') { window.open(hit.r.url, '_blank', 'noopener,noreferrer'); return; }
+    if (hit.act === 'open') { window.open(hit.r.sourceUrl || hit.r.pageUrl || hit.r.url, '_blank', 'noopener,noreferrer'); return; }
     if (hit.act === 'evidence') { await saveResultAsEvidence(hit.r); return; }
     if (hit.act === 'save') { await openSaveSheet({ kind: 'page', title: hit.r.title, url: hit.r.url, image: hit.r.image, domain: hit.r.domain, provenance: hit.r.provenance, sourceUrl: hit.r.url }); return; }
     selectCandidate(hit.r, hit.i);

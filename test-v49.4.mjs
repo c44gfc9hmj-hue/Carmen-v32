@@ -40,10 +40,10 @@ const workerSrc = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
 
 console.log('--- v49.4 version / Bondage button restored ---');
 {
-  assert(PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5' || PLANNER_VERSION === '49.4', 'PLANNER_VERSION current');
-  assert(/49.(?:4|5|6|7|8|9|11|12|13)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
-  assert(/const VERSION = '49\.(?:[4-9]|11|12|13)'/.test(appSrc), 'frontend VERSION');
-  assert(/carmen-build" content="49\.(?:[4-9]|11|12|13)"/.test(html), 'html build');
+  assert(PLANNER_VERSION === '49.14' || PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5' || PLANNER_VERSION === '49.4', 'PLANNER_VERSION current');
+  assert(/49.(?:4|5|6|7|8|9|11|12|13|14)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.(?:[4-9]|11|12|13|14)'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.(?:[4-9]|11|12|13|14)"/.test(html), 'html build');
   assert(/id="diveBondageBtn"/.test(html) && />Bondage</.test(html), 'Bondage Deep Dive button is visible');
   assert(/id="divePeopleBtn"/.test(html) && />People</.test(html), 'People Deep Dive button is visible');
   assert(/id="diveVisualsBtn"/.test(html) && />Visuals</.test(html), 'Visuals Deep Dive button is visible');

@@ -36,11 +36,11 @@ const plannerSrc = readFileSync(new URL('./investigation-planner.js', import.met
 
 console.log('--- v49.13 version / primary investigation actions ---');
 {
-  assert(PLANNER_VERSION === '49.13', 'PLANNER_VERSION 49.13');
-  assert(PLANNER_BUILD === '49.13-investigation-actions', 'PLANNER_BUILD');
-  assert(appSrc.includes("const VERSION = '49.13'"), 'frontend VERSION');
-  assert(/carmen-build" content="49\.13"/.test(html), 'html build');
-  assert(/v49\.13/.test(html), 'header shows version');
+  assert(PLANNER_VERSION === '49.14' || PLANNER_VERSION === '49.13', 'PLANNER_VERSION 49.13');
+  assert(PLANNER_BUILD === '49.14-person-image-results' || PLANNER_BUILD === '49.13-investigation-actions', 'PLANNER_BUILD');
+  assert(appSrc.includes("const VERSION = '49.14'") || appSrc.includes("const VERSION = '49.13'"), 'frontend VERSION');
+  assert(/carmen-build" content="49\.(14|13)"/.test(html), 'html build');
+  assert(/v49\.1[34]/.test(html), 'header shows version');
   assert(PRIMARY_DIVE_LENSES.map(l => l.id).join(',') === 'bondage,visuals,accounts', 'primary lenses Bondage/Visuals/Accounts');
   assert(SECONDARY_DIVE_LENSES.map(l => l.id).includes('people'), 'People remains a secondary/internal lens');
   assert(/id="diveBondageBtn"/.test(html) && !/<button class="btn ghost hidden" id="diveBondageBtn"/.test(html), 'Bondage is a visible primary control');
@@ -163,8 +163,8 @@ console.log('--- health ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.13' && body.build === '49.13-investigation-actions', 'health reports 49.13');
-  assert((body.features || []).includes('v49.13-investigation-actions'), 'feature investigation-actions');
+  assert((body.version === '49.14' || body.version === '49.13') && (body.build === '49.14-person-image-results' || body.build === '49.13-investigation-actions'), 'health reports current');
+  assert((body.features || []).includes('v49.14-person-image-results') || (body.features || []).includes('v49.13-investigation-actions'), 'feature investigation-actions');
   assert((body.features || []).includes('v49.13-bondage-retrieval'), 'feature bondage-retrieval');
   assert((body.features || []).includes('v49.13-recreate-position'), 'feature recreate-position');
   assert((body.features || []).includes('v49.12-investigation-workflow'), 'v49.12 retained');

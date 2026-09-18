@@ -4,6 +4,14 @@
 // then opens source-class lanes (especially adult) instead of stuffing
 // tokens into one search string.
 //
+// v49.14: Person-selection and image-result production fix
+// (49.14-person-image-results). Distinct identity surfaces stay distinct
+// unless they actually corroborate — sharing an unspecified role is not a
+// merge key. Image-index hits keep imageUrl and sourceUrl separate; unique
+// images from the same host or gallery page survive; duplicates collapse
+// by image identity only. Source metadata is required on every presented
+// candidate. Deep Dive investigation actions are unchanged.
+//
 // v49.13: Product-correction of the investigation workspace. Primary Deep Dive
 // actions are Bondage / Visuals / Accounts-Premium / Find More / Ask. Bondage
 // is an entity-specific retrieval (X + bondage), not a tab filter. Visuals
@@ -59,8 +67,8 @@
 // This module is self-contained: no import from worker.js (avoids cycles).
 // worker.js imports it. The machine-readable API uses these same functions.
 
-export const PLANNER_VERSION = '49.13';
-export const PLANNER_BUILD = '49.13-investigation-actions';
+export const PLANNER_VERSION = '49.14';
+export const PLANNER_BUILD = '49.14-person-image-results';
 
 function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
@@ -2105,7 +2113,7 @@ export function competingIdentityCandidates(ranked, classification, opts = {}) {
     const sc = r.sourceClass || '';
     return sc === 'DATABASE' || sc === 'PRIMARY' || sc === 'PUBLIC_PROFILE' || sc === 'ENCYCLOPEDIA' || (r.evidence && r.evidence.subjectEvidence === 'strong') || r.subjectEvidence === 'strong';
   });
-  const clusters = clusterByIdentity(onName.length ? onName : usable);
+  const clusters = clusterByIdentity(onName.length ? onName : usable, subject);
   const confirmed = (opts.identityFeedback && opts.identityFeedback.confirmed) || (classification && classification.identityFeedback && classification.identityFeedback.confirmed) || [];
   if (confirmed.length) {
     return { ambiguous: false, reason: 'user confirmed identity', candidates: clusters.slice(0, 6), userConfirmed: true };
@@ -2188,39 +2196,55 @@ function addToIdentityCluster(c, r) {
   c.evidence = c.evidence.slice(0, 8);
 }
 
-function clusterByIdentity(rows) {
+const IDENTITY_GRADE_HOST_RE = /(iafd|adultfilmdatabase|babepedia|wikipedia|imdb|indexxx|freeones|loyalfans|onlyfans|houseofgord|clips4sale|data18)/i;
+const IDENTITY_CORROBORATION_CLASSES = new Set(['DATABASE', 'PRIMARY', 'ADULT_PLATFORM', 'ENCYCLOPEDIA']);
+
+function isIdentityGradeSurface(row) {
+  if (!row) return false;
+  const sc = String(row.sourceClass || '').toUpperCase();
+  if (IDENTITY_CORROBORATION_CLASSES.has(sc)) return true;
+  const host = String(row.domain || hostOf(row.url || row.sampleUrl || '') || '').replace(/^www\./, '');
+  return IDENTITY_GRADE_HOST_RE.test(host);
+}
+
+function rowHasFullSubjectName(row, subject) {
+  const toks = tokens(subject).filter(t => t.length > 1);
+  if (toks.length < 2) return false;
+  return includesAll(identityEvidenceText(row) + ' ' + ((row && (row.url || row.sampleUrl)) || '') + ' ' + ((row && row.title) || ''), toks);
+}
+
+function identitySurfacesCorroborate(cluster, row, subject) {
+  if (!cluster || !row) return false;
+  const host = String(row.domain || hostOf(row.url || '') || '').replace(/^www\./, '');
+  if (host && (cluster.host === host || (cluster.sourceDomains || []).includes(host))) return true;
+  // Same specified professional role can corroborate; unspecified must not.
+  const rowRole = identityRoleFamily(row) || 'unspecified';
+  if (rowRole !== 'unspecified' && cluster.role === rowRole) return true;
+  if (!subject) return false;
+  const clusterGrade = isIdentityGradeSurface(cluster.sample || cluster) || (cluster.evidence || []).some(isIdentityGradeSurface) || IDENTITY_GRADE_HOST_RE.test((cluster.sourceDomains || []).join(' ') + ' ' + (cluster.host || ''));
+  const rowGrade = isIdentityGradeSurface(row);
+  const clusterNamed = rowHasFullSubjectName(cluster.sample || { title: cluster.name, url: (cluster.urls || [])[0], snippet: '' }, subject) || includesAll((cluster.name || '') + ' ' + (cluster.urls || []).join(' '), tokens(subject).filter(t => t.length > 1));
+  const rowNamed = rowHasFullSubjectName(row, subject);
+  // Identity-grade surfaces that carry the full requested name are the same person
+  // (IAFD + LoyalFans + House of Gord). Unspecified-role web hits are not.
+  return !!(clusterGrade && rowGrade && clusterNamed && rowNamed);
+}
+
+export function clusterByIdentity(rows, subject) {
   const clusters = [];
   for (const r of rows || []) {
     const role = identityRoleFamily(r) || 'unspecified';
-    let c = clusters.find(x => x.role === role);
-    if (!c && role === 'unspecified' && clusters.length === 1) c = clusters[0];
+    const host = String((r.domain || hostOf(r.url) || '')).replace(/^www\./, '');
+    let c = host ? clusters.find(x => x.host === host || (x.sourceDomains || []).includes(host)) : null;
+    if (!c && role !== 'unspecified') c = clusters.find(x => x.role === role);
+    if (!c) c = clusters.find(x => identitySurfacesCorroborate(x, r, subject));
     if (!c) {
       c = emptyIdentityCluster(r, role, clusters.length);
       clusters.push(c);
     }
     addToIdentityCluster(c, r);
   }
-  const roleful = clusters.filter(c => c.role && c.role !== 'unspecified');
-  const unspecified = clusters.filter(c => c.role === 'unspecified');
-  if (roleful.length === 1 && unspecified.length) {
-    for (const u of unspecified) {
-      for (const rowUrl of u.urls) {
-        const row = u.evidence.find(e => e.url === rowUrl) || u.sample;
-        addToIdentityCluster(roleful[0], { ...u.sample, ...row, url: rowUrl, domain: u.host });
-      }
-      for (const d of u.sourceDomains) if (!roleful[0].sourceDomains.includes(d)) roleful[0].sourceDomains.push(d);
-    }
-    return roleful;
-  }
-  if (roleful.length === 0 && clusters.length > 1) {
-    const merged = clusters[0];
-    for (const extra of clusters.slice(1)) {
-      for (const url of extra.urls) addToIdentityCluster(merged, { ...extra.sample, url, domain: extra.host, title: extra.name });
-      for (const d of extra.sourceDomains) if (!merged.sourceDomains.includes(d)) merged.sourceDomains.push(d);
-    }
-    merged.role = 'unspecified';
-    return [merged];
-  }
+  // v49.14: do NOT fold leftover unspecified-role clusters into one blob.
   return clusters;
 }
 
@@ -2535,16 +2559,16 @@ export function serializeEvidenceItem(item, extras = {}) {
     topic: extras.topic || item.topic || '',
     intent: extras.intent || item.intent || '',
     sourceClass: item.sourceClass || item.plannerSourceClass || 'UNKNOWN',
-    sourceUrl: item.url || '',
-    canonicalUrl: item.canonicalUrl || canonicalizeUrl(item.url || ''),
+    sourceUrl: item.sourceUrl || item.pageUrl || item.url || '',
+    canonicalUrl: item.canonicalUrl || canonicalizeUrl(item.sourceUrl || item.pageUrl || item.url || ''),
     title: item.title || '',
     publisher: item.publisher || 'UNKNOWN',
-    host: item.host || item.domain || hostOf(item.url || ''),
+    host: item.host || item.domain || hostOf(item.sourceUrl || item.pageUrl || item.url || ''),
     creator: item.creator || 'UNKNOWN',
     originalSource: item.originalSource || 'UNKNOWN',
     reposter: item.reposter || 'UNKNOWN',
     mirror: item.mirror || 'UNKNOWN',
-    imageUrl: item.image || (item.images && item.images[0]) || '',
+    imageUrl: item.imageUrl || item.image || (item.images && item.images[0]) || '',
     imageProvenance: item.image ? (item.host || hostOf(item.url || '')) : 'UNKNOWN',
     identityEvidence: ev.subjectEvidence || item.subjectEvidence || 'none',
     topicEvidence: ev.topicEvidence || item.topicEvidence || 'none',
@@ -2853,12 +2877,18 @@ export const DETERMINISTIC_FIXTURES = {
   },
   'drea-morgan': {
     items: [
-      { title: 'Drea Morgan - IAFD', url: 'https://www.iafd.com/person.rme/perfid=dreamorgan', snippet: 'Drea Morgan performer biography and filmography', source: 'IAFD' },
-      { title: "Drea Morgan's Official Site", url: 'https://dreamorgan.com/models/DreaMorgan.html', snippet: "Drea Morgan's Official Site! Offering full-length videos", source: 'Bing', domain: 'dreamorgan.com' },
+      { title: 'Drea Morgan - IAFD', url: 'https://www.iafd.com/person.rme/perfid=dreamorgan', snippet: 'Drea Morgan performer biography and filmography', source: 'IAFD', image: 'https://www.iafd.com/graphics/headshots/dreamorgan.jpg', sourceUrl: 'https://www.iafd.com/person.rme/perfid=dreamorgan' },
+      { title: "Drea Morgan's Official Site", url: 'https://dreamorgan.com/models/DreaMorgan.html', snippet: "Drea Morgan's Official Site! Offering full-length videos", source: 'Bing', domain: 'dreamorgan.com', image: 'https://dreamorgan.com/images/drea-morgan-profile.jpg', sourceUrl: 'https://dreamorgan.com/models/DreaMorgan.html' },
       { title: 'Drea | Free Listening on SoundCloud', url: 'https://soundcloud.com/drea-music', snippet: 'Stream Drea music. Unrelated first-name match.', source: 'SoundCloud' },
       { title: 'Drea Smith jazz vocalist', url: 'https://example.com/drea-smith', snippet: 'Jazz vocalist Drea Smith is not Drea Morgan', source: 'Bing' },
     ],
-    diagnostics: { DuckDuckGo: { ok: true, added: 2 }, Bing: { ok: true, added: 2 } },
+    visualHits: [
+      { image: 'https://cdn.example.net/drea-set/a.jpg', pageUrl: 'https://www.iafd.com/person.rme/perfid=dreamorgan', title: 'Drea Morgan IAFD still A', source: 'Bing Images', query: 'Drea Morgan' },
+      { image: 'https://cdn.example.net/drea-set/b.jpg', pageUrl: 'https://dreamorgan.com/models/DreaMorgan.html', title: 'Drea Morgan official still B', source: 'Bing Images', query: 'Drea Morgan' },
+      { image: 'https://cdn.example.net/drea-set/c.jpg', pageUrl: 'https://www.iafd.com/person.rme/perfid=dreamorgan', title: 'Drea Morgan IAFD still C', source: 'Yahoo Images', query: 'Drea Morgan' },
+      { image: 'https://cdn.example.net/drea-set/a.jpg', pageUrl: 'https://www.iafd.com/person.rme/perfid=dreamorgan', title: 'Drea Morgan duplicate of A', source: 'Bing Images', query: 'Drea Morgan' },
+    ],
+    diagnostics: { DuckDuckGo: { ok: true, added: 2 }, Bing: { ok: true, added: 2 }, 'Bing Images': { ok: true, added: 3 } },
   },
   'riley-reid': {
     items: [
@@ -2882,7 +2912,12 @@ export const DETERMINISTIC_FIXTURES = {
 
 export function fixtureItems(name) {
   const f = DETERMINISTIC_FIXTURES[name];
-  return f ? { items: f.items.slice(), diagnostics: { ...f.diagnostics } } : null;
+  if (!f) return null;
+  return {
+    items: f.items.slice(),
+    diagnostics: { ...f.diagnostics },
+    visualHits: Array.isArray(f.visualHits) ? f.visualHits.map(h => ({ ...h })) : undefined,
+  };
 }
 
 export function distinctFindMoreIntents() {
@@ -4634,7 +4669,7 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
   const cluster = competingIdentityCandidates(ranked, classification, opts);
   const raw = (cluster.candidates && cluster.candidates.length)
     ? cluster.candidates
-    : clusterByIdentity((ranked || []).filter(r => r && r.resultKind !== 'JUNK')).slice(0, IDENTITY_VERIFY_MAX);
+    : clusterByIdentity((ranked || []).filter(r => r && r.resultKind !== 'JUNK'), subject).slice(0, IDENTITY_VERIFY_MAX);
 
   const candidates = [];
   for (const c of raw) {
@@ -4648,8 +4683,12 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
     if (candidateRejectionMatches(name, candidateId, feedback)) continue;
     const idClass = classifyIdentityClass(sample, subject, { classification, type });
     if (idClass === 'PERSON_FICTIONAL') continue;
-    const images = [...new Set((c.images || []).concat(sample && sample.image ? [sample.image] : []).concat(sample && sample.images ? sample.images : []))].filter(Boolean).slice(0, 6);
+    const ownUrls = urls.concat(sample && sample.url ? [sample.url] : []).filter(Boolean);
+    const images = [...new Set((c.images || []).concat(sample && sample.image ? [sample.image] : []).concat(sample && sample.images ? sample.images : []))]
+      .filter(im => im && /^https?:/i.test(im))
+      .slice(0, 6);
     const sources = [...new Set((c.sourceDomains || []).concat(host ? [host] : []))].slice(0, 8);
+    const sourceUrl = ownUrls[0] || (sample && (sample.sourceUrl || sample.url)) || '';
     const corroborating = (c.evidence || []).slice(0, 6).map(e => ({
       title: e.title || '',
       url: e.url || '',
@@ -4694,7 +4733,9 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
       confidence,
       reasonsFor: reasonsFor.slice(0, 6),
       reasonsAgainst: reasonsAgainst.slice(0, 6),
-      sampleUrl: urls[0] || (sample && sample.url) || '',
+      sourceUrl,
+      sampleUrl: sourceUrl,
+      imageUrl: images[0] || '',
       sample,
       userConfirmed,
       userRejected: false,
@@ -4707,9 +4748,20 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
     const rank = (c) => (c.confidence === 'verified' ? 0 : c.confidence === 'high' ? 1 : c.confidence === 'medium' ? 2 : 3);
     return rank(a) - rank(b) || (b.additionalSources.length - a.additionalSources.length);
   });
-  const trimmed = candidates.slice(0, IDENTITY_VERIFY_PREFERRED);
-  const strong = trimmed.filter(c => c.confidence === 'verified' || c.confidence === 'high' || c.confidence === 'medium');
-  const shown = (strong.length ? strong : trimmed).slice(0, IDENTITY_VERIFY_MAX);
+  const trimmed = candidates.slice(0, IDENTITY_VERIFY_MAX);
+  const usableSurface = (c) => {
+    if (!c) return false;
+    if (!(c.sourceUrl || c.sampleUrl)) return false;
+    if (c.identityClass === 'PERSON_FICTIONAL') return false;
+    const against = (c.reasonsAgainst || []).join(' ');
+    if (/Unrelated first-name|Competing full name|fictional/i.test(against)) return false;
+    if (c.confidence === 'verified' || c.confidence === 'high' || c.confidence === 'medium') return true;
+    if (c.role && c.role !== 'unspecified') return true;
+    if (c.identityClass === 'PERSON_REAL' && tokens(c.name).length >= 2) return true;
+    return false;
+  };
+  const usable = trimmed.filter(usableSurface);
+  const shown = (usable.length ? usable : trimmed.filter(c => c.sourceUrl || c.sampleUrl)).slice(0, IDENTITY_VERIFY_MAX);
   const alreadyConfirmed = confirmed.length > 0;
   const needed = !alreadyConfirmed;
   return {
@@ -4840,14 +4892,22 @@ export function applyVisualEvidenceGate(visuals, classification, opts = {}) {
   return { verified: kept, unverified, rejected, primary: kept, all: kept.concat(unverified) };
 }
 
+function looksLikeImageUrl(u) {
+  return /\.(jpg|jpeg|png|webp|gif|avif)(\?|$)/i.test(String(u || '')) || /\/cdn-cgi\/image\//i.test(String(u || ''));
+}
+
 export function visualDedupeKey(im) {
-  const image = canonicalizeUrl((im && (im.image || im.src || (im.kind === 'image' ? im.url : ''))) || '');
-  const page = canonicalizeUrl((im && (im.pageUrl || (im.kind !== 'image' ? im.url : ''))) || '');
-  const host = hostOf(image || page).replace(/^www\./, '');
-  const path = pathOf(image || page).replace(/\/+$/, '');
+  if (typeof im === 'string') {
+    return canonicalizeUrl(im) || String(im || '').replace(/[?#].*$/, '').toLowerCase();
+  }
+  const image = canonicalizeUrl((im && (im.imageUrl || im.image || im.src || (looksLikeImageUrl(im.url) ? im.url : (im.kind === 'image' ? im.url : '')))) || '');
+  const fileUrl = image || (im && !im.pageUrl && looksLikeImageUrl(im.url) ? canonicalizeUrl(im.url) : '');
+  if (!fileUrl) return '';
+  const host = hostOf(fileUrl).replace(/^www\./, '');
+  const path = pathOf(fileUrl).replace(/\/+$/, '');
   const file = path.split('/').pop() || '';
   const stem = file.replace(/\.[a-z0-9]+$/i, '').replace(/[-_](\d{2,4}x\d{2,4}|thumb|small|large|orig).*$/i, '');
-  return [image || '', page || '', host + ':' + stem].filter(Boolean).join('|');
+  return [fileUrl, host && stem ? host + ':' + stem : ''].filter(Boolean).join('|');
 }
 
 export function dedupeVisualEvidence(visuals, known = []) {
@@ -4859,11 +4919,13 @@ export function dedupeVisualEvidence(visuals, known = []) {
   const out = [];
   let duplicates = 0;
   for (const im of visuals || []) {
-    const url = canonicalizeUrl((im && (im.url || im.image || im.pageUrl)) || '');
-    const image = canonicalizeUrl((im && (im.image || im.src)) || '');
-    const keys = [url, image, visualDedupeKey(im)].filter(Boolean);
+    const image = canonicalizeUrl((im && (im.imageUrl || im.image || im.src || (looksLikeImageUrl(im.url) ? im.url : ''))) || '');
+    const keys = [image, visualDedupeKey(im)].filter(Boolean);
+    if (!keys.length) { out.push(im); continue; }
     if (keys.some(k => seen.has(k))) { duplicates++; continue; }
     for (const k of keys) seen.add(k);
+    if (!im.imageUrl && image) im.imageUrl = image;
+    if (!im.sourceUrl) im.sourceUrl = im.pageUrl || '';
     out.push(im);
   }
   return { unique: out, duplicatesRemoved: duplicates };

@@ -408,6 +408,8 @@ function uniqueAdd(results, seen, item) {
   const image = typeof item.image === 'string' && item.image.startsWith('http') ? item.image : (images[0] || '');
   const videoId = (youtubeId(href) || vimeoId(href)) ? key : (item.videoId || '');
   const prov = annotateProvenance({ url: href, title, snippet: item.snippet || '' });
+  const sourceUrl = (typeof item.sourceUrl === 'string' && item.sourceUrl.startsWith('http')) ? item.sourceUrl : ((typeof item.pageUrl === 'string' && item.pageUrl.startsWith('http')) ? item.pageUrl : href);
+  const imageUrl = (typeof item.imageUrl === 'string' && item.imageUrl.startsWith('http')) ? item.imageUrl : (image || '');
   const row = {
     title: title.slice(0, 240),
     url: href,
@@ -416,6 +418,10 @@ function uniqueAdd(results, seen, item) {
     snippet: cleanText(decodeEntities(item.snippet || '')).slice(0, 600),
     image,
     images,
+    imageUrl,
+    sourceUrl,
+    pageUrl: (typeof item.pageUrl === 'string' && item.pageUrl.startsWith('http')) ? item.pageUrl : '',
+    provider: item.provider || source.slice(0, 120),
     observedAt: new Date().toISOString(),
     queryVariant: item.queryVariant || '',
     videoId,
@@ -426,6 +432,7 @@ function uniqueAdd(results, seen, item) {
     reposter: prov.reposter,
     mirror: prov.mirror,
   };
+  if (item.imageOrigin) row.imageOrigin = item.imageOrigin;
   if (accessState) row.accessState = accessState;
   if (retrievalLane) row.retrievalLane = retrievalLane;
   if (item.sourceLane) row.sourceLane = item.sourceLane;
@@ -669,12 +676,17 @@ function attachImageHit(results, seen, hit, diagnosticsKey) {
   const image = usableImage(hit.image) || usableImage(hit.thumb);
   if (!image) return false;
   const pageUrl = unwrap(hit.pageUrl || '');
+  // v49.14: only fold into the exact same source page — never collapse by host.
   if (pageUrl && validUrl(pageUrl)) {
-    const existing = results.find(r => r.url === pageUrl || (hostOf(r.url) === hostOf(pageUrl) && hostOf(pageUrl)));
+    const existing = results.find(r => r.url === pageUrl || r.sourceUrl === pageUrl || r.canonicalUrl === canonicalizeUrl(pageUrl));
     if (existing) {
       existing.images = rankImages([...(existing.images || []), image, hit.thumb], existing.url).slice(0, 8);
       existing.image = existing.image || existing.images[0] || '';
+      existing.imageUrl = existing.imageUrl || existing.image || image;
       existing.imageOrigin = existing.imageOrigin || 'image-index';
+      existing.sourceUrl = existing.sourceUrl || pageUrl;
+      existing.pageUrl = existing.pageUrl || pageUrl;
+      existing.provider = existing.provider || diagnosticsKey || 'Image index';
       return true;
     }
   }
@@ -689,7 +701,12 @@ function attachImageHit(results, seen, hit, diagnosticsKey) {
     snippet: 'Public image-index result. Attribution is the hosting page — visual likeness is not identity proof.',
     image,
     images: [image, hit.thumb].filter(Boolean),
+    imageUrl: image,
+    sourceUrl: (pageUrl && validUrl(pageUrl)) ? pageUrl : '',
+    pageUrl: (pageUrl && validUrl(pageUrl)) ? pageUrl : '',
     queryVariant: hit.query || '',
+    imageOrigin: 'image-index',
+    provider: diagnosticsKey || 'Image index',
   });
 }
 
@@ -2183,11 +2200,14 @@ function pushVisualHit(hits, hit, source) {
   const pageUrl = unwrap(hit.pageUrl || '') || '';
   hits.push({
     url: image,
+    imageUrl: image,
     thumb: usableImage(hit.thumb) || image,
     pageUrl,
+    sourceUrl: pageUrl || '',
     domain: hostOf(pageUrl || image).replace(/^www\./, ''),
     title: (cleanTitle(hit.title) && !isQueryShapedTitle(hit.title)) ? cleanTitle(hit.title) : '',
     source: source || 'Image index',
+    provider: source || hit.source || 'Image index',
     queryVariant: hit.query || '',
     imageOrigin: 'image-index',
     researchObject: true,
@@ -2198,6 +2218,7 @@ function pushVisualHit(hits, hit, source) {
     caption: cleanTitle(hit.title) || '',
     confidence: 'medium',
     relevance: 2,
+    kind: 'image',
   });
   return true;
 }
@@ -2636,13 +2657,18 @@ function buildVisualCorpus(results, retrieved, classification, extraHits) {
     const key = visualDedupeKey(rawUrl);
     if (!key || seen.has(key)) return;
     seen.add(key);
+    const imageUrl = im.imageUrl || im.url || im.image || im.src || '';
+    const sourceUrl = im.sourceUrl || im.pageUrl || '';
     out.push({
-      url: im.url || im.image,
-      thumb: im.thumb || im.url || im.image,
-      pageUrl: im.pageUrl || '',
-      domain: im.domain || '',
+      url: imageUrl,
+      imageUrl,
+      thumb: im.thumb || imageUrl,
+      pageUrl: im.pageUrl || sourceUrl || '',
+      sourceUrl,
+      domain: im.domain || hostOf(sourceUrl || imageUrl).replace(/^www\./, ''),
       title: im.title || im.caption || im.reason || '',
-      source: im.source || '',
+      source: im.source || im.provider || '',
+      provider: im.provider || im.source || '',
       reason: im.reason || 'Image keeps page provenance. Visual likeness is not identity proof.',
       caption: im.caption || im.title || '',
       confidence: im.confidence || 'medium',
@@ -2654,7 +2680,8 @@ function buildVisualCorpus(results, retrieved, classification, extraHits) {
       queryVariant: im.queryVariant || '',
       visualLikenessIsNotIdentityProof: true,
       researchObject: true,
-      associatedSource: im.pageUrl || im.source || '',
+      associatedSource: sourceUrl || im.source || '',
+      kind: 'image',
       visualClass: (classifyVisualRelevance(im, classification) || {}).visualClass || 'unknown',
       visualClassReason: (classifyVisualRelevance(im, classification) || {}).reason || '',
       matchQuality: (classifyMatchQuality(im, classification) || {}).matchQuality || 'unknown',
@@ -5561,7 +5588,10 @@ async function runDiscovery(query, opts = {}) {
   const wantVisual = !identityHold && (isVisualSubject(classification) || visualMore || further || !!visualMode || videoMore || researchFocus.includes('visuals'));
   const mode = visualMode || (visualMore ? 'more' : (further ? 'different' : 'more'));
   if (skipLive) {
-    // fixture path: no live image/video providers
+    const fxVis = fixtureItems(fixtureName);
+    if (fxVis && Array.isArray(fxVis.visualHits)) {
+      for (const hit of fxVis.visualHits) pushVisualHit(visualHits, hit, hit.source || 'Fixture Images');
+    }
   } else if (wantVisual && !classification.isUrl) {
     const vq = visualQueryVariants(classification, { mode, seedVisual, excludeHosts, attemptedQueries });
     const vidQ = videoQueryVariants(classification, { attemptedQueries });
@@ -7078,7 +7108,8 @@ function collectDiveImages(retrieved, results, classification) {
     }
     out.push({
       url: u,
-      sourceUrl: u,
+      imageUrl: u,
+      sourceUrl: pageUrl || '',
       pageUrl: pageUrl || '',
       domain,
       source: source || 'retrieved page',
@@ -8830,7 +8861,7 @@ export default {
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
         api: { docs: '/api', version: 'v1', samePipelineAsIphoneUi: true },
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants', 'v49.9-identity-verification', 'v49.9-persistent-queue', 'v49.9-visual-evidence-gate', 'v49.9-find-more-unique', 'v49.9-research-focus', 'v49.9-adaptive-lens-focus', 'v49.9-analyze-public-account', 'v49.11-exact-source-retrieval', 'v49.11-source-state-machine', 'v49.11-source-id-canonical-url', 'v49.12-investigation-workflow', 'v49.12-identity-first', 'v49.12-canonical-person', 'v49.12-visual-evidence-levels', 'v49.12-continuation-slices', 'v49.13-investigation-actions', 'v49.13-primary-dive-actions', 'v49.13-bondage-retrieval', 'v49.13-recreate-position'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants', 'v49.9-identity-verification', 'v49.9-persistent-queue', 'v49.9-visual-evidence-gate', 'v49.9-find-more-unique', 'v49.9-research-focus', 'v49.9-adaptive-lens-focus', 'v49.9-analyze-public-account', 'v49.11-exact-source-retrieval', 'v49.11-source-state-machine', 'v49.11-source-id-canonical-url', 'v49.12-investigation-workflow', 'v49.12-identity-first', 'v49.12-canonical-person', 'v49.12-visual-evidence-levels', 'v49.12-continuation-slices', 'v49.13-investigation-actions', 'v49.13-primary-dive-actions', 'v49.13-bondage-retrieval', 'v49.13-recreate-position', 'v49.14-person-image-results', 'v49.14-identity-surfaces', 'v49.14-source-url'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);

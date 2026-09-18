@@ -45,10 +45,10 @@ const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8
 
 console.log('--- v49.3 version / API contracts ---');
 {
-  assert(PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5' || PLANNER_VERSION === '49.4' || PLANNER_VERSION === '49.3', 'PLANNER_VERSION current');
-  assert(/49.(?:3|4|5|6|7|8|9|11|12|13)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
-  assert(/const VERSION = '49\.(?:[3-9]|11|12|13)'/.test(appSrc), 'frontend VERSION');
-  assert(/carmen-build" content="49\.(?:[3-9]|11|12|13)"/.test(html), 'html build');
+  assert(PLANNER_VERSION === '49.14' || PLANNER_VERSION === '49.13' || PLANNER_VERSION === '49.12' || PLANNER_VERSION === '49.11' || PLANNER_VERSION === '49.9' || PLANNER_VERSION === '49.8' || PLANNER_VERSION === '49.7' || PLANNER_VERSION === '49.6' || PLANNER_VERSION === '49.5' || PLANNER_VERSION === '49.4' || PLANNER_VERSION === '49.3', 'PLANNER_VERSION current');
+  assert(/49.(?:3|4|5|6|7|8|9|11|12|13|14)/.test(PLANNER_BUILD), 'PLANNER_BUILD');
+  assert(/const VERSION = '49\.(?:[3-9]|11|12|13|14)'/.test(appSrc), 'frontend VERSION');
+  assert(/carmen-build" content="49\.(?:[3-9]|11|12|13|14)"/.test(html), 'html build');
 
   assert(/handleCarmenApi/.test(workerSrc), 'worker has ChatGPT API handler');
   assert(/\/api\/v1/.test(workerSrc), 'worker routes /api/v1');
@@ -238,7 +238,7 @@ console.log('--- v49.3 /api docs + health ---');
   assert(d.safety && d.safety.noSecrets && d.safety.noAutonomousExternalActions, 'API safety contract');
   const health = await worker.fetch(new Request('https://test/health'), {});
   const h = await health.json();
-  assert((h.version === '49.13' || h.version === '49.12' || h.version === '49.11' || h.version === '49.9' || h.version === '49.8' || h.version === '49.7' || h.version === '49.6' || h.version === '49.5' || h.version === '49.4' || h.version === '49.3') && /49.(3|4|5|6|7|8|9|11|12|13)/.test(h.build || ''), 'health current');
+  assert((h.version === '49.14' || h.version === '49.13' || h.version === '49.12' || h.version === '49.11' || h.version === '49.9' || h.version === '49.8' || h.version === '49.7' || h.version === '49.6' || h.version === '49.5' || h.version === '49.4' || h.version === '49.3') && /49.(3|4|5|6|7|8|9|11|12|13|14)/.test(h.build || ''), 'health current');
   assert((h.features || []).includes('v49.3-chatgpt-access'), 'feature flag');
   assert((h.routes || []).includes('/api'), 'health lists /api');
 }
