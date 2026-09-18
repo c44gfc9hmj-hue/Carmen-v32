@@ -1,8 +1,19 @@
-// Carmen v49.13 — investigation / topic-map planner + ChatGPT-access helpers.
-// Query-centric retrieval is the fallback. The planner independently
-// establishes subject evidence, topic evidence, and intersection evidence,
-// then opens source-class lanes (especially adult) instead of stuffing
-// tokens into one search string.
+// Carmen v50 — agent-testable diagnostics, candidate thumbnails, bondage visual
+// pipeline honesty, and progressive Deep Dive. Extends live v49.14.
+//
+// v50: Authorized AI assistants (ChatGPT Actions, other HTTP agents) drive the
+// SAME runDiscovery pipeline as the iPhone PWA through a documented, read-only
+// machine API with request-level diagnostics (timings, provider counts,
+// filter/verify/dedupe counts, person-candidate schema, observation states).
+// Person-selection thumbnails are hydrated from the candidate's own source
+// (attached image → profile/og:image → that page's images → image-index hits
+// whose pageUrl is THAT candidate). Bondage zero-visuals are diagnosed at each
+// pipeline stage; images associated with the confirmed person/source survive as
+// unverified rather than being rejected solely because an image-index title
+// omitted the name. Deep Dive parallelizes independent providers and can return
+// an initial stage so the UI is not blank while slower sources finish.
+// Does not rebuild Carmen. Does not redesign Deep Dive. Does not replace live
+// retrieval with fixtures.
 //
 // v49.14: Person-selection and image-result production fix
 // (49.14-person-image-results). Distinct identity surfaces stay distinct
@@ -67,8 +78,8 @@
 // This module is self-contained: no import from worker.js (avoids cycles).
 // worker.js imports it. The machine-readable API uses these same functions.
 
-export const PLANNER_VERSION = '49.14';
-export const PLANNER_BUILD = '49.14-person-image-results';
+export const PLANNER_VERSION = '50';
+export const PLANNER_BUILD = '50-agent-testable-progressive';
 
 function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
@@ -305,6 +316,250 @@ export const SECONDARY_DIVE_LENSES = [
 ];
 
 export const NO_NEW_SOURCES_MESSAGE = 'No new sources found from the remaining search paths.';
+
+export const DIVE_STAGES = [
+  'initialized',
+  'person-context',
+  'initial-evidence',
+  'initial-visuals',
+  'providers-arriving',
+  'synthesis-complete',
+];
+
+const SKIP_CANDIDATE_THUMB_RE = /favicon|\.ico(\?|$)|sprite|pixel|1x1|blank\.gif|placeholder|logo[-_]?small|tracking|badge|\/ip3\/|data:image\/gif|data:image\/svg/i;
+
+export function createPipelineClock(startedAt) {
+  const t0 = Number(startedAt) || Date.now();
+  const stages = {};
+  function begin(name) {
+    if (!name) return;
+    stages[name] = { ...(stages[name] || {}), startedAbs: Date.now(), startMs: Date.now() - t0 };
+  }
+  function end(name) {
+    if (!name) return;
+    const s = stages[name] || {};
+    const now = Date.now();
+    const startedAbs = s.startedAbs || t0;
+    stages[name] = { startMs: (s.startMs != null ? s.startMs : startedAbs - t0), endMs: now - t0, ms: Math.max(0, now - startedAbs) };
+  }
+  function mark(name, extra) {
+    const now = Date.now();
+    stages[name] = { ...(stages[name] || {}), ...(extra || {}), atMs: now - t0 };
+  }
+  return {
+    t0,
+    begin,
+    end,
+    mark,
+    snapshot() {
+      return {
+        requestStart: t0,
+        totalMs: Date.now() - t0,
+        stages: { ...stages },
+      };
+    },
+  };
+}
+
+export function emptyVisualPipeline() {
+  return {
+    discoveryQueries: 0,
+    providerResults: 0,
+    retrieved: 0,
+    filtered: 0,
+    classified: 0,
+    verified: 0,
+    unverified: 0,
+    rejected: 0,
+    duplicatesRemoved: 0,
+    finalVisuals: 0,
+    zeroReason: '',
+    providers: {},
+  };
+}
+
+export function explainZeroVisuals(pipe) {
+  const p = pipe || emptyVisualPipeline();
+  if (p.finalVisuals > 0) return '';
+  if (!p.providerResults && !p.retrieved) return 'providers_returned_zero';
+  if (p.providerResults > 0 && !p.retrieved) return 'retrieval_failed';
+  if (p.retrieved > 0 && p.filtered >= p.retrieved) return 'filtered_out';
+  if (p.classified > 0 && p.rejected >= p.classified && !p.verified && !p.unverified) return 'incorrectly_classified_or_rejected';
+  if ((p.verified + p.unverified) > 0 && p.finalVisuals === 0) return 'ui_or_serialization_dropped';
+  if (p.rejected > 0 && !p.verified && !p.unverified) return 'all_rejected_by_visual_gate';
+  return 'no_usable_results';
+}
+
+export function buildVisualPipelineDiagnostics(opts = {}) {
+  const pipe = {
+    ...emptyVisualPipeline(),
+    discoveryQueries: Number(opts.discoveryQueries) || 0,
+    providerResults: Number(opts.providerResults) || 0,
+    retrieved: Number(opts.retrieved) || 0,
+    filtered: Number(opts.filtered) || 0,
+    classified: Number(opts.classified) || 0,
+    verified: Number(opts.verified) || 0,
+    unverified: Number(opts.unverified) || 0,
+    rejected: Number(opts.rejected) || 0,
+    duplicatesRemoved: Number(opts.duplicatesRemoved) || 0,
+    finalVisuals: Number(opts.finalVisuals) || 0,
+    providers: opts.providers || {},
+  };
+  pipe.zeroReason = opts.zeroReason || explainZeroVisuals(pipe);
+  return pipe;
+}
+
+function candidateHostOf(c) {
+  return String((c && (c.profileSource || c.sourceDomain || '')) || hostOf((c && (c.sourceUrl || c.sampleUrl)) || '') || '').replace(/^www\./, '').toLowerCase();
+}
+
+function hostSharedByOtherCandidate(host, candidates, self) {
+  if (!host) return false;
+  const h = String(host).replace(/^www\./, '').toLowerCase();
+  return (candidates || []).some(o => o && o !== self && candidateHostOf(o) === h);
+}
+
+export function imageBelongsToCandidate(imageUrl, pageUrl, candidate, opts = {}) {
+  const sourceUrl = String((candidate && (candidate.sourceUrl || candidate.sampleUrl)) || '');
+  const page = String(pageUrl || '');
+  const image = String(imageUrl || '');
+  if (!sourceUrl && !candidate) return false;
+  if (page && sourceUrl && canonicalizeUrl(page) === canonicalizeUrl(sourceUrl)) return true;
+  if (page && sourceUrl && page.split('#')[0] === sourceUrl.split('#')[0]) return true;
+  if (page && sourceUrl && page.indexOf(sourceUrl.split('?')[0]) === 0) return true;
+  const candHost = candidateHostOf(candidate);
+  const pageHost = hostOf(page).replace(/^www\./, '');
+  const imgHost = hostOf(image).replace(/^www\./, '');
+  // Same exclusive host (this candidate is the only one on that domain).
+  if (candHost && pageHost === candHost && !hostSharedByOtherCandidate(candHost, opts.candidates, candidate)) return true;
+  // Image hosted on the candidate page's host while the pageUrl matches.
+  if (candHost && imgHost === candHost && page && canonicalizeUrl(page) === canonicalizeUrl(sourceUrl)) return true;
+  return false;
+}
+
+export function associatedHostsFromIdentity(identityFeedback, candidates, ranked) {
+  const hosts = new Set();
+  for (const c of candidates || []) {
+    const h = candidateHostOf(c);
+    if (h) hosts.add(h);
+    for (const s of c.sources || []) {
+      const sh = String(s || '').replace(/^www\./, '').toLowerCase();
+      if (sh && sh.indexOf('.') >= 0) hosts.add(sh);
+    }
+  }
+  const confirmed = ((identityFeedback && identityFeedback.confirmed) || []).map(norm);
+  for (const r of ranked || []) {
+    const host = String((r && (r.domain || hostOf(r.url))) || '').replace(/^www\./, '').toLowerCase();
+    if (!host) continue;
+    if (IDENTITY_GRADE_HOST_RE.test(host)) hosts.add(host);
+    const title = norm((r && r.title) || '');
+    if (confirmed.length && confirmed.some(n => n && title.includes(n))) hosts.add(host);
+  }
+  return [...hosts].slice(0, 24);
+}
+
+export function serializePersonCandidate(c) {
+  const sourceUrl = (c && (c.sourceUrl || c.sampleUrl)) || '';
+  const thumbs = ((c && c.representativeImages) || []).filter(u => typeof u === 'string' && /^https?:/i.test(u));
+  const thumbnailUrl = (c && (c.thumbnailUrl || c.imageUrl)) || thumbs[0] || '';
+  return {
+    id: (c && c.candidateId) || '',
+    candidateId: (c && c.candidateId) || '',
+    name: (c && c.name) || '',
+    displayName: (c && (c.displayName || c.name)) || '',
+    sourceUrl,
+    sourceDomain: (c && (c.profileSource || (c.sources || [])[0])) || hostOf(sourceUrl).replace(/^www\./, ''),
+    sourceTitle: (c && (c.sourceTitle || (c.sample && c.sample.title))) || (c && c.name) || '',
+    thumbnailUrl,
+    thumbnailOrigin: (c && c.thumbnailOrigin) || (thumbnailUrl ? 'source-attached' : ''),
+    sources: (c && c.sources) || [],
+    associatedSources: ((c && c.additionalSources) || []).map(s => (s && (s.url || s))).filter(Boolean),
+    confidence: (c && c.confidence) || 'low',
+    relevance: (c && c.confidence) === 'verified' ? 1 : ((c && c.confidence) === 'high' ? 0.9 : ((c && c.confidence) === 'medium' ? 0.65 : 0.35)),
+    whySelected: ((c && c.reasonsFor) || []).slice(0, 6),
+    whyRanked: ((c && c.reasonsFor) || []).join(' · ') || (c && c.identityContext) || '',
+    reasonsAgainst: (c && c.reasonsAgainst) || [],
+    identityClass: (c && c.identityClass) || '',
+    role: (c && c.role) || 'unspecified',
+    imageUrl: thumbnailUrl,
+    observationState: thumbnailUrl ? 'OBSERVED' : 'UNKNOWN',
+  };
+}
+
+export function hydratePersonCandidates(candidates, ranked, visualHits, opts = {}) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const claimed = new Set();
+  const skip = (u) => {
+    if (!u || typeof u !== 'string' || !/^https?:/i.test(u)) return true;
+    if (SKIP_CANDIDATE_THUMB_RE.test(u)) return true;
+    return false;
+  };
+  for (const c of list) {
+    for (const u of (c.representativeImages || [])) {
+      if (!skip(u)) claimed.add(canonicalizeUrl(u) || u);
+    }
+    if (c.thumbnailUrl && !skip(c.thumbnailUrl)) claimed.add(canonicalizeUrl(c.thumbnailUrl) || c.thumbnailUrl);
+    if (c.imageUrl && !skip(c.imageUrl)) claimed.add(canonicalizeUrl(c.imageUrl) || c.imageUrl);
+  }
+  for (const c of list) {
+    const owned = [];
+    const origins = [];
+    const take = (url, origin) => {
+      if (skip(url)) return;
+      const key = canonicalizeUrl(url) || url;
+      if (owned.some(u => (canonicalizeUrl(u) || u) === key)) return;
+      const already = claimed.has(key);
+      const mine = (c.representativeImages || []).some(u => (canonicalizeUrl(u) || u) === key)
+        || (c.thumbnailUrl && (canonicalizeUrl(c.thumbnailUrl) || c.thumbnailUrl) === key)
+        || (c.imageUrl && (canonicalizeUrl(c.imageUrl) || c.imageUrl) === key);
+      if (already && !mine) return;
+      owned.push(url);
+      origins.push(origin);
+      claimed.add(key);
+    };
+    for (const u of (c.representativeImages || [])) take(u, 'source-attached');
+    take(c.thumbnailUrl, c.thumbnailOrigin || 'source-attached');
+    take(c.imageUrl, 'source-attached');
+    const sourceUrl = c.sourceUrl || c.sampleUrl || '';
+    const rows = (ranked || []).filter(r => {
+      if (!r) return false;
+      const ru = r.sourceUrl || r.url || '';
+      if (sourceUrl && (canonicalizeUrl(ru) === canonicalizeUrl(sourceUrl) || ru === sourceUrl)) return true;
+      return false;
+    });
+    for (const r of rows) {
+      take(r.image, 'source-attached');
+      take(r.imageUrl, 'source-attached');
+      take(r.ogImage, 'profile-og');
+      for (const im of r.images || []) take(im, 'source-page');
+    }
+    const exclusiveHost = candidateHostOf(c);
+    if (exclusiveHost && !hostSharedByOtherCandidate(exclusiveHost, list, c)) {
+      for (const r of ranked || []) {
+        const h = String((r && (r.domain || hostOf(r.url))) || '').replace(/^www\./, '');
+        if (h !== exclusiveHost) continue;
+        take(r.image, 'profile-source');
+        take(r.ogImage, 'profile-og');
+        for (const im of (r.images || []).slice(0, 2)) take(im, 'source-page');
+      }
+    }
+    for (const h of visualHits || []) {
+      const img = h.imageUrl || h.image || h.url || '';
+      const page = h.pageUrl || h.sourceUrl || '';
+      if (imageBelongsToCandidate(img, page, c, { candidates: list })) {
+        take(img, 'associated-image-result');
+      }
+    }
+    c.representativeImages = owned.slice(0, 6);
+    c.thumbnailUrl = owned[0] || '';
+    c.imageUrl = owned[0] || '';
+    c.thumbnailOrigin = origins[0] || '';
+    if (!c.sourceTitle && c.sample && c.sample.title) c.sourceTitle = c.sample.title;
+    if (!c.displayName) c.displayName = c.name || '';
+  }
+  return list;
+}
+
 
 
 export function topicTerms(topic) {
@@ -2778,8 +3033,11 @@ export const API_ACTION_CATALOG = [
   { action: 'health', method: 'GET', path: '/api/v1/health', description: 'Version, features, provider status. Never returns secrets.' },
   { action: 'openapi', method: 'GET', path: '/api/v1/openapi.json', description: 'OpenAPI 3.0.3 for ChatGPT Actions. Documents CARMEN_API_KEY, never provider API_KEY.' },
   { action: 'capabilities', method: 'GET', path: '/api/v1/machine/capabilities', description: 'Read-only machine capabilities. pipelineFunction is always runDiscovery.' },
-  { action: 'machine-search', method: 'POST', path: '/api/v1/machine/search', description: 'Same runDiscovery path as GET /search (iPhone PWA).' },
-  { action: 'machine-dive', method: 'POST', path: '/api/v1/machine/dive', description: 'Deep Dive lens (bondage|people|visuals) on the same runDiscovery path.' },
+  { action: 'machine-search', method: 'POST', path: '/api/v1/machine/search', description: 'Same runDiscovery path as GET /search (iPhone PWA). Returns personCandidates, diagnostics, timings.' },
+  { action: 'machine-dive', method: 'POST', path: '/api/v1/machine/dive', description: 'Deep Dive lens (bondage|people|visuals) on the same runDiscovery path. Supports stage=initial for progressive results.' },
+  { action: 'machine-candidates', method: 'POST', path: '/api/v1/machine/candidates', description: 'Person discovery. Same pipeline as search; returns the candidate schema used by the iPhone identity cards.' },
+  { action: 'machine-confirm', method: 'POST', path: '/api/v1/machine/confirm', description: 'Confirm a person candidate (That’s-the-one). Echo investigationState. Does not post or message anyone.' },
+  { action: 'machine-diagnostics', method: 'POST', path: '/api/v1/machine/diagnostics', description: 'Inspect pipeline timings, provider counts, filter/verify/dedupe counts from echoed investigationState.' },
   { action: 'machine-investigation', method: 'GET', path: '/api/v1/machine/investigations/:id', description: 'Best-effort investigation state. 404 if isolate dropped it. Prefer POST inspect with investigationState.' },
   { action: 'machine-investigation-inspect', method: 'POST', path: '/api/v1/machine/investigations/:id', description: 'Durable inspect. POST investigationId plus investigationState. Required for ChatGPT continuity.' },
   { action: 'machine-results', method: 'GET', path: '/api/v1/machine/investigations/:id/results', description: 'Structured evidence items if isolate still holds them.' },
@@ -2887,6 +3145,8 @@ export const DETERMINISTIC_FIXTURES = {
       { image: 'https://cdn.example.net/drea-set/b.jpg', pageUrl: 'https://dreamorgan.com/models/DreaMorgan.html', title: 'Drea Morgan official still B', source: 'Bing Images', query: 'Drea Morgan' },
       { image: 'https://cdn.example.net/drea-set/c.jpg', pageUrl: 'https://www.iafd.com/person.rme/perfid=dreamorgan', title: 'Drea Morgan IAFD still C', source: 'Yahoo Images', query: 'Drea Morgan' },
       { image: 'https://cdn.example.net/drea-set/a.jpg', pageUrl: 'https://www.iafd.com/person.rme/perfid=dreamorgan', title: 'Drea Morgan duplicate of A', source: 'Bing Images', query: 'Drea Morgan' },
+      { image: 'https://cdn.example.net/drea-bondage/cinch-1.jpg', pageUrl: 'https://www.houseofgord.com/dreamorgan-cinch', title: 'Drea Morgan metal bondage photoset', source: 'Bing Images', query: 'Drea Morgan bondage' },
+      { image: 'https://cdn.example.net/drea-bondage/cinch-2.jpg', pageUrl: 'https://www.houseofgord.com/dreamorgan-cinch', title: 'Drea Morgan cinch straps still', source: 'Yahoo Images', query: 'Drea Morgan bondage photoset' },
     ],
     diagnostics: { DuckDuckGo: { ok: true, added: 2 }, Bing: { ok: true, added: 2 }, 'Bing Images': { ok: true, added: 3 } },
   },
@@ -4684,8 +4944,8 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
     const idClass = classifyIdentityClass(sample, subject, { classification, type });
     if (idClass === 'PERSON_FICTIONAL') continue;
     const ownUrls = urls.concat(sample && sample.url ? [sample.url] : []).filter(Boolean);
-    const images = [...new Set((c.images || []).concat(sample && sample.image ? [sample.image] : []).concat(sample && sample.images ? sample.images : []))]
-      .filter(im => im && /^https?:/i.test(im))
+    const images = [...new Set((c.images || []).concat(sample && sample.image ? [sample.image] : []).concat(sample && sample.images ? sample.images : []).concat(sample && sample.ogImage ? [sample.ogImage] : []).concat(sample && sample.imageUrl ? [sample.imageUrl] : []))]
+      .filter(im => im && /^https?:/i.test(im) && !SKIP_CANDIDATE_THUMB_RE.test(im))
       .slice(0, 6);
     const sources = [...new Set((c.sourceDomains || []).concat(host ? [host] : []))].slice(0, 8);
     const sourceUrl = ownUrls[0] || (sample && (sample.sourceUrl || sample.url)) || '';
@@ -4736,6 +4996,10 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
       sourceUrl,
       sampleUrl: sourceUrl,
       imageUrl: images[0] || '',
+      thumbnailUrl: images[0] || '',
+      thumbnailOrigin: images[0] ? 'source-attached' : '',
+      sourceTitle: (sample && sample.title) || name,
+      displayName: fullName ? subject : name,
       sample,
       userConfirmed,
       userRejected: false,
@@ -4762,6 +5026,7 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
   };
   const usable = trimmed.filter(usableSurface);
   const shown = (usable.length ? usable : trimmed.filter(c => c.sourceUrl || c.sampleUrl)).slice(0, IDENTITY_VERIFY_MAX);
+  hydratePersonCandidates(shown, ranked, opts.visualHits || [], { subject });
   const alreadyConfirmed = confirmed.length > 0;
   const needed = !alreadyConfirmed;
   return {
@@ -4769,6 +5034,7 @@ export function buildIdentityVerificationPack(ranked, classification, opts = {})
     phase: alreadyConfirmed ? 'RESEARCH' : 'IDENTITY_RESOLUTION',
     reason: cluster.reason || (shown.length > 1 ? 'competing identity candidates' : (shown.length === 1 ? 'confirm the identity before expanding' : 'no high-quality identity candidate yet')),
     candidates: shown,
+    personCandidates: shown.map(serializePersonCandidate),
     ambiguous: shown.length > 1 || !!cluster.ambiguous,
     userConfirmed: alreadyConfirmed,
     allowMultiplePositive: true,
@@ -4795,9 +5061,14 @@ export function visualEvidenceGate(item, classification, opts = {}) {
   const confirmed = ((feedback.confirmed || []).map(norm));
   const userConfirmed = confirmed.some(c => c === norm(subject));
   const identityHost = /(iafd|babepedia|adultfilmdatabase|wikipedia|imdb|loyalfans|onlyfans|houseofgord|clips4sale|indexxx)\./i.test(host);
+  const associatedHosts = (opts.associatedHosts || []).map(h => String(h).replace(/^www\./, '').toLowerCase()).filter(Boolean);
+  const hostAssociated = !!(host && associatedHosts.some(a => host === a || host.endsWith('.' + a) || a.endsWith('.' + host)));
+  const queryBlob = norm(String((item && (item.queryVariant || item.query)) || (opts.query || '')));
+  const queryHasSubject = subjToks.length >= 2 && subjToks.every(t => queryBlob.includes(t));
 
   let entityMatch = 'none';
   if (subjToks.length >= 2 && subjToks.every(t => nblob.includes(t))) entityMatch = 'full';
+  else if (hostAssociated && userConfirmed) entityMatch = 'full';
   else if (subjToks.length && subjToks[0] && nblob.includes(subjToks[0])) entityMatch = 'partial';
   else if (type === 'technique' || type === 'object' || type === 'skill' || (classification && classification.intentClass === 'OBJECT')) {
     const concept = tokens(subject || topic);
@@ -4829,8 +5100,19 @@ export function visualEvidenceGate(item, classification, opts = {}) {
     return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: 'REJECTED', visualRelevance: 'unrelated', reason: grade.reason, demote: true, gate: 'identity-collision' };
   }
   if ((type === 'person' || (classification && classification.intentClass === 'PERSON')) && entityMatch !== 'full') {
-    const reason = entityMatch === 'partial' ? 'first-name or partial name is not identity evidence' : 'no entity match on page evidence (query text is not identity proof)';
-    return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: entityMatch === 'partial' ? 'METADATA_MATCH' : 'REJECTED', reason, demote: true, gate: 'entity-mismatch' };
+    // Associated host of the confirmed/identity candidate is not a random image.
+    // It is still UNVERIFIED unless the rest of the gate promotes it.
+    if (hostAssociated) {
+      entityMatch = userConfirmed ? 'full' : 'partial';
+      base.entityMatch = entityMatch;
+    } else if (queryHasSubject && (topicMatch === 'full' || topicMatch === 'related' || topicMatch === 'n/a' || topicToks.some(t => queryBlob.includes(t)))) {
+      // Person × topic image-index hit whose title omitted the name. Keep as
+      // unverified metadata — never verified, never a stolen first image.
+      return { ...base, entityMatch: 'partial', verdict: 'unverified', label: 'UNVERIFIED VISUAL', evidenceLevel: 'METADATA_MATCH', reason: 'image-index hit from a person-specific query; title/url do not independently prove identity', demote: true, gate: 'query-associated' };
+    } else {
+      const reason = entityMatch === 'partial' ? 'first-name or partial name is not identity evidence' : 'no entity match on page evidence (query text is not identity proof)';
+      return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: entityMatch === 'partial' ? 'METADATA_MATCH' : 'REJECTED', reason, demote: true, gate: 'entity-mismatch' };
+    }
   }
   if ((wildlife || animalLang) && isRestraintTechnique(subject || topic)) {
     return { ...base, verdict: 'rejected', label: 'REJECTED VISUAL', evidenceLevel: 'REJECTED', visualRelevance: 'unrelated', identityClass: 'ANIMAL', reason: 'wildlife/animal image is not the classified technique', demote: true, gate: 'wildlife' };

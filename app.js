@@ -7,7 +7,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const VERSION = '49.14';
+const VERSION = '50';
 const BACKEND_KEY = 'carmen_phone_backend_v36';
 const URL_KEY = 'carmen_last_url_v36';
 const DB_NAME = 'carmen-phone-v36';
@@ -1158,6 +1158,8 @@ async function discover(opts = {}) {
     if (opts.moreFromThisPerson) params.set('moreFromThisPerson', '1');
     if (opts.moreOnThisTopic) params.set('moreOnThisTopic', '1');
     if (opts.diveLens) params.set('diveLens', opts.diveLens);
+    if (opts.stage) params.set('stage', opts.stage);
+    if (opts.diveStage) params.set('diveStage', opts.diveStage);
     if (opts.recreatePosition || opts.mode === 'recreate-position') params.set('recreatePosition', '1');
     if (opts.mode && /^dive-/.test(opts.mode)) params.set('mode', opts.mode);
     if (opts.mode === 'recreate-position') params.set('mode', 'recreate-position');
@@ -1588,13 +1590,13 @@ function renderIdentityVerification(data) {
   const i = identityCursor;
   const c = cands[i];
   const imgs = (c.representativeImages || []).filter(Boolean);
-  const hero = imgs[0];
+  const hero = c.thumbnailUrl || imgs[0] || c.imageUrl || '';
   if ($('identifyHint')) $('identifyHint').textContent = 'Is this the person you mean?';
   const html = `<div class="tinder-wrap id-verify" data-testid="identity-verify">
     <p class="flabel">Who is this?</p>
     <p class="hint">${esc(pack.reason || 'Confirm the person. Rejection applies only to this candidate.')}</p>
-    <article class="tinder-card id-card" data-testid="identity-card" data-cand="${i}" data-candidate-id="${esc(c.candidateId || '')}" data-source-url="${esc(c.sourceUrl || c.sampleUrl || '')}">
-      ${hero ? `<img class="hero" src="${esc(imgSrc(hero))}" alt="${esc(c.name || '')}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
+    <article class="tinder-card id-card" data-testid="identity-card" data-cand="${i}" data-candidate-id="${esc(c.candidateId || '')}" data-source-url="${esc(c.sourceUrl || c.sampleUrl || '')}" data-thumbnail-origin="${esc(c.thumbnailOrigin || '')}">
+      ${hero ? `<img class="hero" src="${esc(imgSrc(hero))}" alt="${esc(c.displayName || c.name || '')}" referrerpolicy="no-referrer" data-testid="identity-thumb" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'hero-placeholder',textContent:'No associated image'}))">` : `<div class="hero-placeholder" data-testid="identity-thumb-placeholder">No associated image</div>`}
       <div class="rbody">
         <p class="pname">${esc(c.name || 'Unknown candidate')}</p>
         <div class="subtle">${esc(c.profileSource || (c.sources || []).slice(0, 3).join(' · '))}${c.usernames && c.usernames[0] ? ' · @' + esc(c.usernames[0]) : ''}</div>
@@ -1836,9 +1838,21 @@ function renderDiveIdentity() {
   </div>`;
   const status = $('diveStatus');
   if (status) {
-    status.innerHTML = `<div class="inv-status" data-testid="investigation-status">
+    const stage = (lastDiscoveryMeta && lastDiscoveryMeta.diveStage) || (lastDiscoveryMeta && lastDiscoveryMeta.partial ? 'initial-evidence' : (lastResults.length || lastVisuals.length ? 'synthesis-complete' : 'initialized'));
+    const stageLabel = ({
+      initialized: 'Investigation initialized',
+      'person-context': 'Person/source context available',
+      'initial-evidence': 'Initial evidence available',
+      'initial-visuals': 'Initial visuals available',
+      'providers-arriving': 'Additional providers arriving',
+      'synthesis-complete': 'Analysis complete',
+    })[stage] || 'Investigation running';
+    const pipe = (lastDiscoveryMeta && lastDiscoveryMeta.visualPipeline) || {};
+    const zero = pipe.zeroReason ? (' · ' + pipe.zeroReason.replace(/_/g, ' ')) : '';
+    status.innerHTML = `<div class="inv-status" data-testid="investigation-status" data-dive-stage="${esc(stage)}">
+      <div class="cell"><b>Stage</b><span data-testid="dive-stage">${esc(stageLabel)}</span></div>
       <div class="cell"><b>Identity</b><span>${confirmed ? 'Confirmed' : 'Needs confirmation'}</span></div>
-      <div class="cell"><b>Visuals</b><span>${visOk} verified · ${visUnv} unverified · ${visRej} rejected · ${visN} total</span></div>
+      <div class="cell"><b>Visuals</b><span>${visOk} verified · ${visUnv} unverified · ${visRej} rejected · ${visN} total${esc(zero)}</span></div>
       <div class="cell"><b>Sources</b><span>${lastResults.length} analyzed</span></div>
       <div class="cell"><b>Accounts</b><span>${(lastPremium || []).length} found</span></div>
     </div>`;
@@ -2023,6 +2037,13 @@ async function runDiveLens(lens) {
       mode: 'premium-accounts',
     });
   }
+  if ($('diveStatus')) {
+    $('diveStatus').innerHTML = `<div class="inv-status" data-testid="investigation-status" data-dive-stage="initialized">
+      <div class="cell"><b>Stage</b><span data-testid="dive-stage">Investigation initialized</span></div>
+      <div class="cell"><b>Identity</b><span>${esc(entity)}</span></div>
+      <div class="cell"><b>Visuals</b><span>waiting for first results</span></div>
+    </div>`;
+  }
   await discover({
     keepSubject: true,
     entity,
@@ -2031,7 +2052,26 @@ async function runDiveLens(lens) {
     diveLens: id,
     mode: 'dive-' + id,
     findMore: false,
+    stage: 'initial',
   });
+  if (lastDiscoveryMeta && lastDiscoveryMeta.partial) {
+    if ($('diveStatus')) {
+      const cur = $('diveStatus').querySelector('[data-testid="dive-stage"]');
+      if (cur) cur.textContent = 'Additional providers arriving';
+      const wrap = $('diveStatus').querySelector('[data-dive-stage]');
+      if (wrap) wrap.setAttribute('data-dive-stage', 'providers-arriving');
+    }
+    await discover({
+      keepSubject: true,
+      entity,
+      topic: id === 'bondage' ? 'bondage' : (extraContextText(lastClassification) || diveTopic || ''),
+      append: true,
+      diveLens: id,
+      mode: 'dive-' + id,
+      findMore: false,
+      stage: 'continue',
+    });
+  }
 }
 
 function selectInvestigation(id) {
@@ -4593,11 +4633,11 @@ function wire() {
         accountIdentifiers: [],
         trustedSourceDomains: c.sources || [],
         identityEvidence: c.additionalSources || [],
-        representativeImages: c.representativeImages || [],
+      representativeImages: c.representativeImages || (c.thumbnailUrl ? [c.thumbnailUrl] : []),
         candidateId: c.candidateId || '',
         identityClass: c.identityClass || 'PERSON_REAL',
       };
-      selectedEntity = selectedEntity || { canonicalName: name, type: 'person', image: (c.representativeImages || [])[0] || '', url: c.sampleUrl || '', confidence: c.confidence || 'high' };
+      selectedEntity = selectedEntity || { canonicalName: name, type: 'person', image: c.thumbnailUrl || (c.representativeImages || [])[0] || '', url: c.sourceUrl || c.sampleUrl || '', confidence: c.confidence || 'high' };
       pushTrail({ kind: 'identity', label: 'YES — THIS PERSON · ' + name, entity: name, topic: diveTopic });
       toast('Identity confirmed. What do you want to investigate about this person?');
       awaitingFocus = true;

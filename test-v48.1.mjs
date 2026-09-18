@@ -109,7 +109,7 @@ console.log('--- v48.1 Research Focus UI ---');
   assert(!/data-learn="technique"/.test(learnBlock), 'LEARN does not keep Technique');
   assert(!/data-learn="skill"/.test(learnBlock), 'LEARN does not keep Skill');
   assert(!/data-learn="product"/.test(learnBlock), 'LEARN does not keep Product');
-  assert(/const VERSION = '(49\.\d+|48\.1)'/.test(appSrc), 'frontend version is current');
+  assert(/const VERSION = '(50|49\.\d+|48\.1)'/.test(appSrc), 'frontend version is current');
 
 }
 

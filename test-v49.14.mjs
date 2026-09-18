@@ -34,11 +34,11 @@ const deploySrc = readFileSync(new URL('./.github/workflows/deploy.yml', import.
 
 console.log('--- v49.14 version / marker ---');
 {
-  assert(PLANNER_VERSION === '49.14', 'PLANNER_VERSION 49.14');
-  assert(PLANNER_BUILD === '49.14-person-image-results', 'PLANNER_BUILD');
-  assert(appSrc.includes("const VERSION = '49.14'"), 'frontend VERSION');
-  assert(/carmen-build" content="49\.14"/.test(html), 'html build');
-  assert(/v49\.14/.test(html), 'header shows version');
+  assert(PLANNER_VERSION === '50' || PLANNER_VERSION === '49.14', 'PLANNER_VERSION 49.14');
+  assert(PLANNER_BUILD === '50-agent-testable-progressive' || PLANNER_BUILD === '49.14-person-image-results', 'PLANNER_BUILD');
+  assert(appSrc.includes("const VERSION = '50'") || appSrc.includes("const VERSION = '49.14'"), 'frontend VERSION');
+  assert(/carmen-build" content="(50|49\.14)"/.test(html), 'html build');
+  assert(/v50|v49\.14/.test(html), 'header shows version');
   assert(/49\.14-person-image-results/.test(plannerSrc), 'planner marker present');
   assert(!/apply-v49\.14\.sh/.test(deploySrc), 'incomplete apply hook is not in deploy workflow');
 }
@@ -187,7 +187,7 @@ console.log('--- health ---');
 {
   const res = await worker.fetch(new Request('https://test/health'), {});
   const body = await res.json();
-  assert(body.version === '49.14' && body.build === '49.14-person-image-results', 'health reports 49.14');
+  assert((body.version === '50' || body.version === '49.14') && (body.build === '50-agent-testable-progressive' || body.build === '49.14-person-image-results'), 'health reports current');
   assert((body.features || []).includes('v49.14-person-image-results'), 'feature person-image-results');
   assert((body.features || []).includes('v49.13-investigation-actions'), 'v49.13 Deep Dive actions retained');
   assert((body.features || []).includes('v49.12-investigation-workflow'), 'v49.12 workflow retained');

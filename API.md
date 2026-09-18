@@ -1,4 +1,4 @@
-# Carmen machine-readable API (v49.4)
+# Carmen machine-readable API (v50)
 
 ChatGPT and other authorized assistants can drive Carmen through a **secure,
 read-only** HTTP API. The routes execute the same `runDiscovery` / retrieve /
@@ -12,6 +12,8 @@ Production origin:
 OpenAPI: `GET /api/v1/openapi.json`
 
 ChatGPT connection procedure: [CHATGPT.md](CHATGPT.md)
+
+v50 additions: `personCandidates` (id, displayName, sourceUrl, sourceTitle, thumbnailUrl, confidence, whySelected), `requestId`, `timings`, `visualPipeline` (provider/retrieved/filtered/verified/unverified/rejected/duplicates/finalVisuals + `zeroReason`), `diagnostics`, and dedicated routes for candidates / confirm / diagnostics. Deep Dive accepts `stage: "initial"` so an agent can inspect first useful results without waiting for every provider.
 
 ## Safety
 
@@ -59,8 +61,11 @@ Worker memory is **not durable**. Every continuation must send both
 1. `GET /api/v1/machine/capabilities`
 2. `POST /api/v1/machine/search` with `query` / `subject`
 3. Save returned `investigationId` + `investigationState`
-4. `POST /api/v1/machine/dive` with `lens` plus both
-5. Inspect the structured `results` array (no HTML)
+3b. Optional: `POST /api/v1/machine/candidates` to inspect person cards (thumbnailUrl, sourceUrl, whySelected)
+3c. Optional: `POST /api/v1/machine/confirm` with `candidateId` plus both
+4. `POST /api/v1/machine/dive` with `lens` plus both (`stage: "initial"` for first useful results)
+5. Inspect the structured `results` array, `images`, `visualPipeline` (no HTML)
+5b. `POST /api/v1/machine/diagnostics` with echoed state to inspect timings/provider/filter/verify counts
 6. Optional: `POST /api/v1/machine/investigations/{id}/confirm-identity`
 7. `POST /api/v1/machine/investigations/{id}/analyze` with a public `url` plus both
 8. `POST /api/v1/machine/investigations/{id}` with the echoed state (inspect)
@@ -80,7 +85,10 @@ If a client cannot resend the nested object, send `investigationStateJson`
 | capabilities | GET | `/api/v1/machine/capabilities` |
 | health | GET | `/api/v1/health` |
 | search | POST | `/api/v1/machine/search` |
+| person candidates | POST | `/api/v1/machine/candidates` |
+| confirm person | POST | `/api/v1/machine/confirm` |
 | Deep Dive | POST | `/api/v1/machine/dive` |
+| diagnostics | POST | `/api/v1/machine/diagnostics` |
 | investigation state | GET or POST | `/api/v1/machine/investigations/{id}` |
 | results | GET or POST | `/api/v1/machine/investigations/{id}/results` |
 | analyze | POST | `/api/v1/machine/investigations/{id}/analyze` |
@@ -183,6 +191,80 @@ Successful search / dive responses include:
 - `samePipelineAsIphoneUi` — always `true`
 - `capabilities` — allowed vs denied actions
 - `readOnly` — always `true`
+- `personCandidates` — identity cards: id, displayName, sourceUrl, sourceDomain, sourceTitle, thumbnailUrl, thumbnailOrigin, confidence, whySelected, observationState
+- `requestId` — unique per discovery run
+- `timings` — discovery/retrieval/image/video/filter/verify/dedupe/synthesis milliseconds
+- `visualPipeline` — providerResults, retrieved, filtered, verified, unverified, rejected, duplicatesRemoved, finalVisuals, zeroReason
+- `diagnostics` — the same counts plus providerStatuses and errors
+- `diveStage` / `partial` / `nextStage` — progressive Deep Dive markers
+
+`visualPipeline.zeroReason` is one of: `providers_returned_zero`, `retrieval_failed`, `filtered_out`, `incorrectly_classified_or_rejected`, `ui_or_serialization_dropped`, `all_rejected_by_visual_gate`, `no_usable_results`. Empty when `finalVisuals > 0`.
+
+Thumbnails on `personCandidates` come only from that candidate's own source (attached image → profile/og:image → that page's images → image-index hits whose pageUrl is THAT candidate). Carmen never copies the first search image onto a different person.
+
+### Person candidates
+
+```http
+POST /api/v1/machine/candidates
+Content-Type: application/json
+Authorization: Bearer $CARMEN_API_KEY
+
+{
+  "query": "Drea Morgan",
+  "subject": "Drea Morgan",
+  "type": "person",
+  "adult": "on"
+}
+```
+
+### Confirm a candidate
+
+```http
+POST /api/v1/machine/confirm
+Content-Type: application/json
+Authorization: Bearer $CARMEN_API_KEY
+
+{
+  "candidateId": "cand_1_iafdcom",
+  "investigationId": "inv_…",
+  "investigationState": { }
+}
+```
+
+### Diagnostics (echoed state — no extra live search)
+
+```http
+POST /api/v1/machine/diagnostics
+Content-Type: application/json
+Authorization: Bearer $CARMEN_API_KEY
+
+{
+  "investigationId": "inv_…",
+  "investigationState": { }
+}
+```
+
+Pass `query` on diagnostics to re-run the live pipeline instead.
+
+### Progressive Deep Dive
+
+```http
+POST /api/v1/machine/dive
+Content-Type: application/json
+Authorization: Bearer $CARMEN_API_KEY
+
+{
+  "lens": "bondage",
+  "subject": "Drea Morgan",
+  "topic": "bondage",
+  "adult": "on",
+  "stage": "initial",
+  "investigationId": "inv_…",
+  "investigationState": { }
+}
+```
+
+Inspect `images` + `visualPipeline`. Then POST again without `stage` (or `stage: "continue"`) with the returned `investigationState` for the remaining providers.
 
 Each result item includes: investigationId, subject, topic, intent,
 sourceClass, sourceUrl, canonicalUrl, title, publisher, host, creator,

@@ -169,6 +169,13 @@ import {
   filterAliases,
   isPlausibleAlias,
   isFictionalCharacterHost,
+  createPipelineClock,
+  hydratePersonCandidates,
+  serializePersonCandidate,
+  associatedHostsFromIdentity,
+  buildVisualPipelineDiagnostics,
+  emptyVisualPipeline,
+  explainZeroVisuals,
 } from './investigation-planner.js';
 
 
@@ -485,6 +492,25 @@ const BROWSER_HEADERS = {
 // Each returns true if it produced any results. Falls back to generic anchor
 // parsing so a changed class name never zeroes out a whole provider.
 
+function extractBlockImage(block) {
+  if (!block) return '';
+  const re = /<img\b[^>]*>/gi;
+  let m;
+  while ((m = re.exec(block))) {
+    const tag = m[0];
+    const src = (tag.match(/\s(?:src|data-src|data-original)=["']([^"']+)/i) || [])[1];
+    if (!src) continue;
+    let abs = decodeEntities(src);
+    if (abs.startsWith('//')) abs = 'https:' + abs;
+    if (!/^https?:/i.test(abs)) continue;
+    if (/favicon|\.ico(\?|$)|sprite|pixel|1x1|blank\.gif|placeholder|logo[-_]?small|tracking|badge|\/ip3\/|data:image\/gif|data:image\/svg/i.test(abs)) continue;
+    if (/\.(jpe?g|png|webp|gif)(\?|$)/i.test(abs) || /\/th\?id=/i.test(abs) || /external-content\.duckduckgo\.com\/iu/i.test(abs) || /bing\.com\/th/i.test(abs)) {
+      return abs.replace(/&/g, '&');
+    }
+  }
+  return '';
+}
+
 function parseDDG(html, results, seen) {
   const out = [];
   const re = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
@@ -494,7 +520,8 @@ function parseDDG(html, results, seen) {
     // Snippet follows in a result__snippet anchor.
     const after = html.slice(m.index, m.index + 1600);
     const sm = after.match(/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i);
-    out.push({ title: m[2], url, snippet: sm ? sm[1] : '', source: 'DuckDuckGo' });
+    const image = extractBlockImage(after);
+    out.push({ title: m[2], url, snippet: sm ? sm[1] : '', source: 'DuckDuckGo', image, images: image ? [image] : [], imageOrigin: image ? 'source-attached' : '' });
   }
   let added = false;
   for (const it of out) added = uniqueAdd(results, seen, it) || added;
@@ -522,7 +549,8 @@ function parseBing(html, results, seen) {
     }
     if (!hm || !url) continue;
     const sm = block.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-    added = uniqueAdd(results, seen, { title: hm[1], url, snippet: sm ? sm[1] : '', source: 'Bing' }) || added;
+    const image = extractBlockImage(block);
+    added = uniqueAdd(results, seen, { title: hm[1], url, snippet: sm ? sm[1] : '', source: 'Bing', image, images: image ? [image] : [], imageOrigin: image ? 'source-attached' : '' }) || added;
   }
   return added;
 }
@@ -5166,6 +5194,11 @@ function composeInvestigationQuery(q, entity, topic) {
 
 async function runDiscovery(query, opts = {}) {
   const startedAt = Date.now();
+  const clock = createPipelineClock(startedAt);
+  clock.begin('discovery');
+  const requestId = 'req_' + startedAt.toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  const diveStage = String(opts.stage || opts.diveStage || '').toLowerCase();
+  const initialOnly = diveStage === 'initial' || diveStage === 'first';
   const expanded = opts.expanded === true || opts.expanded === 'true' || opts.expanded === 1;
   const visualMore = opts.visualMore === true || opts.visualMore === 'true' || opts.visualMore === 1;
   const further = opts.further === true || opts.investigateFurther === true;
@@ -5426,6 +5459,8 @@ async function runDiscovery(query, opts = {}) {
     addVar(qv.q, qv.why, qv.lane || qv.family, qv.kind, { sourceClass: qv.sourceClass });
   }
   const results = [], seen = new Set(), diagnostics = {};
+  let extraActive = false;
+  clock.end('discovery');
   const fixtureName = String(opts.fixture || opts.fixtureName || '').trim();
   const skipLive = !!fixtureName && !!fixtureItems(fixtureName);
   if (skipLive) {
@@ -5543,6 +5578,7 @@ async function runDiscovery(query, opts = {}) {
       }
     }
   } else if (!visualOnly) {
+    clock.begin('retrieval');
     const webVariantsRaw = retrievalExecutionOrder(
       variants.filter(v => (v.kind || 'web') === 'web'),
       { phases: identityHold ? ['identity'] : ['identity', 'intersection', 'adult'] }
@@ -5550,8 +5586,10 @@ async function runDiscovery(query, opts = {}) {
     const webVariants = identityHold
       ? webVariantsRaw.filter(v => /identity|primary|adult-identity/i.test(String(v.lane || v.family || '')))
       : webVariantsRaw;
-    const cap = identityHold ? 8 : (expanded || isDiveLens || intent.mode === 'find-more' ? 18 : (depth === 'deep' ? 14 : depth === 'contextual' ? 12 : 8));
-    const extraActive = !!extraContext(classification);
+    const cap = initialOnly
+      ? (identityHold ? 4 : 6)
+      : (identityHold ? 6 : (expanded || isDiveLens || intent.mode === 'find-more' ? 12 : (depth === 'deep' ? 10 : depth === 'contextual' ? 8 : 6)));
+    extraActive = !!extraContext(classification);
     const adultOnPerson = (adult === 'on' || adult === 'both') && classification.type === 'person';
     if (adultOnPerson) {
       await reservedAdultIdentityLane(classification, results, seen, diagnostics);
@@ -5561,70 +5599,91 @@ async function runDiscovery(query, opts = {}) {
       : adultOnPerson
         ? new Set(['identity', 'intersection', 'adult', 'adult-identity', 'productions', 'interviews', 'primary', 'visual', 'accounts', 'identity-variants', 'premium'])
         : new Set(['primary', 'intersection', 'identity', 'visual', 'topic-variants', 'instructional', 'accounts']);
-    const visualReserve = wantVisualBranch ? 3 : 0;
+    const visualReserve = wantVisualBranch || isDiveLens ? 3 : 0;
     const accountReserve = (classification.type === 'person' || intent.premiumAccounts) ? 2 : 0;
     let redditLaneDone = false;
     const redditQuery = String(classification.subject || q).replace(/"/g, '').trim() || q;
-    for (let i = 0; i < Math.min(webVariants.length, cap); i++) {
-      if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max - visualReserve - accountReserve) break;
-      if (Date.now() - startedAt >= INVESTIGATION_TIME_GUARD_MS) break;
-      await runVariant(webVariants[i], i === 0);
-      if (i === 0) {
+    const BATCH = 3;
+    const runList = webVariants.slice(0, Math.min(webVariants.length, cap));
+    if (runList.length) {
+      await runVariant(runList[0], true);
+      if (!redditLaneDone) {
         await reservedRedditLane(redditQuery, results, seen, diagnostics);
         redditLaneDone = true;
       }
-      const remainingMust = webVariants.slice(i + 1).some(v => mustRun.has(v.lane) || mustRun.has(v.family));
-      if (depth === 'broad' && !expanded && !isDiveLens && intent.mode !== 'find-more' && results.length >= MAX_RESULTS && !remainingMust) break;
+      for (let i = 1; i < runList.length; i += BATCH) {
+        if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max - visualReserve - accountReserve) break;
+        if (Date.now() - startedAt >= INVESTIGATION_TIME_GUARD_MS) break;
+        const chunk = runList.slice(i, i + BATCH);
+        await Promise.all(chunk.map(v => runVariant(v, false)));
+        const remainingMust = runList.slice(i + BATCH).some(v => mustRun.has(v.lane) || mustRun.has(v.family));
+        if (depth === 'broad' && !expanded && !isDiveLens && intent.mode !== 'find-more' && results.length >= MAX_RESULTS && !remainingMust) break;
+        if (initialOnly && results.length >= 8) break;
+      }
     }
     if (!redditLaneDone) await reservedRedditLane(redditQuery, results, seen, diagnostics);
     if (results.length < 6 && SEARCH_BUDGET.used < SEARCH_BUDGET.max) {
       await startpage(q, results, seen, diagnostics);
     }
+    clock.end('retrieval');
   }
 
   const imgQ = imageSearchQuery(q, classification);
   const visualHits = [];
   const mediaVariants = variants.filter(v => v.kind === 'image' || v.kind === 'video');
-  const wantVisual = !identityHold && (isVisualSubject(classification) || visualMore || further || !!visualMode || videoMore || researchFocus.includes('visuals'));
+  const diveWantsVisuals = isDiveLens && (intent.mode === 'dive-bondage' || intent.mode === 'dive-visuals' || intent.diveLens === 'bondage' || intent.diveLens === 'visuals' || intent.diveLens === 'clothing');
+  const wantVisual = diveWantsVisuals || visualMore || further || !!visualMode || videoMore || researchFocus.includes('visuals') || (!identityHold && isVisualSubject(classification));
+  const identityPortrait = identityHold && classification.type === 'person';
   const mode = visualMode || (visualMore ? 'more' : (further ? 'different' : 'more'));
+  extraActive = extraActive || !!extraContext(classification);
   if (skipLive) {
     const fxVis = fixtureItems(fixtureName);
     if (fxVis && Array.isArray(fxVis.visualHits)) {
       for (const hit of fxVis.visualHits) pushVisualHit(visualHits, hit, hit.source || 'Fixture Images');
     }
-  } else if (wantVisual && !classification.isUrl) {
+  } else if ((wantVisual || identityPortrait) && !classification.isUrl) {
+    clock.begin('imageSearch');
     const vq = visualQueryVariants(classification, { mode, seedVisual, excludeHosts, attemptedQueries });
     const vidQ = videoQueryVariants(classification, { attemptedQueries });
+    if (identityPortrait && classification.subject) {
+      vq.unshift({ q: '"' + classification.subject + '" (portrait OR profile OR headshot OR avatar OR photo)', why: 'identity-card thumbnail from this person, not a random first image', lane: 'identity-portrait', kind: 'image' });
+    }
+    if (diveWantsVisuals && intent.mode === 'dive-bondage') {
+      const sub = quoteName(classification.subject) || classification.subject;
+      vq.unshift({ q: sub + ' bondage (photoset OR gallery OR stills OR scene)', why: 'person × bondage visual lane', lane: 'bondage-images', kind: 'image' });
+    }
     if (!videoMore) {
       for (const v of vq) addVar(v.q, v.why, 'images', 'image');
     }
     // Do not mark video classes as attempted during More Images / visual-only
     // passes — those classes belong to More Videos.
-    if (videoMore || !(visualMore || visualMode === 'more' || visualMode === 'searchvisual' || visualMode === 'similar' || visualMode === 'different')) {
+    if (!identityHold && (videoMore || !(visualMore || visualMode === 'more' || visualMode === 'searchvisual' || visualMode === 'similar' || visualMode === 'different'))) {
       for (const v of vidQ) addVar(v.q, v.why, 'videos', 'video');
     }
     const primary = (vq[0] && vq[0].q) || imgQ;
     const second = (vq[1] && vq[1].q) || '';
     const videoPrimary = (vidQ[0] && vidQ[0].q) || primary;
-    const imgCap = visualOnly || visualMore || visualMode ? 32 : (expanded ? 28 : 24);
+    const imgCap = identityPortrait ? 12 : (visualOnly || visualMore || visualMode ? 32 : (expanded ? 28 : 24));
     const jobs = [];
+    clock.begin('videoSearch');
     if (!videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(bingImages(primary, results, seen, diagnostics, imgCap, visualHits, visualOffset));
-    if (!videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(yahooImages(second || primary, results, seen, diagnostics, visualOnly ? 24 : 18, visualHits));
-    if (SEARCH_BUDGET.used < SEARCH_BUDGET.max && (videoMore || wantVisual)) jobs.push(bingVideos(videoPrimary, results, seen, diagnostics));
-    if (videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vidQ[1]) jobs.push(bingVideos(vidQ[1].q, results, seen, diagnostics));
+    if (!videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(yahooImages(second || primary, results, seen, diagnostics, identityPortrait ? 10 : (visualOnly ? 24 : 18), visualHits));
+    if (!identityHold && SEARCH_BUDGET.used < SEARCH_BUDGET.max && (videoMore || wantVisual)) jobs.push(bingVideos(videoPrimary, results, seen, diagnostics));
+    if (!identityHold && videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vidQ[1]) jobs.push(bingVideos(vidQ[1].q, results, seen, diagnostics));
     if (expanded && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(google(q, results, seen, diagnostics));
     if (expanded && SEARCH_BUDGET.used < SEARCH_BUDGET.max) jobs.push(mojeek(q, results, seen, diagnostics));
     if (jobs.length) await Promise.all(jobs);
+    clock.end('videoSearch');
     const bingEmpty = diagnostics['Bing Images'] && (diagnostics['Bing Images'].error || diagnostics['Bing Images'].added === 0);
     const yahooEmpty = diagnostics['Yahoo Images'] && (diagnostics['Yahoo Images'].error || diagnostics['Yahoo Images'].added === 0);
-    if (!videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vq[1] && (visualOnly || extraContext(classification) || further || expanded || bingEmpty)) {
+    if (!initialOnly && !identityPortrait && !videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vq[1] && (visualOnly || extraContext(classification) || further || expanded || bingEmpty)) {
       await bingImages(vq[1].q, results, seen, diagnostics, 20, visualHits, visualOffset ? visualOffset + 20 : 0);
     }
-    if (!videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && (bingEmpty || yahooEmpty) && vq[2]) {
+    if (!initialOnly && !identityPortrait && !videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && (bingEmpty || yahooEmpty) && vq[2]) {
       diagnostics.ProviderPivot = { reason: 'image provider empty or failed — pivoting to the next query class, not retrying the dead path', from: bingEmpty ? 'Bing Images' : 'Yahoo Images', q: vq[2].q };
       await bingImages(vq[2].q, results, seen, diagnostics, 18, visualHits);
     }
-    if (videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vidQ[2]) {
+    if (!identityHold && videoMore && SEARCH_BUDGET.used < SEARCH_BUDGET.max && vidQ[2]) {
       diagnostics.ProviderPivot = { reason: 'video index needed a new query class — pivoting rather than repeating the same media IDs', q: vidQ[2].q };
       await bingVideos(vidQ[2].q, results, seen, diagnostics);
     }
@@ -5642,6 +5701,7 @@ async function runDiscovery(query, opts = {}) {
         }
       } catch {}
     }
+    clock.end('imageSearch');
   } else if (mediaVariants.length) {
     for (const m of mediaVariants) {
       if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max) break;
@@ -5650,8 +5710,13 @@ async function runDiscovery(query, opts = {}) {
     }
   }
 
+  clock.begin('filtering');
   let ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification, { cap: (isDiveLens || intent.mode === 'find-more' || expanded) ? DIVE_RESULTS_CAP : MAX_RESULTS });
-  if (opts.enrich !== false && !visualOnly && !skipLive) ranked = await enrichTopResults(ranked, classification);
+  if (opts.enrich !== false && !visualOnly && !skipLive && !(initialOnly && isDiveLens)) {
+    clock.begin('retrievalPages');
+    ranked = await enrichTopResults(ranked, classification);
+    clock.end('retrievalPages');
+  }
 
   async function runAdaptiveQuery(qv) {
     if (!qv || !qv.q) return;
@@ -5688,7 +5753,7 @@ async function runDiscovery(query, opts = {}) {
       identityPhase: identityHold,
     });
     adaptive.pending = adaptive.pending.filter(p => !adaptive.attemptedSet.has(String(p.q).toLowerCase()));
-    if (!skipLive && !visualOnly && !classification.isUrl) {
+    if (!skipLive && !visualOnly && !classification.isUrl && !initialOnly) {
       const priorUrls = () => ranked.concat(results).map(r => r.url).filter(Boolean);
       const priorHosts = () => ranked.concat(results).map(r => hostOf(r.url).replace(/^www\./, '')).filter(Boolean);
       let sliceRan = 0;
@@ -5750,7 +5815,7 @@ async function runDiscovery(query, opts = {}) {
     }
   }
 
-  if (!skipLive && !visualOnly && !classification.isUrl && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous') && remainingFetches() > 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
+  if (!initialOnly && !skipLive && !visualOnly && !classification.isUrl && (classification.type === 'person' || classification.type === 'social' || classification.type === 'ambiguous') && remainingFetches() > 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
     const hasIdentitySurface = ranked.some(r => {
       const sc = r.sourceClass || classifySourceClass(r, classification);
       if (sc === 'DATABASE' || sc === 'PRIMARY' || sc === 'PUBLIC_PROFILE') return true;
@@ -5775,8 +5840,8 @@ async function runDiscovery(query, opts = {}) {
   const retrievedN = ranked.filter(r => r.retrievalStatus === 'RETRIEVED' || r.provenance === 'RETRIEVED').length;
   const restricted = ranked.filter(r => r.accessState === 'PAYWALLED' || r.accessState === 'AUTHENTICATION_REQUIRED' || r.accessState === 'AGE_RESTRICTED' || r.accessState === 'BLOCKED').length;
   const intersectionCountEarly = ranked.filter(r => r.intersection).length;
-  const extraActive = extraContext(classification);
-  if (!skipLive && !visualOnly && !expanded && extraActive && intersectionCountEarly === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
+  extraActive = extraContext(classification);
+  if (!initialOnly && !skipLive && !visualOnly && !expanded && extraActive && intersectionCountEarly === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
     diagnostics.ContinuedSearch = {
       reason: 'first-pass intersection was thin — broadening the entity ∩ context lane, not dumping biography',
       philosophy: 'Progressive intersection retrieval. Semantic variants are planning knowledge, not case evidence.',
@@ -5791,7 +5856,7 @@ async function runDiscovery(query, opts = {}) {
     if (SEARCH_BUDGET.used < SEARCH_BUDGET.max) await bingImages(imgQ, results, seen, diagnostics, 16, visualHits);
     ranked = rankResults(classification.isUrl ? (humanizePath(classification.url) || q) : q, results, classification, { cap: (isDiveLens || intent.mode === 'find-more' || expanded) ? DIVE_RESULTS_CAP : MAX_RESULTS });
     if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
-  } else if (!skipLive && !visualOnly && !expanded && (ranked.length < 3 || retrievedN === 0 || restricted >= Math.max(2, ranked.length - 1)) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
+  } else if (!initialOnly && !skipLive && !visualOnly && !expanded && (ranked.length < 3 || retrievedN === 0 || restricted >= Math.max(2, ranked.length - 1)) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4) {
     diagnostics.ContinuedSearch = {
       reason: ranked.length < 3 ? 'few public results on the first pass' : (restricted ? 'obvious sources were restricted' : 'obvious sources were not retrievable'),
       philosophy: 'Escalating to public alternatives — not retrying the same wall.',
@@ -5807,7 +5872,7 @@ async function runDiscovery(query, opts = {}) {
     if (opts.enrich !== false) ranked = await enrichTopResults(ranked, classification);
   }
 
-  if (!skipLive && !visualOnly && depth !== 'broad' && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
+  if (!skipLive && !visualOnly && depth !== 'broad' && !initialOnly && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
     graphLeads = extractGraphLeads(
       ranked.filter(r => r.provenance === 'RETRIEVED' || r.textExcerpt).map(r => ({
         title: r.title,
@@ -5852,7 +5917,7 @@ async function runDiscovery(query, opts = {}) {
   }
 
   const diversity = sourceDiversityReport(ranked, { adultOn: adult === 'on' || adult === 'both' });
-  if (!skipLive && !visualOnly && shouldOpenMoreAdultLanes(diversity) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
+  if (!skipLive && !visualOnly && !initialOnly && shouldOpenMoreAdultLanes(diversity) && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 4 && Date.now() - startedAt < INVESTIGATION_TIME_GUARD_MS - 2000) {
     diagnostics.AdultSourceDiversity = {
       reason: 'Adult Lens ON but results were mostly generic indexes / YouTube / Pinterest / mirrors — opening additional adult source lanes',
       genericHeavy: diversity.genericHeavy,
@@ -5893,7 +5958,7 @@ async function runDiscovery(query, opts = {}) {
   }
 
   const lensMode = intent.mode === 'dive-bondage' || intent.mode === 'dive-people' || intent.mode === 'dive-visuals' || intent.mode === 'dive-clothing' || intent.mode === 'find-more' || intent.mode === 'recreate-position' || intent.mode === 'premium-accounts' || !!intent.diveLens;
-  if (!skipLive && lensMode && additive.genuinelyNew === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 3) {
+  if (!initialOnly && !skipLive && lensMode && additive.genuinelyNew === 0 && SEARCH_BUDGET.used < SEARCH_BUDGET.max - 3) {
     const nextLane = nextFindMoreLane(intent, ranked, variants.map(v => v.q).concat(attemptedQueries), { visuals: visualHits });
     diagnostics.AdditiveExpansion = {
       reason: 'this angle added no new evidence — pivoting to the next unexplored retrieval lane rather than rewriting the same query',
@@ -5928,9 +5993,10 @@ async function runDiscovery(query, opts = {}) {
     return true;
   });
 
+  clock.begin('verification');
   const identity = buildEntityIdentity(classification, [], ranked, graphLeads);
   const intersectionCount = ranked.filter(r => r.intersection).length;
-  let visualCorpus = (wantVisualBranch || isVisualSubject(classification) || visualMore || further || !!visualMode)
+  let visualCorpus = (wantVisualBranch || diveWantsVisuals || identityPortrait || isVisualSubject(classification) || visualMore || further || !!visualMode)
     ? buildVisualCorpus(results, ranked.filter(r => r.provenance === 'RETRIEVED' || r.retrievalStatus === 'RETRIEVED'), classification, filteredHits)
     : [];
   visualCorpus = visualCorpus.filter(im => {
@@ -5941,6 +6007,7 @@ async function runDiscovery(query, opts = {}) {
   const identityName = (classification.entityIdentity && classification.entityIdentity.canonicalName) || classification.subject;
   const visualIdentity = applyVisualIdentityFilter(visualCorpus, identityName, { identityFeedback: intent.identityFeedback, identityRecord: classification.entityIdentity });
   const classKept = [];
+  clock.begin('filteringVisuals');
   for (const im of visualIdentity.kept || []) {
     const vis = classifyVisualRelevance(im, classification);
     im.visualClass = vis.visualClass;
@@ -5953,13 +6020,22 @@ async function runDiscovery(query, opts = {}) {
   }
   visualIdentity.kept = classKept;
   visualCorpus = visualIdentity.kept.concat(visualIdentity.dropped.map(im => ({ ...im, primaryCorpus: false })));
+  clock.end('filteringVisuals');
+  clock.end('filtering');
+  const identityClusterEarly = competingIdentityCandidates(ranked, classification, { identityFeedback: intent.identityFeedback, subject: classification.subject });
+  const associatedHosts = associatedHostsFromIdentity(intent.identityFeedback, identityClusterEarly.candidates, ranked);
   {
     const known = (knownMedia || []).concat((opts.knownVisuals || []).map(v => v.url || v.image || v)).filter(Boolean);
+    clock.begin('deduplication');
     const deduped = dedupeVisualEvidence(visualIdentity.kept, known);
+    clock.end('deduplication');
+    clock.begin('verification');
     const gated = applyVisualEvidenceGate(deduped.unique, classification, {
       identityFeedback: intent.identityFeedback,
       topic: extraContext(classification) || keepTopic || intent.topic,
       subject: classification.subject,
+      associatedHosts,
+      query: q,
     });
     diagnostics.VisualEvidenceGate = {
       verified: gated.verified.length,
@@ -5978,6 +6054,24 @@ async function runDiscovery(query, opts = {}) {
         duplicatesRemoved: deduped.duplicatesRemoved,
       };
     }
+    diagnostics.VisualPipeline = buildVisualPipelineDiagnostics({
+      discoveryQueries: variants.filter(v => v.kind === 'image' || /bondage-images|visual|portrait/i.test(String(v.lane || ''))).length,
+      providerResults: visualHits.length,
+      retrieved: visualHits.length + ranked.filter(r => r.image || (r.images && r.images.length)).length,
+      filtered: (visualIdentity.dropped || []).filter(im => im.demote || im.visualClass === 'unrelated').length,
+      classified: (deduped.unique || []).length + (gated.rejected || []).length,
+      verified: gated.verified.length,
+      unverified: gated.unverified.length,
+      rejected: gated.rejected.length,
+      duplicatesRemoved: deduped.duplicatesRemoved,
+      finalVisuals: visualCorpus.length,
+      providers: {
+        'Bing Images': diagnostics['Bing Images'] || {},
+        'Yahoo Images': diagnostics['Yahoo Images'] || {},
+        'Bing Videos': diagnostics['Bing Videos'] || {},
+      },
+    });
+    clock.end('verification');
   }
   const primaryVisuals = visualIdentity.kept;
   const wrongPersonVisuals = visualIdentity.dropped.filter(im => im.identityCollision || im.identityGrade === 'unverified' && im.identityCollision);
@@ -6008,7 +6102,13 @@ async function runDiscovery(query, opts = {}) {
 
   const buckets = evidenceBuckets(ranked);
   const identityCluster = competingIdentityCandidates(ranked, classification, { identityFeedback: intent.identityFeedback, subject: classification.subject });
-  const identityVerification = buildIdentityVerificationPack(ranked, classification, { identityFeedback: intent.identityFeedback, subject: classification.subject });
+  const identityVerification = buildIdentityVerificationPack(ranked, classification, {
+    identityFeedback: intent.identityFeedback,
+    subject: classification.subject,
+    visualHits,
+  });
+  hydratePersonCandidates(identityVerification.candidates || [], ranked, visualHits, { subject: classification.subject });
+  if (identityVerification.candidates) identityVerification.personCandidates = identityVerification.candidates.map(serializePersonCandidate);
   const diagnosis = corpusDiagnosis(ranked, diagnostics, intent);
   const providerStatuses = Object.fromEntries(Object.entries(diagnostics).map(([k, v]) => [k, { ...(v || {}), ...classifyProviderFailure(v) }]));
   const knownSiteStatus = diagnostics.KnownSite ? knownSiteAccessStatus(diagnostics.KnownSite) : null;
@@ -6096,6 +6196,18 @@ async function runDiscovery(query, opts = {}) {
   if (identity && Array.isArray(identity.aliases)) identity.aliases = filterAliases(identity.aliases);
   const queueSummary = queuedWorkSummary(adaptive);
 
+  clock.begin('synthesis');
+  const personCandidates = (identityVerification.personCandidates || (identityVerification.candidates || []).map(serializePersonCandidate));
+  const timing = clock.snapshot();
+  clock.end('synthesis');
+  const visualPipeline = diagnostics.VisualPipeline || emptyVisualPipeline();
+  const firstUsefulMs = (visualCorpus.length || ranked.length || personCandidates.length)
+    ? (timing.stages.retrieval && timing.stages.retrieval.endMs) || timing.totalMs
+    : timing.totalMs;
+  const diveStageOut = initialOnly
+    ? (visualCorpus.length ? 'initial-visuals' : (ranked.length ? 'initial-evidence' : 'initialized'))
+    : 'synthesis-complete';
+
   return {
     query: q,
     classification,
@@ -6123,6 +6235,27 @@ async function runDiscovery(query, opts = {}) {
     identityAmbiguous: !!identityCluster.ambiguous,
     identityAmbiguousReason: identityCluster.reason || '',
     identityVerification,
+    personCandidates,
+    requestId,
+    timings: {
+      requestStart: timing.requestStart,
+      totalMs: Date.now() - startedAt,
+      firstUsefulMs,
+      stages: timing.stages,
+      discoveryMs: (timing.stages.discovery && timing.stages.discovery.ms) || 0,
+      retrievalMs: (timing.stages.retrieval && timing.stages.retrieval.ms) || 0,
+      imageSearchMs: (timing.stages.imageSearch && timing.stages.imageSearch.ms) || 0,
+      videoSearchMs: (timing.stages.videoSearch && timing.stages.videoSearch.ms) || 0,
+      filteringMs: (timing.stages.filtering && timing.stages.filtering.ms) || 0,
+      verificationMs: (timing.stages.verification && timing.stages.verification.ms) || 0,
+      deduplicationMs: (timing.stages.deduplication && timing.stages.deduplication.ms) || 0,
+      synthesisMs: (timing.stages.synthesis && timing.stages.synthesis.ms) || 0,
+    },
+    visualPipeline,
+    partial: !!initialOnly,
+    nextStage: initialOnly ? 'continue' : '',
+    diveStage: diveStageOut,
+    progressive: !!initialOnly,
     sourceDiversity: diversity,
     corpusDiagnosis: diagnosis,
     redditEvidence: redditUnavailable ? 'unavailable' : (redditResultCount(ranked) ? 'present' : 'none'),
@@ -6392,6 +6525,7 @@ async function searchWeb(req) {
   const resume = u.searchParams.get('resume') === '1' || u.searchParams.get('resume') === 'true';
   const confirmIdentity = u.searchParams.get('confirmIdentity') === '1' || u.searchParams.get('confirmIdentity') === 'true' || intentMode === 'confirm-identity';
   const identityPhase = u.searchParams.get('identityPhase') === '1' || u.searchParams.get('identityPhase') === 'true';
+  const stage = (u.searchParams.get('stage') || u.searchParams.get('diveStage') || '').trim();
   const pendingQueue = parseAttemptedList(u.searchParams.get('pendingQueue') || '');
   let resumeQueue = null;
   try {
@@ -6440,6 +6574,7 @@ async function searchWeb(req) {
     resumeQueue,
     confirmIdentity,
     identityPhase,
+    stage,
     wantVisual: researchFocus.split(/[,+|]/).map(s => s.trim().toLowerCase()).includes('visuals') || visualMore || !!visualMode,
   });
   return json(discovery, 200, req);
@@ -7763,7 +7898,7 @@ function machineCapabilities(env) {
     samePipelineAsIphoneUi: true,
     mock: false,
     browserTestSimulation: false,
-    allowed: ['search', 'dive', 'analyze', 'inspect-investigation', 'inspect-results', 'confirm-identity', 'reject-identity', 'find-more', 'learn'],
+    allowed: ['search', 'dive', 'analyze', 'inspect-investigation', 'inspect-results', 'inspect-candidates', 'inspect-diagnostics', 'confirm-identity', 'reject-identity', 'find-more', 'learn', 'progressive-dive'],
     denied: ['external-action', 'messaging', 'posting', 'commenting', 'following', 'purchasing', 'submitting-forms', 'creating-accounts', 'transactions', 'login-bypass', 'paywall-bypass'],
     primaryDiveLenses: ['bondage', 'people', 'clothing'],
     findMore: 'additive expansion via the next unexplored retrieval lane',
@@ -7775,7 +7910,9 @@ function machineCapabilities(env) {
         'GET /api/v1/machine/capabilities',
         'POST /api/v1/machine/search',
         'save investigationId + investigationState',
-        'POST /api/v1/machine/dive with both',
+        'POST /api/v1/machine/candidates',
+        'POST /api/v1/machine/confirm',
+        'POST /api/v1/machine/diagnostics',
         'inspect results array',
         'POST /api/v1/machine/investigations/{id}/analyze with url + both',
         'POST /api/v1/machine/investigations/{id} with echoed state',
@@ -7801,7 +7938,7 @@ function identityStateFrom(state, discovery) {
     rejectedImages: fb.rejectedImages || [],
     rejectedHosts: fb.rejectedHosts || [],
     rejectedUrls: fb.rejectedUrls || [],
-    candidates: (discovery && discovery.identityCandidates) || (state && state.candidates) || [],
+    candidates: (discovery && (discovery.personCandidates || discovery.identityCandidates)) || (state && (state.personCandidates || state.candidates)) || [],
     ambiguous: !!(discovery && discovery.identityAmbiguous),
     ambiguousReason: (discovery && discovery.identityAmbiguousReason) || null,
     subject: (state && state.subject) || (discovery && discovery.classification && discovery.classification.subject) || '',
@@ -8003,6 +8140,14 @@ function machineOpenApiSpec() {
             pipeline: { type: 'object', additionalProperties: true },
             capabilities: { type: 'object', additionalProperties: true },
             count: { type: 'integer' },
+            personCandidates: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            requestId: { type: 'string' },
+            timings: { type: 'object', additionalProperties: true },
+            visualPipeline: { type: 'object', additionalProperties: true },
+            diagnostics: { type: 'object', additionalProperties: true },
+            diveStage: { type: 'string' },
+            partial: { type: 'boolean' },
+            nextStage: { type: 'string' },
           },
         },
         InvestigationEnvelope: {
@@ -8055,6 +8200,9 @@ function machineOpenApiSpec() {
             investigationState: { '$ref': '#/components/schemas/InvestigationState' },
             investigationStateJson: { type: 'string', description: 'Optional JSON string alternative to investigationState.' },
             fixture: { type: 'string', description: 'Optional deterministic fixture name for tests only.' },
+            stage: { type: 'string', description: 'initial returns a faster first slice. Echo investigationState then continue.' },
+            identityPhase: { type: 'boolean' },
+            diagnostic: { type: 'boolean' },
           },
         },
         DiveRequest: {
@@ -8072,6 +8220,7 @@ function machineOpenApiSpec() {
             priorResults: { type: 'array', items: { type: 'object', additionalProperties: true } },
             graphLeads: { type: 'array', items: { type: 'object', additionalProperties: true } },
             fixture: { type: 'string' },
+            stage: { type: 'string', description: 'initial for first useful results; omit or continue for the full lens.' },
           },
         },
         InspectRequest: {
@@ -8098,6 +8247,7 @@ function machineOpenApiSpec() {
           type: 'object',
           properties: {
             name: { type: 'string', description: 'Confirmed person name.' },
+            candidateId: { type: 'string', description: 'Person candidate ID from personCandidates.' },
             subject: { type: 'string' },
             query: { type: 'string' },
             type: { type: 'string' },
@@ -8271,6 +8421,53 @@ function machineOpenApiSpec() {
           },
         },
       },
+      '/api/v1/machine/candidates': {
+        post: {
+          operationId: 'machineCandidates',
+          tags: ['machine'],
+          summary: 'Person-selection candidates',
+          description: 'Same runDiscovery identity path as the iPhone cards. Returns personCandidates with thumbnailUrl, sourceUrl, and whySelected.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/SearchRequest' } } } },
+          responses: {
+            200: json(envRef, 'Person candidates from the live pipeline'),
+            400: json(errRef, 'Missing query/subject'),
+            401: json(errRef, 'Unauthorized'),
+          },
+        },
+      },
+      '/api/v1/machine/confirm': {
+        post: {
+          operationId: 'machineConfirm',
+          tags: ['machine'],
+          summary: 'Confirm a person candidate',
+          description: 'That’s-the-one via candidateId or name. Echo investigationState. Does not message, post, or contact anyone.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/ConfirmIdentityRequest' } } } },
+          responses: {
+            200: json(envRef, 'Canonical person plus investigationState'),
+            401: json(errRef, 'Unauthorized'),
+          },
+        },
+      },
+      '/api/v1/machine/diagnostics': {
+        post: {
+          operationId: 'machineDiagnostics',
+          tags: ['machine'],
+          summary: 'Pipeline diagnostics',
+          description: 'Request ID, timings, provider counts, filter/verify/dedupe counts, visualPipeline zeroReason. Echo investigationState or pass query to run the real pipeline.',
+          security: bearerFirst,
+          'x-openai-isConsequential': false,
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/InspectRequest' } } } },
+          responses: {
+            200: json({ type: 'object', additionalProperties: true }, 'Pipeline diagnostics'),
+            401: json(errRef, 'Unauthorized'),
+            404: json(errRef, 'No stored diagnostics'),
+          },
+        },
+      },
     },
   };
   return spec;
@@ -8324,11 +8521,16 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
   state.topic = topic || state.topic;
   state.results = (discovery.results || []).map(r => ({ url: r.url, title: r.title, role: r.role, score: r.score })).slice(0, 40);
   state.candidates = discovery.identityCandidates || state.candidates;
+  state.personCandidates = discovery.personCandidates || state.personCandidates;
   state.visuals = (discovery.visualCorpus || []).slice(0, 24);
   state.retrievalRuns = (state.retrievalRuns || 0) + 1;
   state.updatedAt = new Date().toISOString();
   state.graphLeads = discovery.graphLeads || discovery.relatedPeople || state.graphLeads || [];
   state.attemptedQueries = discovery.attemptedQueries || state.attemptedQueries || [];
+  state.requestId = discovery.requestId || state.requestId;
+  state.timings = discovery.timings || state.timings;
+  state.visualPipeline = discovery.visualPipeline || state.visualPipeline;
+  state.diveStage = discovery.diveStage || state.diveStage;
   state.priorCorpus = (discovery.results || []).slice(0, 40).map(r => ({
     url: r.url, title: r.title, snippet: String(r.snippet || '').slice(0, 220),
     domain: r.domain || r.host, source: r.source, sourceClass: r.sourceClass || r.plannerSourceClass,
@@ -8341,12 +8543,42 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
   const items = (discovery.structuredResults || (discovery.results || []).map(r => serializeEvidenceItem(r, { investigationId: state.investigationId, subject, topic, intent: action })));
   state.lastApiResults = items;
   state.identityState = identityStateFrom(state, discovery);
+  const visualPipe = discovery.visualPipeline || emptyVisualPipeline();
+  const personCandidates = discovery.personCandidates
+    || (discovery.identityVerification && discovery.identityVerification.personCandidates)
+    || (discovery.identityVerification && discovery.identityVerification.candidates || []).map(serializePersonCandidate);
+  const diagnostics = {
+    requestId: discovery.requestId || '',
+    version: PLANNER_VERSION,
+    build: PLANNER_BUILD,
+    providers: discovery.providers || {},
+    providerStatuses: discovery.providerStatuses || {},
+    providerCounts: Object.fromEntries(Object.entries(discovery.providers || {}).map(([k, v]) => [k, (v && (v.added != null ? v.added : v.count)) || 0])),
+    timings: discovery.timings || {},
+    visualPipeline: visualPipe,
+    filterCounts: {
+      filtered: visualPipe.filtered || 0,
+      classified: visualPipe.classified || 0,
+      verified: visualPipe.verified || 0,
+      unverified: visualPipe.unverified || 0,
+      rejected: visualPipe.rejected || 0,
+      duplicatesRemoved: visualPipe.duplicatesRemoved || 0,
+      finalVisuals: visualPipe.finalVisuals || 0,
+    },
+    observationStates: ['OBSERVED', 'SUPPORTED', 'INFERRED', 'UNKNOWN'],
+    zeroReason: visualPipe.zeroReason || '',
+    errors: Object.entries(discovery.providers || {}).filter(([, v]) => v && (v.error || v.timedOut || v.ok === false)).map(([k, v]) => ({ provider: k, error: v.error || v.failureReason || 'failed', timedOut: !!v.timedOut })),
+    cacheStatus: discovery.fixture ? 'fixture' : 'live',
+    samePipelineAsIphoneUi: true,
+  };
+  state.lastDiagnostics = diagnostics;
   const payload = {
     ok: discovery.corpusDiagnosis && discovery.corpusDiagnosis.status === 'search_failed' ? false : true,
     investigationId: state.investigationId,
     version: PLANNER_VERSION,
     build: PLANNER_BUILD,
     action,
+    requestId: discovery.requestId || '',
     subject,
     subjectId: (discovery.selectedEntity && discovery.selectedEntity.id) || null,
     topic,
@@ -8356,6 +8588,7 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
     evidenceSummary: discovery.evidenceSummary,
     topicMap: discovery.topicMap,
     identityCandidates: discovery.identityCandidates,
+    personCandidates,
     identityAmbiguous: discovery.identityAmbiguous,
     identityAmbiguousReason: discovery.identityAmbiguousReason,
     identityVerification: discovery.identityVerification,
@@ -8381,6 +8614,13 @@ function packApiDiscovery(discovery, state, action, req, extra = {}) {
     knownSiteStatus: discovery.knownSiteStatus,
     images: discovery.visualCorpus,
     videos: (discovery.videoCorpus || []).map(v => ({ ...v, frames: 'UNKNOWN', timestamps: 'UNKNOWN' })),
+    timings: discovery.timings,
+    visualPipeline: visualPipe,
+    diagnostics,
+    diveStage: discovery.diveStage || '',
+    partial: !!discovery.partial,
+    nextStage: discovery.nextStage || '',
+    progressive: !!discovery.progressive,
     trail: state.trail,
     savedEvidence: state.savedEvidence,
     identityFeedback: state.identityFeedback,
@@ -8429,6 +8669,9 @@ async function handleCarmenApi(req, env) {
       secretsExposed: false,
       machineAuthConfigured: !!(env && String(env.CARMEN_API_KEY || '').trim()),
       machineAuth: !!(env && String(env.CARMEN_API_KEY || '').trim()) ? 'CARMEN_API_KEY required' : 'CARMEN_API_KEY not configured — machine routes are open',
+      samePipelineAsIphoneUi: true,
+      pipelineFunction: 'runDiscovery',
+      features: ['v49.14-person-image-results', 'v50-agent-testable', 'v50-person-thumbnails', 'v50-visual-pipeline-diagnostics', 'v50-progressive-dive', 'v50-machine-candidates', 'v50-machine-diagnostics'],
       environment: describeCarmenEnvironment(env, ai),
       browserTest: browserTestDescriptor(env),
       testRoutes: ['/test', '/browser-test', '/api/v1/browser-test-session'],
@@ -8473,7 +8716,13 @@ async function handleCarmenApi(req, env) {
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'machine') {
     const leaf = parts[3] || '';
     if (leaf === 'search') action = action || 'search';
-    else if (leaf === 'dive') {
+    else if (leaf === 'candidates') {
+      action = action || 'candidates';
+    } else if (leaf === 'confirm') {
+      action = action || 'confirm-identity';
+    } else if (leaf === 'diagnostics') {
+      action = action || 'diagnostics';
+    } else if (leaf === 'dive') {
       const lens = String(body.lens || body.diveLens || 'bondage').toLowerCase();
       action = action || ('dive-' + (['bondage', 'people', 'visuals', 'clothing'].includes(lens) ? (lens === 'clothing' ? 'visuals' : lens) : 'bondage'));
     } else if (leaf === 'investigations') {
@@ -8500,6 +8749,8 @@ async function handleCarmenApi(req, env) {
     similar: 'find-similar',
     visual: 'search-this-visual',
     confirm: 'confirm-identity',
+    candidates: 'candidates',
+    diagnostics: 'diagnostics',
     reject: 'reject-identity',
     bondage: 'dive-bondage',
     people: 'dive-people',
@@ -8563,6 +8814,10 @@ async function handleCarmenApi(req, env) {
       relationships: relationshipsFrom(null, state),
       retrievalLanes: retrievalLanesFrom(null),
       candidates: state.candidates,
+      personCandidates: state.personCandidates || [],
+      timings: state.timings || null,
+      visualPipeline: state.visualPipeline || null,
+      diagnostics: state.lastDiagnostics || null,
       results: action === 'results' || action === 'evidence' ? (state.lastApiResults || state.results || []) : undefined,
       investigationState: state,
       capabilities: machineCapabilities(env),
@@ -8578,6 +8833,15 @@ async function handleCarmenApi(req, env) {
   if (investigationId && !state.investigationId) state.investigationId = investigationId;
 
   if (action === 'confirm-identity' || action === 'reject-identity' || action === 'reject-image' || action === 'branch' || action === 'save') {
+    if ((action === 'confirm-identity') && body.candidateId && !body.name) {
+      const cands = [].concat(state.personCandidates || [], (state.identityVerification && state.identityVerification.candidates) || [], state.candidates || []);
+      const hit = cands.find(c => c && (c.id === body.candidateId || c.candidateId === body.candidateId));
+      if (hit) {
+        body.name = hit.name || hit.displayName || body.name;
+        body.subject = body.subject || hit.name || hit.displayName;
+        body.candidate = hit;
+      }
+    }
     state = applyInvestigationAction(state, action, body);
     rememberInvestigation(state);
     if (action === 'branch') {
@@ -8616,6 +8880,8 @@ async function handleCarmenApi(req, env) {
     'dive-visuals': 'dive-visuals',
     'recreate-position': 'recreate-position',
     'confirm-identity': '',
+    candidates: '',
+    diagnostics: '',
     'reject-identity': 'find-different',
     'reject-image': 'find-different',
   };
@@ -8658,14 +8924,52 @@ async function handleCarmenApi(req, env) {
     }, 200, req);
   }
 
-  if (!query && action !== 'health') {
+  if (action === 'diagnostics') {
+    const queryHint = String(body.query || body.q || body.subject || state.subject || '').trim();
+    if (!queryHint) {
+      if (!state.lastDiagnostics && !state.visualPipeline && !state.timings) {
+        return json({
+          ok: false,
+          error: 'No stored diagnostics',
+          hint: 'Run search/dive first and echo investigationState, or pass query to execute the live pipeline.',
+          investigationId: state.investigationId || null,
+        }, 404, req);
+      }
+      return json(attachInvestigationStateEcho({
+        ok: true,
+        action: 'diagnostics',
+        investigationId: state.investigationId,
+        version: PLANNER_VERSION,
+        build: PLANNER_BUILD,
+        requestId: state.requestId || (state.lastDiagnostics && state.lastDiagnostics.requestId) || '',
+        timings: state.timings || (state.lastDiagnostics && state.lastDiagnostics.timings) || {},
+        visualPipeline: state.visualPipeline || (state.lastDiagnostics && state.lastDiagnostics.visualPipeline) || emptyVisualPipeline(),
+        diagnostics: state.lastDiagnostics || {
+          requestId: state.requestId || '',
+          version: PLANNER_VERSION,
+          build: PLANNER_BUILD,
+          timings: state.timings || {},
+          visualPipeline: state.visualPipeline || emptyVisualPipeline(),
+          samePipelineAsIphoneUi: true,
+        },
+        personCandidates: state.personCandidates || [],
+        images: state.visuals || [],
+        pipeline: machinePipeline(),
+        samePipelineAsIphoneUi: true,
+        readOnly: true,
+        investigationState: state,
+      }, state), 200, req);
+    }
+  }
+
+  if (!query && action !== 'health' && action !== 'diagnostics') {
     return json({ error: 'Missing query/subject', investigationId: state.investigationId, action }, 400, req);
   }
 
-  state = applyInvestigationAction(state, action === 'confirm-identity' ? 'search' : action, { subject, topic, query });
+  state = applyInvestigationAction(state, action === 'confirm-identity' ? 'search' : (action === 'candidates' || action === 'diagnostics' ? 'search' : action), { subject, topic, query });
   resetFetchBudget();
   const discovery = await runDiscovery(query || subject, {
-    hint: type,
+    hint: type || (action === 'candidates' ? 'person' : ''),
     entity: subject,
     topic,
     adult,
@@ -8697,7 +9001,8 @@ async function handleCarmenApi(req, env) {
     resume: body.resume === true || action === 'resume' || action === 'continue',
     resumeQueue: body.resumeQueue || body.investigationQueue || state.investigationQueue || null,
     confirmIdentity: action === 'confirm-identity' || body.confirmIdentity === true,
-    identityPhase: body.identityPhase === true,
+    identityPhase: action === 'candidates' || body.identityPhase === true,
+    stage: body.stage || body.diveStage || (action === 'diagnostics' && body.stage) || '',
     investigationId: state.investigationId,
     investigationState: state,
   });
@@ -8861,7 +9166,7 @@ export default {
         searchProviders: ['DuckDuckGo', 'Bing', 'Bing Images', 'Yahoo Images', 'Bing Videos', 'Reddit', 'Wikipedia', 'Startpage', 'Pullpush', 'Wayback'],
         assets: !!(env.ASSETS && typeof env.ASSETS.fetch === 'function'),
         api: { docs: '/api', version: 'v1', samePipelineAsIphoneUi: true },
-        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants', 'v49.9-identity-verification', 'v49.9-persistent-queue', 'v49.9-visual-evidence-gate', 'v49.9-find-more-unique', 'v49.9-research-focus', 'v49.9-adaptive-lens-focus', 'v49.9-analyze-public-account', 'v49.11-exact-source-retrieval', 'v49.11-source-state-machine', 'v49.11-source-id-canonical-url', 'v49.12-investigation-workflow', 'v49.12-identity-first', 'v49.12-canonical-person', 'v49.12-visual-evidence-levels', 'v49.12-continuation-slices', 'v49.13-investigation-actions', 'v49.13-primary-dive-actions', 'v49.13-bondage-retrieval', 'v49.13-recreate-position', 'v49.14-person-image-results', 'v49.14-identity-surfaces', 'v49.14-source-url'],
+        features: ['discovery', 'retrieve', 'provenance', 'ranking', 'images', 'videos', 'deep-dive', 'dive-select', 'learn', 'collections', 'adaptive-paths', 'branching', 'instructions', 'timeline', 'evidence', 'leads', 'expanded-research', 'access-states', 'adult-filter', 'adult-lens', 'research-context', 'discovery-graph', 'research-depth', 'relationship-follow', 'result-kinds', 'interest-lenses', 'investigation-choices', 'visual-identity', 'selected-entity', 'dive-workspace', 'entity-source-separation', 'semantic-concepts', 'staged-research', 'intersection-first', 'analysis-retry', 'bounded-analysis', 'continue-batch', 'source-restriction', 'visual-corpus', 'investigate-further', 'clothing', 'premium-content', 'tutorials', 'measurements', 'visual-mode', 'not-this', 'source-class', 'identity-expansion', 'video-corpus', 'corpus-scale', 'source-first', 'query-class-memory', 'knowledge-model', 'no-auto-save', 'v48-reddit-indexed-fallback', 'v48-reserved-reddit', 'v48-reserved-adult-identity', 'v48-visual-enrichment', 'v48-research-metrics', 'v48-focus-modes', 'v49-investigation-loop', 'v49-dive-context-search', 'v49-reddit-stream', 'v49-how-i-got-here', 'v49-surprise-me', 'v49-find-more', 'v49-teach-in-context', 'v49.2-topic-map-retrieval', 'v49.2-subject-topic-intersection', 'v49.2-adult-source-classes', 'v49.2-premium-accounts', 'v49.2-known-entity', 'v49.2-merge-not-replace', 'v49.2-reddit-posts-only', 'v49.2-identity-candidates', 'v49.2-analyze-any-evidence', 'v49.3-chatgpt-access', 'v49.3-machine-api', 'v49.3-adult-source-classes', 'v49.3-identity-feedback', 'v49.3-semantic-more-like-this', 'v49.3-ownership-classes', 'v49.3-known-site-blocked', 'v49.3-keep-subject-topic-evidence', 'v49.4-deep-dive-lenses', 'v49.4-bondage-people-clothing', 'v49.4-discovery-chains', 'v49.4-additive-expansion', 'v49.4-visual-identity', 'v49.5-adult-first-nl', 'v49.5-visuals-lens', 'v49.5-photo-input', 'v49.5-intent-class', 'v49.6-image-extraction', 'v49.6-first-party-source', 'v49.6-state-isolation', 'v49.6-semantic-adult', 'v49.7-retrieval-engine', 'v49.7-entity-topic-coupling', 'v49.7-visual-class', 'v49.7-match-quality', 'v49.7-what-carmen-checked', 'v49.7-why-did-you-stop', 'v49.7-premium-escalation', 'v49.7-public-accounts', 'v49.7-semantic-variations', 'v49.7-tutorial-routing', 'v49.8-adaptive-investigation', 'v49.8-novelty-continuation', 'v49.8-visual-branch', 'v49.8-account-investigation', 'v49.8-recursive-seeds', 'v49.8-identity-variants', 'v49.9-identity-verification', 'v49.9-persistent-queue', 'v49.9-visual-evidence-gate', 'v49.9-find-more-unique', 'v49.9-research-focus', 'v49.9-adaptive-lens-focus', 'v49.9-analyze-public-account', 'v49.11-exact-source-retrieval', 'v49.11-source-state-machine', 'v49.11-source-id-canonical-url', 'v49.12-investigation-workflow', 'v49.12-identity-first', 'v49.12-canonical-person', 'v49.12-visual-evidence-levels', 'v49.12-continuation-slices', 'v49.13-investigation-actions', 'v49.13-primary-dive-actions', 'v49.13-bondage-retrieval', 'v49.13-recreate-position', 'v49.14-person-image-results', 'v49.14-identity-surfaces', 'v49.14-source-url', 'v50-agent-testable', 'v50-person-thumbnails', 'v50-visual-pipeline-diagnostics', 'v50-progressive-dive', 'v50-machine-candidates', 'v50-machine-diagnostics'],
       }, 200, req);
     }
     if (u.pathname === '/search' && req.method === 'GET') return searchWeb(req);

@@ -10,7 +10,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon.svg">
 <title>Carmen</title>
-<meta name="carmen-build" content="49.14">
+<meta name="carmen-build" content="50">
 <style>
 :root{
   color-scheme:dark;
@@ -123,6 +123,7 @@ details.adv summary::-webkit-details-marker{display:none}
 .tinder-wrap{margin:8px 0 16px}
 .tinder-card{border:1px solid var(--line2);border-radius:var(--radius-xl);overflow:hidden;background:var(--card2);max-width:420px;margin:0 auto}
 .tinder-card img.hero{width:100%;height:min(72vw,340px);object-fit:cover;display:block;background:#050607}
+.tinder-card .hero-placeholder{width:100%;height:min(42vw,220px);display:flex;align-items:center;justify-content:center;background:#0b0d11;color:var(--muted);font-size:13px}
 .tinder-card .rbody{padding:16px}
 .tinder-card .pname{font-size:26px;letter-spacing:-.04em;font-weight:620;margin:0 0 6px}
 .tinder-yes,.tinder-no{min-height:52px;font-size:15px;letter-spacing:.04em;text-transform:uppercase;font-weight:700}
@@ -280,7 +281,7 @@ h4{margin:14px 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercas
 <div id="carmenAgentStatus" class="carmen-agent-status" data-testid="carmen-status" aria-live="polite" data-status="idle" data-view="home" data-busy="false">idle · home</div>
 <header class="appbar">
   <div class="rowbits">
-    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v49.14</span></h1>
+    <h1>Carmen <span class="kicker" style="letter-spacing:.08em">v50</span></h1>
     <button class="btn ghost" id="newInvestigationBtn" type="button" data-testid="new-investigation">New investigation</button>
   </div>
   <div class="sub" id="appSub">Public research. Nothing is saved unless you choose Save.</div>

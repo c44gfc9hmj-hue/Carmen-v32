@@ -46,8 +46,11 @@ Canonical sequence:
 1. GET capabilities.
 2. POST /api/v1/machine/search with query/subject.
 3. Save investigationId AND investigationState from the JSON.
-4. POST /api/v1/machine/dive with lens plus both id and state.
-5. Use the results array. Do not parse HTML.
+3b. POST /api/v1/machine/candidates to inspect person cards (thumbnailUrl, sourceUrl, whySelected).
+3c. POST /api/v1/machine/confirm with candidateId plus both id and state.
+4. POST /api/v1/machine/dive with lens plus both id and state. Use stage=initial for first useful results.
+5. Use the results array, images, and visualPipeline. Do not parse HTML.
+5b. POST /api/v1/machine/diagnostics with echoed state to inspect timings and filter/verify counts.
 6. POST /api/v1/machine/investigations/{id}/analyze with a public url plus both id and state.
 7. To inspect later, POST /api/v1/machine/investigations/{id} with the echoed state.
    GET is best-effort only and returns 404 when Worker memory has dropped it.
@@ -79,8 +82,11 @@ as a request parameter.
 1. `GET /api/v1/machine/capabilities`
 2. `POST /api/v1/machine/search`
 3. Save `investigationId` + `investigationState`
-4. `POST /api/v1/machine/dive` with both
-5. Inspect `results`
+3b. `POST /api/v1/machine/candidates` (inspect thumbnails/source URLs)
+3c. `POST /api/v1/machine/confirm` with `candidateId` + both
+4. `POST /api/v1/machine/dive` with both (`stage=initial` optional)
+5. Inspect `results`, `images`, `visualPipeline`
+5b. `POST /api/v1/machine/diagnostics` with echoed state
 6. Optional `POST .../confirm-identity`
 7. `POST .../analyze` with a public `url` + both
 8. `POST /api/v1/machine/investigations/{id}` with echoed state

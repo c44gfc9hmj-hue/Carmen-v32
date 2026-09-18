@@ -1,20 +1,24 @@
-Carmen v49.14 (49.14-person-image-results) — person selection + image results
+Carmen v50 (50-agent-testable-progressive) — agent API, thumbnails, bondage diagnostics, progressive dive
 ================================================================================
-Parent: 4f33eae (revert VERSION bump until v49.14 sources land)
+Parent: d86e3ea (v49.14 person-selection + image-result production fix)
 
-Incremental production fix. Extends the v49.13 planner + worker engine.
-Does not rebuild Carmen. Does not redesign Deep Dive.
+Incremental production pass. Extends the v49.14 planner + worker engine.
+Does not rebuild Carmen. Does not redesign Deep Dive. Does not mock retrieval.
 
-- Distinct identity surfaces stay distinct unless they corroborate.
-  Sharing an unspecified role is not a merge key.
-- Each presented person candidate carries sourceUrl / sampleUrl.
-- Open/View Source uses the stored source URL, not the image URL.
-- Thumbnails come only from that candidate's own images.
-- Image-index hits keep imageUrl and sourceUrl separate.
-- Multiple unique images survive; duplicates collapse by image identity.
-- Same-host / same-gallery-page images are not collapsed into one result.
-- Provider/retrieval metadata survives on visual hits.
-- Unverified images stay unlabeled as verified.
-- Incomplete apply-v49.14.sh hook removed; sources land in the tree.
+- Authorized AI assistants drive the SAME runDiscovery pipeline via
+  /api/v1/machine/search, /candidates, /confirm, /dive, /diagnostics.
+- personCandidates expose id, displayName, sourceUrl, sourceTitle,
+  thumbnailUrl (from THAT candidate's source only), confidence, whySelected.
+- Bondage zero-visuals are diagnosed (providers_returned_zero /
+  retrieval_failed / filtered_out / incorrectly_classified_or_rejected /
+  ui_or_serialization_dropped / all_rejected_by_visual_gate).
+- Person×topic image-index hits whose title omitted the name stay UNVERIFIED
+  (gate query-associated), never VERIFIED, never a stolen first image.
+- Deep Dive parallelizes web variants in batches of 3; stage=initial returns
+  first useful results so the UI is not blank while slower sources finish.
+- Request IDs, per-stage timings, provider/filter/verify/dedupe counts are on
+  every discovery envelope (PWA GET /search and machine API).
+- v49.14 identity surfaces, sourceUrl vs imageUrl, and unique same-page
+  images are preserved.
 
-Build identifier: **49.14-person-image-results**.
+Build identifier: **50-agent-testable-progressive**.
