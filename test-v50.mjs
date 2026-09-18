@@ -96,6 +96,11 @@ console.log('--- thumbnails belong only to that candidate ---');
   const ser = serializePersonCandidate(iafd);
   assert(ser.thumbnailUrl && ser.sourceUrl && ser.id, 'serialized candidate has id/source/thumb');
   assert(ser.observationState === 'OBSERVED', 'thumbnail is OBSERVED not inferred');
+  const junkYtt = { candidateId: 'cand_blog', name: 'Alex Rivera', sourceUrl: 'https://www.current-affairs.org/alex/', profileSource: 'current-affairs.org', representativeImages: ['https://i.ytimg.com/vi/ID/hqdefault.jpg'], thumbnailUrl: 'https://i.ytimg.com/vi/ID/hqdefault.jpg' };
+  const junkOg = { candidateId: 'cand_og', name: 'Alex Rivera', sourceUrl: 'https://egirl.sx/article/alex', profileSource: 'egirl.sx', representativeImages: ['https://egirl.sx/og-default.png'], thumbnailUrl: 'https://egirl.sx/og-default.png' };
+  hydratePersonCandidates([junkYtt, junkOg], [], []);
+  assert(!junkYtt.thumbnailUrl, 'template ytimg /vi/ID/ is not a candidate thumbnail');
+  assert(!junkOg.thumbnailUrl, 'og-default.png is not a candidate thumbnail');
 }
 
 console.log('--- visual gate: query-associated bondage is unverified, not rejected, not verified ---');
@@ -160,6 +165,8 @@ console.log('--- machine catalog documents candidates / confirm / diagnostics --
   assert(/\/api\/v1\/machine\/candidates/.test(workerSrc), 'worker documents candidates route');
   assert(/stage:/.test(workerSrc) && /initialOnly/.test(workerSrc), 'worker supports initial dive stage');
   assert(/Promise\.all\(chunk\.map/.test(workerSrc), 'web variants run in parallel batches');
+  assert(/VisualBudgetReserve/.test(workerSrc), 'identity/dive image search reserves fetches');
+  assert(/identityHold && classification.type === 'person'/.test(workerSrc), 'identity portrait reserves visual budget');
   assert(/machineSearch/.test(workerSrc) && /machineCandidates/.test(workerSrc), 'OpenAPI operationIds exist');
   assert(/personCandidates/.test(apiMd), 'API.md documents personCandidates');
   assert(/machine\/candidates/.test(gptMd) || /candidates/.test(gptMd), 'CHATGPT.md mentions candidates');

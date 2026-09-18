@@ -326,7 +326,7 @@ export const DIVE_STAGES = [
   'synthesis-complete',
 ];
 
-const SKIP_CANDIDATE_THUMB_RE = /favicon|\.ico(\?|$)|sprite|pixel|1x1|blank\.gif|placeholder|logo[-_]?small|tracking|badge|\/ip3\/|data:image\/gif|data:image\/svg/i;
+const SKIP_CANDIDATE_THUMB_RE = /favicon|\.ico(\?|$)|sprite|pixel|1x1|blank\.gif|placeholder|logo[-_]?small|tracking|badge|\/ip3\/|data:image\/gif|data:image\/svg|\/vi\/ID\/|og-default|default[-_]?(og|thumb|image)|spacer\.(gif|png)|transparent\.(gif|png)/i;
 
 export function createPipelineClock(startedAt) {
   const t0 = Number(startedAt) || Date.now();

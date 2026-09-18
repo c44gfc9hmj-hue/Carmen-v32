@@ -503,7 +503,7 @@ function extractBlockImage(block) {
     let abs = decodeEntities(src);
     if (abs.startsWith('//')) abs = 'https:' + abs;
     if (!/^https?:/i.test(abs)) continue;
-    if (/favicon|\.ico(\?|$)|sprite|pixel|1x1|blank\.gif|placeholder|logo[-_]?small|tracking|badge|\/ip3\/|data:image\/gif|data:image\/svg/i.test(abs)) continue;
+    if (/favicon|\.ico(\?|$)|sprite|pixel|1x1|blank\.gif|placeholder|logo[-_]?small|tracking|badge|\/ip3\/|data:image\/gif|data:image\/svg|\/vi\/ID\/|og-default|default[-_]?(og|thumb|image)|spacer\.(gif|png)|transparent\.(gif|png)/i.test(abs)) continue;
     if (/\.(jpe?g|png|webp|gif)(\?|$)/i.test(abs) || /\/th\?id=/i.test(abs) || /external-content\.duckduckgo\.com\/iu/i.test(abs) || /bing\.com\/th/i.test(abs)) {
       return abs.replace(/&/g, '&');
     }
@@ -5599,7 +5599,7 @@ async function runDiscovery(query, opts = {}) {
       : adultOnPerson
         ? new Set(['identity', 'intersection', 'adult', 'adult-identity', 'productions', 'interviews', 'primary', 'visual', 'accounts', 'identity-variants', 'premium'])
         : new Set(['primary', 'intersection', 'identity', 'visual', 'topic-variants', 'instructional', 'accounts']);
-    const visualReserve = wantVisualBranch || isDiveLens ? 3 : 0;
+    const visualReserve = wantVisualBranch || isDiveLens || (identityHold && classification.type === 'person') ? 3 : 0;
     const accountReserve = (classification.type === 'person' || intent.premiumAccounts) ? 2 : 0;
     let redditLaneDone = false;
     const redditQuery = String(classification.subject || q).replace(/"/g, '').trim() || q;
@@ -5643,6 +5643,20 @@ async function runDiscovery(query, opts = {}) {
     }
   } else if ((wantVisual || identityPortrait) && !classification.isUrl) {
     clock.begin('imageSearch');
+    // Identity cards and Bondage/Visuals must still run one image-index query
+    // even when web variants consumed SEARCH_BUDGET.max. Do not steal images
+    // from unrelated hits — hydratePersonCandidates still requires the
+    // candidate's own source/page.
+    if (SEARCH_BUDGET.used >= SEARCH_BUDGET.max || remainingFetches() < 2) {
+      SEARCH_BUDGET.max = Math.min(FETCH_HARD_CAP, Math.max(SEARCH_BUDGET.max, SEARCH_BUDGET.used) + 3);
+      diagnostics.VisualBudgetReserve = {
+        reason: identityPortrait
+          ? 'reserved fetches for identity-card thumbnails from this person\'s own sources'
+          : 'reserved fetches for person × topic image search so Deep Dive is not blank while web variants finish',
+        used: SEARCH_BUDGET.used,
+        max: SEARCH_BUDGET.max,
+      };
+    }
     const vq = visualQueryVariants(classification, { mode, seedVisual, excludeHosts, attemptedQueries });
     const vidQ = videoQueryVariants(classification, { attemptedQueries });
     if (identityPortrait && classification.subject) {
